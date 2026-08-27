@@ -2,6 +2,7 @@ import { useParams, Link, useNavigate } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { getVisitor } from "@/lib/visitor-api"
 import { getVisitorPhotoUrl } from "@/lib/image-match"
+import { VisitorFaceEnrollment } from "@/components/visitors/visitor-face-enrollment"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { ROUTES, getVisitorEditPath } from "@/routes/config"
@@ -319,6 +320,12 @@ export default function VisitorDetailPage() {
           </Button>
         )}
       </div>
+
+      {Number.isInteger(visitorId) ? (
+        <div className="mb-6">
+          <VisitorFaceEnrollment visitorId={visitorId} />
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <SectionCard title="Basic information" icon={User}>

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, lazy, Suspense } from "react"
 import { Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import {
@@ -20,13 +20,20 @@ import { getStoredUser } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 import { fetchVmsOverview } from "@/lib/vms-api"
 import type { VmsOverviewVisitorRow } from "@/lib/vms-api"
-import { DashboardRtspCameraGrid } from "@/components/dashboard/dashboard-rtsp-camera-grid"
-import { CityControlGrid } from "@/components/dashboard/city-control-grid"
 import { LiveAlerts } from "@/components/dashboard/live-alerts"
 import {
   RecentRegistrationsTable,
   VisitorDeleteDialog,
 } from "@/components/vms/recent-registrations-table"
+
+const DashboardRtspCameraGrid = lazy(() =>
+  import("@/components/dashboard/dashboard-rtsp-camera-grid").then((m) => ({
+    default: m.DashboardRtspCameraGrid,
+  }))
+)
+const CityControlGrid = lazy(() =>
+  import("@/components/dashboard/city-control-grid").then((m) => ({ default: m.CityControlGrid }))
+)
 
 type DashboardStatCardProps = {
   title: string
@@ -138,12 +145,16 @@ export function Dashboard() {
             />
           </div>
 
-          <DashboardRtspCameraGrid />
+          <Suspense fallback={<div className="h-[280px] rounded-[10px] border border-gray-200 bg-white" />}>
+            <DashboardRtspCameraGrid />
+          </Suspense>
 
           {/* City Control Grid & Live Alerts */}
           <div className="grid min-w-0 grid-cols-1 gap-6 lg:grid-cols-3 lg:gap-8">
             <div className="lg:col-span-2">
-              <CityControlGrid />
+              <Suspense fallback={<div className="h-[220px] rounded-[10px] border border-gray-200 bg-white" />}>
+                <CityControlGrid />
+              </Suspense>
             </div>
             <LiveAlerts />
           </div>

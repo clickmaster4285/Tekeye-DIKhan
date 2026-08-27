@@ -156,6 +156,12 @@ class JourneyLiveAPIView(APIView):
             .order_by("-latest_seen_at")[:100]
         )
         results = list(qs)
+        try:
+            from .snapshot_capture import enqueue_latest_crops_for_persons
+
+            enqueue_latest_crops_for_persons(results)
+        except Exception:
+            pass
         return Response(
             {
                 "count": len(results),

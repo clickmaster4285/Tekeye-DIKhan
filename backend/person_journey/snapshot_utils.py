@@ -25,15 +25,26 @@ def journey_event_snapshot_url(event: JourneyEvent) -> str:
 
 
 def journey_person_latest_snapshot_url(person) -> str:
-    for event in (
+    events = list(
         JourneyEvent.objects.filter(journey_person=person)
         .exclude(snapshot_path="")
         .order_by("-created_at")
-        .only("snapshot_path", "detection_event_id")[:20]
-    ):
+        .only("snapshot_path", "detection_event_id", "metadata")[:20]
+    )
+    for event in events:
+        meta = event.metadata if isinstance(event.metadata, dict) else {}
+        if meta.get("snapshot_kind") == "person_crop":
+            url = journey_event_snapshot_url(event)
+            if url:
+                return url
+    for event in events:
         url = journey_event_snapshot_url(event)
         if url:
             return url
+    meta = person.metadata if isinstance(getattr(person, "metadata", None), dict) else {}
+    thumb = str(meta.get("thumbnail_url") or "").strip()
+    if thumb:
+        return thumb
     event = (
         JourneyEvent.objects.filter(journey_person=person, detection_event_id__isnull=False)
         .order_by("-created_at")
@@ -108,14 +119,26 @@ def person_camera_captures(person, *, since=None) -> list[dict]:
         )
         snapshot_url = ""
         chosen = None
+        crop_url = ""
+        crop_event = None
         for ev in events:
             url = journey_event_snapshot_url(ev)
             if not url and ev.detection_event_id:
                 url = clip_map.get(ev.detection_event_id, "")
-            if url:
+            if not url:
+                continue
+            meta = ev.metadata if isinstance(ev.metadata, dict) else {}
+            if meta.get("snapshot_kind") == "person_crop" and crop_event is None:
+                crop_url = url
+                crop_event = ev
+            if chosen is None:
                 snapshot_url = url
                 chosen = ev
+            if crop_event is not None:
                 break
+        if crop_event is not None:
+            chosen = crop_event
+            snapshot_url = crop_url
         if chosen is None:
             chosen = events.first()
         if chosen is None:

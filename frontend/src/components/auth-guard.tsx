@@ -62,6 +62,16 @@ export function AuthGuard() {
   }, [location.pathname, location.search, navigate, authTick])
 
   if (!allowed) {
+    // Already signed in: keep the shell mounted while the redirect runs.
+    // A full-screen spinner here makes every restricted click feel like the app froze.
+    if (isAuthenticatedSession()) {
+      return (
+        <>
+          <Outlet />
+          <Toaster />
+        </>
+      )
+    }
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-[#f8fafc]">
         <div className="flex flex-col items-center gap-4">

@@ -22,8 +22,11 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        from person_journey.models import JourneyEvent, JourneyPerson
-        from person_journey.snapshot_capture import capture_journey_crop_sync
+        from person_journey.models import JourneyEvent
+        from person_journey.snapshot_capture import (
+            _SNAPSHOT_KIND_CROP,
+            capture_journey_crop_sync,
+        )
 
         hours = int(options["hours"])
         capture_limit = max(1, int(options["capture_limit"]))
@@ -31,15 +34,21 @@ class Command(BaseCommand):
         force = bool(options["force"])
 
         qs = JourneyEvent.objects.filter(camera__isnull=False)
-        if not force:
-            qs = qs.filter(snapshot_path="")
         if person_uuid:
             qs = qs.filter(journey_person__uuid=person_uuid)
         if hours > 0:
             since = timezone.now() - timedelta(hours=hours)
             qs = qs.filter(created_at__gte=since)
 
-        event_ids = list(qs.order_by("-created_at").values_list("id", flat=True)[:capture_limit])
+        rows = list(qs.order_by("-created_at").values_list("id", "snapshot_path", "metadata")[: capture_limit * 3])
+        event_ids = []
+        for pk, path, meta in rows:
+            kind = meta.get("snapshot_kind") if isinstance(meta, dict) else None
+            if force or not (path or "").strip() or kind != _SNAPSHOT_KIND_CROP:
+                event_ids.append(pk)
+            if len(event_ids) >= capture_limit:
+                break
+
         captured = 0
         for ev_id in event_ids:
             if force:

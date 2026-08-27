@@ -10,7 +10,7 @@ type JourneySnapshotProps = {
 export function JourneySnapshot({
   url,
   alt,
-  className = "h-14 w-24 rounded border object-cover bg-muted",
+  className = "h-16 w-14 rounded border object-contain bg-muted",
 }: JourneySnapshotProps) {
   const src = url ? resolveMediaUrl(url) : ""
   if (!src) {

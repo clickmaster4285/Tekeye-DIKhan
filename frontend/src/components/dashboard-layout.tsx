@@ -7,9 +7,9 @@ import { OfficerGpsReporter } from "@/components/gps/officer-gps-reporter"
 import { SessionPermissionSync } from "@/components/session-permission-sync"
 import { getStoredUser } from "@/lib/auth"
 import { getNavSectionsForRole, type NavGroup, type NavItem } from "@/routes/config"
-import { prefetchHrefsIdle } from "@/routes/prefetch"
+import { prefetchHrefsIdle, prefetchPriorityPages } from "@/routes/prefetch"
 
-function collectNavHrefs(limit = 24): string[] {
+function collectNavHrefs(limit = 80): string[] {
   const user = getStoredUser()
   const sections = getNavSectionsForRole(user?.role, user?.allowed_modules)
   const hrefs: string[] = ["/"]
@@ -33,7 +33,8 @@ export function DashboardLayout() {
   const setMobileOpen = useCallback((open: boolean) => setMobileSidebarOpen(open), [])
 
   useEffect(() => {
-    const id = window.setTimeout(() => prefetchHrefsIdle(collectNavHrefs()), 400)
+    prefetchPriorityPages()
+    const id = window.setTimeout(() => prefetchHrefsIdle(collectNavHrefs()), 50)
     return () => window.clearTimeout(id)
   }, [])
 

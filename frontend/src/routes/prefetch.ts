@@ -43,7 +43,10 @@ function resolvePageKey(href: string): PageKey | null {
 
 export function prefetchRoute(href: string): void {
   const page = resolvePageKey(href)
-  if (!page) return
+  if (page) prefetchPageKey(page)
+}
+
+function prefetchPageKey(page: PageKey): void {
   if (prefetchCache.has(page)) return
   const loader = PAGE_LOADERS[page]
   prefetchCache.set(
@@ -52,6 +55,26 @@ export function prefetchRoute(href: string): void {
       prefetchCache.delete(page)
     })
   )
+}
+
+const PRIORITY_PAGES: PageKey[] = [
+  "Dashboard",
+  "WalkInRegistration",
+  "PreRegistration",
+  "VisitorManagementOverview",
+  "PersonJourney",
+  "LiveCameraGrid",
+  "Employees",
+  "VisitorDetail",
+  "CalendarView",
+  "GuardReceptionPanel",
+]
+
+/** Load the screens people click most so the first navigation is not a JS wait. */
+export function prefetchPriorityPages(): void {
+  for (const page of PRIORITY_PAGES) {
+    if (page in PAGE_LOADERS) prefetchPageKey(page)
+  }
 }
 
 /** Prefetch page chunks during idle time so sidebar clicks skip the JS wait. */
@@ -64,9 +87,9 @@ export function prefetchHrefsIdle(hrefs: string[]): void {
     if (i >= unique.length) return
     const ric = window.requestIdleCallback
     if (typeof ric === "function") {
-      ric(tick, { timeout: 1500 })
+      ric(tick, { timeout: 800 })
     } else {
-      window.setTimeout(tick, 120)
+      window.setTimeout(tick, 40)
     }
   }
   tick()

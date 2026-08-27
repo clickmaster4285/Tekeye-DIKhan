@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+import logging
 
 from django.db.models import Q
 from django.utils import timezone
@@ -6,8 +7,20 @@ from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
+from .face_gallery import (
+    active_face_count,
+    deactivate_visitor_face,
+    enroll_visitor_image,
+    enroll_visitor_images,
+    max_enrollment_images,
+    min_enrollment_images,
+    recognize_from_image,
+    serialize_visitor_face,
+    visitor_is_enrolled,
+)
 from .models import (
     Visitor,
+    VisitorFace,
     ZoneAccessLog,
     SecurityAlert,
     Vehicle,
@@ -30,9 +43,13 @@ from .serializers import (
 from users.permissions import apply_location_filter, get_effective_location, resolve_location_for_write
 from .payload_utils import merge_extra_into_response
 
+logger = logging.getLogger(__name__)
+
 
 def get_visitor_queryset():
-    return Visitor.objects.all().order_by("-created_at")
+    from .face_gallery import face_stats_qs
+
+    return Visitor.objects.annotate(face_count=face_stats_qs()).order_by("-created_at")
 
 
 def filter_visitors_by_request(queryset, request):
@@ -318,6 +335,113 @@ class VisitorFaceCaptureAPIView(APIView):
         visitor.flow_stage = "face_captured"
         visitor.save(update_fields=list(ser.validated_data.keys()) + ["flow_stage", "updated_at"])
         return Response(VisitorSerializer(visitor).data)
+
+
+class VisitorFaceEnrollAPIView(APIView):
+    """POST /api/visitors/{id}/face/enroll/ — store 1–5 InsightFace embeddings. Not attendance."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        qs = filter_visitors_by_request(get_visitor_queryset(), request)
+        try:
+            visitor = qs.get(pk=pk)
+        except Visitor.DoesNotExist:
+            return Response({"detail": "Visitor not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        images = request.data.get("images")
+        image = request.data.get("image")
+        batch: list[str] = []
+        if isinstance(images, list):
+            batch = [str(item) for item in images if item]
+        elif isinstance(image, str) and image.strip():
+            batch = [image]
+
+        if not batch:
+            return Response(
+                {"detail": "Provide image or images (base64 JPEG/PNG)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            if len(batch) == 1:
+                result = enroll_visitor_image(visitor, batch[0])
+            else:
+                result = enroll_visitor_images(visitor, batch)
+        except Exception:
+            logger.exception("Visitor face enrollment failed for visitor %s", visitor.pk)
+            return Response(
+                {
+                    "accepted": False,
+                    "detail": "Face engine unavailable. Check InsightFace on the backend.",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(result, status=status.HTTP_200_OK)
+
+
+class VisitorFaceListAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        qs = filter_visitors_by_request(get_visitor_queryset(), request)
+        try:
+            visitor = qs.get(pk=pk)
+        except Visitor.DoesNotExist:
+            return Response({"detail": "Visitor not found."}, status=status.HTTP_404_NOT_FOUND)
+        faces = VisitorFace.objects.filter(visitor=visitor, is_active=True)
+        count = faces.count()
+        return Response(
+            {
+                "visitor_id": visitor.pk,
+                "faces": [serialize_visitor_face(face, request) for face in faces],
+                "face_count": count,
+                "images_required": min_enrollment_images(),
+                "images_max": max_enrollment_images(),
+                "is_enrolled": visitor_is_enrolled(visitor, count),
+            }
+        )
+
+
+class VisitorFaceDeleteAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk, face_id):
+        qs = filter_visitors_by_request(get_visitor_queryset(), request)
+        try:
+            visitor = qs.get(pk=pk)
+        except Visitor.DoesNotExist:
+            return Response({"detail": "Visitor not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not deactivate_visitor_face(visitor, face_id):
+            return Response({"detail": "Face not found."}, status=status.HTTP_404_NOT_FOUND)
+        count = active_face_count(visitor)
+        return Response(
+            {
+                "deleted": True,
+                "face_count": count,
+                "is_enrolled": visitor_is_enrolled(visitor, count),
+            }
+        )
+
+
+class VisitorFaceRecognizeAPIView(APIView):
+    """Identify staff then visitor. Never creates an attendance record."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        image = request.data.get("image")
+        if not isinstance(image, str) or not image.strip():
+            return Response({"detail": "Provide image (base64)."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            result = recognize_from_image(image)
+        except Exception:
+            logger.exception("Visitor face recognize failed")
+            return Response(
+                {"matched": False, "identity_type": "unknown", "detail": "Face engine unavailable."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(result)
 
 
 # ---------- Zone Scan ----------

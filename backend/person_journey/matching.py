@@ -246,3 +246,17 @@ def resolve_visitor_from_face_label(label: str) -> tuple[int | None, str]:
             return person.visitor_id, person.display_name or lbl
         return None, lbl
     return visitor.pk, (visitor.full_name or lbl).strip()
+
+
+def resolve_visitor_from_embedding(embedding) -> tuple[int | None, str, float]:
+    """Match a probe embedding against the visitor face gallery (not staff attendance)."""
+    from visitors.face_gallery import search_visitor_gallery
+
+    hit = search_visitor_gallery(embedding)
+    if not hit:
+        return None, "", 0.0
+    return (
+        int(hit["visitor_id"]),
+        str(hit.get("visitor_name") or ""),
+        float(hit.get("confidence") or 0.0),
+    )

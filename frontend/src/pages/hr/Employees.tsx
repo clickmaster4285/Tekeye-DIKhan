@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { Users, UserPlus, Building2, Mail, Search, Eye, Edit, Trash2, ChevronLeft, ChevronRight } from "lucide-react"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
@@ -29,7 +29,6 @@ import {
 } from "@/components/ui/select"
 import { ROUTES, getEmployeeDetailPath } from "@/routes/config"
 import { useToast } from "@/hooks/use-toast"
-import { preloadHumanFaceModel } from "@/lib/human-face-validation"
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
 const DEFAULT_PAGE_SIZE = 20
@@ -37,10 +36,6 @@ const DEFAULT_PAGE_SIZE = 20
 export default function EmployeesPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-
-  useEffect(() => {
-    preloadHumanFaceModel()
-  }, [])
   const { toast } = useToast()
   const [search, setSearch] = useState("")
   const [page, setPage] = useState(1)
