@@ -96,7 +96,15 @@ export default defineConfig(({ mode }) => {
       }),
     ],
     optimizeDeps: {
-      include: ["qrcode"],
+      include: [
+        "qrcode",
+        "react",
+        "react-dom",
+        "react-router-dom",
+        "@tanstack/react-query",
+        "formik",
+        "yup",
+      ],
     },
     build: {
       commonjsOptions: {
@@ -111,6 +119,18 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 3000,
+      warmup: {
+        clientFiles: [
+          "./src/main.tsx",
+          "./src/routes.tsx",
+          "./src/components/dashboard-layout.tsx",
+          "./src/components/dashboard/sidebar.tsx",
+          "./src/pages/dashboard/Dashboard.tsx",
+          "./src/pages/registration/WalkInRegistration.tsx",
+          "./src/pages/registration/PreRegistration.tsx",
+          "./src/pages/vms/VisitorManagementOverview.tsx",
+        ],
+      },
       ...(useDevProxy
         ? {
             proxy: {

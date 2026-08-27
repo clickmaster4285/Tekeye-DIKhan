@@ -1,10 +1,6 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, lazy, Suspense } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { WalkInStepIndicator } from "@/components/walk-in/step-indicator"
-import { WalkInStep1VisitorDetails } from "@/components/walk-in/step1-visitor-details"
-import { WalkInStep2DocumentsUpload } from "@/components/walk-in/step2-documents-upload"
-import { WalkInStep4QRCodeGeneration } from "@/components/walk-in/step4-qr-code-generation"
-import { WalkInStep3VisitDetails } from "@/components/walk-in/step3-visit-details"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useToast } from "@/hooks/use-toast"
@@ -34,6 +30,19 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+
+const WalkInStep1VisitorDetails = lazy(() =>
+  import("@/components/walk-in/step1-visitor-details").then((m) => ({ default: m.WalkInStep1VisitorDetails }))
+)
+const WalkInStep2DocumentsUpload = lazy(() =>
+  import("@/components/walk-in/step2-documents-upload").then((m) => ({ default: m.WalkInStep2DocumentsUpload }))
+)
+const WalkInStep3VisitDetails = lazy(() =>
+  import("@/components/walk-in/step3-visit-details").then((m) => ({ default: m.WalkInStep3VisitDetails }))
+)
+const WalkInStep4QRCodeGeneration = lazy(() =>
+  import("@/components/walk-in/step4-qr-code-generation").then((m) => ({ default: m.WalkInStep4QRCodeGeneration }))
+)
 
 function getInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean)
@@ -895,6 +904,7 @@ export default function PreRegistrationPage() {
           <WalkInStepIndicator currentStep={currentStep} />
 
           <div className="bg-card rounded-xl border border-border shadow-sm p-4 sm:p-6 mt-6">
+            <Suspense fallback={<p className="text-sm text-muted-foreground py-8 text-center">Loading form…</p>}>
             {currentStep === 1 && (
               <WalkInStep1VisitorDetails
                 formData={{
@@ -1015,6 +1025,7 @@ export default function PreRegistrationPage() {
                 onFinish={handleSubmit}
               />
             )}
+            </Suspense>
           </div>
 
           {currentStep > 1 && currentStep !== 2 && currentStep !== 3 && currentStep !== 4 && (

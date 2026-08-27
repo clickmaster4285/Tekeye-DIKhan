@@ -23,7 +23,6 @@ import {
   existingStaffPhotoPaths,
   revokeStaffUploadBlobs,
 } from "@/lib/staff-photo-utils"
-import { preloadHumanFaceModel } from "@/lib/human-face-validation"
 import { useToast } from "@/hooks/use-toast"
 import {
   STAFF_BPS_OPTIONS,
@@ -124,10 +123,6 @@ export default function EmployeeEditPage() {
     appointmentLetter,
     additionalDocument,
   }
-
-  useEffect(() => {
-    preloadHumanFaceModel()
-  }, [])
 
   useEffect(() => {
     if (!staff || initialized) return
