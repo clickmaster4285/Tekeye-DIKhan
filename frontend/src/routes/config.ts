@@ -85,6 +85,7 @@ export const ROUTES = {
   OPS_CENTRAL: "/ops-central",
   PERSON_JOURNEY: "/person-journey",
   PERSON_JOURNEY_DETAIL: "/person-journey/:uuid",
+  GPS_TRACKING: "/gps-tracking",
   ANPR_SETTINGS: "/anpr-settings",
   ANPR_VEHICLE_TRACKING: "/anpr-vehicle-tracking",
   VEHICLE_JOURNEY: "/vehicle-journey",
@@ -596,6 +597,7 @@ const ALL_NAV_ITEMS: (NavItem | NavGroup)[] = [
           { label: "Object Detection", href: ROUTES.OBJECT_DETECTION },
           { label: "Object Tracking", href: ROUTES.OBJECT_TRACKING },
           { label: "Person Journey", href: ROUTES.PERSON_JOURNEY },
+          { label: "GPS Tracking", href: ROUTES.GPS_TRACKING },
           { label: "ANPR Settings", href: ROUTES.ANPR_SETTINGS },
           { label: "Number Plate Tracking", href: ROUTES.ANPR_VEHICLE_TRACKING },
           { label: "Vehicle Journey", href: ROUTES.VEHICLE_JOURNEY },
@@ -855,6 +857,7 @@ export const GUARD_NAV_SECTIONS: NavSection[] = [
   { title: "Visitor Management", items: [VISITOR_MANAGEMENT_NAV] },
   { title: "Vehicle Management", items: [VEHICLE_MANAGEMENT_NAV] },
   { title: "Incident Management", items: [{ label: "Incident Creation", href: ROUTES.INCIDENT_CREATION }] },
+  { title: "GPS Tracking", items: [{ label: "GPS Tracking", href: ROUTES.GPS_TRACKING }] },
 ]
 
 /** Shown when a non-admin has no custom grants and no role-default template. */

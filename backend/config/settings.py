@@ -77,6 +77,7 @@ INSTALLED_APPS = [
     "object_tracking.apps.ObjectTrackingConfig",
     "recognition.apps.RecognitionConfig",
     "ops_central.apps.OpsCentralConfig",
+    "gps_tracking.apps.GpsTrackingConfig",
 ]
 
 # -----------------------------

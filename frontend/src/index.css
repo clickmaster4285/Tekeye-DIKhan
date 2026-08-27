@@ -218,3 +218,98 @@
     @apply bg-background text-foreground font-sans overflow-x-hidden;
   }
 }
+
+/* GPS live map officer pins + geofence labels */
+.leaflet-container {
+  z-index: 0;
+  isolation: isolate;
+}
+.gps-officer-icon {
+  background: transparent !important;
+  border: none !important;
+}
+.gps-officer-pin {
+  display: flex;
+  align-items: flex-start;
+  position: relative;
+  width: max-content;
+}
+.gps-officer-marker {
+  position: relative;
+  width: 28px;
+  height: 40px;
+  flex-shrink: 0;
+  z-index: 1;
+}
+.gps-officer-svg {
+  display: block;
+  filter: drop-shadow(0 1px 2px rgb(15 23 42 / 0.28));
+}
+.gps-officer-pin.is-selected .gps-officer-svg {
+  filter: drop-shadow(0 0 0 2px #155dfc) drop-shadow(0 2px 4px rgb(15 23 42 / 0.3));
+}
+.gps-officer-heading {
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  width: 11px;
+  height: 11px;
+  transform-origin: 50% 70%;
+  pointer-events: none;
+  z-index: 2;
+}
+.gps-officer-heading svg {
+  display: block;
+}
+.gps-officer-label {
+  margin: 6px 0 0 -2px;
+  background: #1e3a8a;
+  border-radius: 8px;
+  padding: 5px 10px 6px;
+  box-shadow: 0 2px 10px rgb(15 23 42 / 0.28);
+  min-width: 0;
+  max-width: min(160px, 42vw);
+  line-height: 1.2;
+}
+.gps-officer-label strong,
+.gps-officer-label small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gps-officer-pin.is-selected .gps-officer-label {
+  box-shadow: 0 0 0 2px rgb(21 93 252 / 0.45), 0 2px 10px rgb(15 23 42 / 0.28);
+}
+.gps-officer-label strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: -0.1px;
+}
+.gps-officer-label small {
+  display: block;
+  margin-top: 1px;
+  font-size: 10px;
+  font-weight: 500;
+  color: rgb(255 255 255 / 0.82);
+}
+@media (max-width: 640px) {
+  .gps-officer-label {
+    padding: 4px 8px 5px;
+    max-width: min(132px, 46vw);
+  }
+  .gps-officer-label strong {
+    font-size: 11px;
+  }
+}
+.gps-fence-label {
+  background: rgb(21 93 252 / 0.92) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 6px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  padding: 2px 8px !important;
+  box-shadow: none !important;
+}

@@ -127,6 +127,7 @@ const ROLE_PATH_RULES: Record<RestrictedRole, PathRule> = {
       ROUTES.CARGO_DELIVERY_LOGS,
       ROUTES.INCIDENT_CREATION,
       ROUTES.GUARD_RECEPTION_PANEL,
+      ROUTES.GPS_TRACKING,
     ],
     // allow any visitors path (list, filters, details, sub-pages)
     patterns: [/^\/visitors(\/.*)?$/],
