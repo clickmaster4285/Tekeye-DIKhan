@@ -146,6 +146,7 @@ DATABASES = {
         "PASSWORD": os.getenv("DB_PASSWORD"),
         "HOST": os.getenv("DB_HOST", "localhost"),
         "PORT": os.getenv("DB_PORT", "5432"),
+        "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "0")),
     }
 }
 
@@ -204,20 +205,35 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = int(
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+def _ffmpeg_ok(path: str | Path) -> bool:
+    p = Path(path)
+    if not p.is_file():
+        return False
+    if sys.platform == "win32":
+        return True
+    return os.access(p, os.X_OK)
+
+
 def _resolve_ffmpeg_path() -> str:
     """Resolve ffmpeg: bundled (OS-specific), .env, then PATH."""
     bundled_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
     bundled = PROJECT_ROOT / "tools" / "ffmpeg" / "bin" / bundled_name
-    if bundled.is_file() and os.access(bundled, os.X_OK):
+    if _ffmpeg_ok(bundled):
         return str(bundled)
     custom = os.getenv("FFMPEG_PATH", "").strip()
-    if custom and os.path.isfile(custom):
-        if sys.platform == "win32" or not custom.lower().endswith(".exe"):
-            if os.access(custom, os.X_OK):
-                return custom
-    on_path = shutil.which("ffmpeg")
+    if custom and _ffmpeg_ok(custom):
+        return custom
+    on_path = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
     if on_path:
         return on_path
+    extras = [
+        Path(r"C:\ffmpeg\bin") / bundled_name,
+        Path(r"C:\Program Files\ffmpeg\bin") / bundled_name,
+        Path(r"C:\ProgramData\chocolatey\bin") / bundled_name,
+    ]
+    for extra in extras:
+        if _ffmpeg_ok(extra):
+            return str(extra)
     return ""
 
 
@@ -297,7 +313,12 @@ PERSON_JOURNEY_WORKER_ENABLED = os.getenv("PERSON_JOURNEY_WORKER_ENABLED", "Fals
 )
 PERSON_JOURNEY_SYNC_INTERVAL_SEC = int(os.getenv("PERSON_JOURNEY_SYNC_INTERVAL_SEC", "60"))
 PERSON_JOURNEY_BACKEND_URL = os.getenv("PERSON_JOURNEY_BACKEND_URL", "http://127.0.0.1:8000").strip()
-PERSON_JOURNEY_INGEST_TOKEN = os.getenv("PERSON_JOURNEY_INGEST_TOKEN", "").strip()
+_ingest_token = os.getenv("PERSON_JOURNEY_INGEST_TOKEN", "").strip()
+if not _ingest_token:
+    import hashlib
+
+    _ingest_token = hashlib.sha256(f"tekeye-journey-ingest:{SECRET_KEY}".encode()).hexdigest()
+PERSON_JOURNEY_INGEST_TOKEN = _ingest_token
 PERSON_JOURNEY_LIVE_INGEST_ENABLED = os.getenv("PERSON_JOURNEY_LIVE_INGEST_ENABLED", "True").lower() in (
     "true",
     "1",
@@ -305,7 +326,7 @@ PERSON_JOURNEY_LIVE_INGEST_ENABLED = os.getenv("PERSON_JOURNEY_LIVE_INGEST_ENABL
 )
 PERSON_JOURNEY_LIVE_INGEST_INTERVAL_SEC = float(os.getenv("PERSON_JOURNEY_LIVE_INGEST_INTERVAL_SEC", "2"))
 PERSON_JOURNEY_LIVE_CAMERA_REFRESH_SEC = int(os.getenv("PERSON_JOURNEY_LIVE_CAMERA_REFRESH_SEC", "60"))
-# When journey ML pipeline is on, live ingest skips unknowns by default (pipeline uses track+ReID).
+# When journey ML pipelines are ingesting, live ingest skips unknowns (pipeline uses track+ReID).
 # Leave empty for auto-detect; set True/False to force.
 PERSON_JOURNEY_LIVE_INGEST_UNKNOWN_ENABLED = os.getenv("PERSON_JOURNEY_LIVE_INGEST_UNKNOWN_ENABLED", "")
 PERSON_JOURNEY_INGEST_DEDUP_SECONDS = float(os.getenv("PERSON_JOURNEY_INGEST_DEDUP_SECONDS", "3"))

@@ -29,11 +29,19 @@ class CamerasConfig(AppConfig):
                 logger.exception("[clip-capture] Could not re-queue pending clips")
 
         try:
-            import threading
+            from config.runtime import skip_embedded_background_workers
 
-            threading.Timer(3.0, _deferred_clip_boot).start()
+            skip_workers = skip_embedded_background_workers()
         except Exception:
-            logger.exception("[clip-capture] Could not schedule pending clip re-queue")
+            skip_workers = "runserver" in sys.argv
+
+        if not skip_workers:
+            try:
+                import threading
+
+                threading.Timer(3.0, _deferred_clip_boot).start()
+            except Exception:
+                logger.exception("[clip-capture] Could not schedule pending clip re-queue")
 
         try:
             from .detection_worker import maybe_start_background_worker

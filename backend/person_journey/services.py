@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from cameras.models import Camera
 
-from .matching import find_best_match, resolve_staff_from_face_label
+from .matching import find_best_match, resolve_staff_from_face_label, resolve_visitor_from_face_label
 from .models import (
     CameraTrack,
     JourneyEvent,
@@ -159,7 +159,15 @@ def ingest_track_observation(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
     staff_id, staff_name = resolve_staff_from_face_label(face_label)
-    person_type_hint = PersonType.STAFF if staff_id else PersonType.UNKNOWN
+    visitor_id, visitor_name = (None, "")
+    if not staff_id:
+        visitor_id, visitor_name = resolve_visitor_from_face_label(face_label)
+    if staff_id:
+        person_type_hint = PersonType.STAFF
+    elif visitor_id:
+        person_type_hint = PersonType.VISITOR
+    else:
+        person_type_hint = PersonType.UNKNOWN
 
     person: JourneyPerson | None = None
     created_person = False
@@ -185,23 +193,38 @@ def ingest_track_observation(payload: dict[str, Any]) -> dict[str, Any]:
             face_embedding=face_embedding or None,
             reid_embedding=reid_embedding or None,
             camera_id=camera.pk,
-            person_type_hint=person_type_hint if not staff_id else None,
+            person_type_hint=None if staff_id or visitor_id else person_type_hint,
             staff_id=staff_id,
+            visitor_id=visitor_id,
         )
         person = match.person if match else None
 
     if person is None and staff_id:
         person = JourneyPerson.objects.filter(staff_id=staff_id, status=PersonStatus.ACTIVE).first()
+    if person is None and visitor_id:
+        person = JourneyPerson.objects.filter(visitor_id=visitor_id, status=PersonStatus.ACTIVE).first()
+        if person is None:
+            from visitors.models import Visitor
+
+            visitor = Visitor.objects.filter(pk=visitor_id).first()
+            if visitor:
+                person = register_visitor_journey_person(visitor)
 
     if person is None:
-        person_type = PersonType.STAFF if staff_id else PersonType.UNKNOWN
-        display = staff_name or face_label or f"Unknown — {track_id}"
+        if staff_id:
+            person_type = PersonType.STAFF
+        elif visitor_id:
+            person_type = PersonType.VISITOR
+        else:
+            person_type = PersonType.UNKNOWN
+        display = staff_name or visitor_name or face_label or f"Unknown — {track_id}"
         if person_type == PersonType.UNKNOWN:
             display = "Unknown"
         person = create_journey_person(
             person_type=person_type,
             display_name=display,
             staff_id=staff_id,
+            visitor_id=visitor_id or None,
             face_embedding=face_embedding or [],
             reid_embedding=reid_embedding or [],
             latest_camera=camera,
@@ -215,10 +238,20 @@ def ingest_track_observation(payload: dict[str, Any]) -> dict[str, Any]:
         created_person = True
         created_event = JourneyEvent.objects.create(
             journey_person=person,
-            event_type=JourneyEventType.UNKNOWN_CREATED
-            if person_type == PersonType.UNKNOWN
-            else JourneyEventType.STAFF_RECOGNIZED,
-            title="Unknown person created" if person_type == PersonType.UNKNOWN else f"Staff recognized: {staff_name}",
+            event_type=(
+                JourneyEventType.UNKNOWN_CREATED
+                if person_type == PersonType.UNKNOWN
+                else JourneyEventType.FACE_MATCHED
+                if person_type == PersonType.VISITOR
+                else JourneyEventType.STAFF_RECOGNIZED
+            ),
+            title=(
+                "Unknown person created"
+                if person_type == PersonType.UNKNOWN
+                else f"Visitor recognized: {visitor_name or display}"
+                if person_type == PersonType.VISITOR
+                else f"Staff recognized: {staff_name}"
+            ),
             camera=camera,
             zone=_camera_zone(camera),
             confidence=confidence,
@@ -246,6 +279,11 @@ def ingest_track_observation(payload: dict[str, Any]) -> dict[str, Any]:
             person.person_type = PersonType.STAFF
             person.display_name = staff_name or person.display_name
             updates.extend(["staff_id", "person_type", "display_name"])
+        if visitor_id and person.visitor_id is None and person.person_type != PersonType.STAFF:
+            person.visitor_id = visitor_id
+            person.person_type = PersonType.VISITOR
+            person.display_name = visitor_name or person.display_name
+            updates.extend(["visitor_id", "person_type", "display_name"])
         person.save(update_fields=list(dict.fromkeys(updates)))
 
     track = (
@@ -283,6 +321,9 @@ def ingest_track_observation(payload: dict[str, Any]) -> dict[str, Any]:
     if staff_id:
         event_type = JourneyEventType.STAFF_RECOGNIZED
         title = f"Recognized: {staff_name}"
+    elif visitor_id:
+        event_type = JourneyEventType.FACE_MATCHED
+        title = f"Visitor: {visitor_name or person.display_name}"
 
     dedup_seconds = float(getattr(settings, "PERSON_JOURNEY_INGEST_DEDUP_SECONDS", 3))
     recent_exists = JourneyEvent.objects.filter(
@@ -389,7 +430,9 @@ def merge_person_to_visitor(
     person.visitor_id = visitor.pk
     person.person_type = PersonType.VISITOR
     person.display_name = visitor.full_name
-    person.code = f"V{visitor.pk}"
+    desired = f"V{visitor.pk}"
+    taken = JourneyPerson.objects.filter(code=desired).exclude(pk=person.pk).exists()
+    person.code = desired if not taken else _next_code(PersonType.VISITOR)
     person.save(update_fields=["visitor_id", "person_type", "display_name", "code", "updated_at"])
 
     JourneyEvent.objects.create(
@@ -415,11 +458,29 @@ def register_staff_journey_person(staff) -> JourneyPerson:
     if isinstance(staff.face_embedding, list):
         face_emb = staff.face_embedding
 
-    return JourneyPerson.objects.create(
-        code=f"P{staff.pk}",
+    return create_journey_person(
         person_type=PersonType.STAFF,
         display_name=staff.full_name or "",
         staff_id=staff.pk,
         face_embedding=face_emb,
         status=PersonStatus.ACTIVE,
     )
+
+
+@transaction.atomic
+def register_visitor_journey_person(visitor) -> JourneyPerson:
+    """Ensure a registered visitor has a journey person entry (V-code)."""
+    existing = JourneyPerson.objects.filter(visitor_id=visitor.pk, status=PersonStatus.ACTIVE).first()
+    if existing:
+        return existing
+    desired = f"V{visitor.pk}"
+    taken = JourneyPerson.objects.filter(code=desired).exists()
+    fields = {
+        "person_type": PersonType.VISITOR,
+        "display_name": visitor.full_name or "",
+        "visitor_id": visitor.pk,
+        "status": PersonStatus.ACTIVE,
+    }
+    if not taken:
+        fields["code"] = desired
+    return create_journey_person(**fields)

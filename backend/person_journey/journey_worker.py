@@ -93,12 +93,16 @@ def sync_cameras_to_journey_ml() -> dict:
 def _worker_loop():
     from django.db import close_old_connections
 
+    from config.db import release_db
+
     while not _stop.is_set():
         close_old_connections()
         try:
             sync_cameras_to_journey_ml()
         except Exception:
             logger.exception("Journey sync worker iteration failed")
+        finally:
+            release_db()
         _stop.wait(_interval())
 
 

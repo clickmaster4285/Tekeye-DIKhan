@@ -1,7 +1,10 @@
+import logging
 import os
 from django.apps import AppConfig
 from django.db import OperationalError, IntegrityError
 from django.db.models.signals import post_migrate
+
+logger = logging.getLogger(__name__)
 
 
 def create_initial_admin(sender, **kwargs):
@@ -12,9 +15,16 @@ def create_initial_admin(sender, **kwargs):
         if User.objects.filter(is_superuser=True).exists():
             return
 
+        password = os.getenv("INITIAL_ADMIN_PASSWORD", "").strip()
+        if not password:
+            logger.warning(
+                "No superuser exists and INITIAL_ADMIN_PASSWORD is unset — skipping auto-create. "
+                "Set INITIAL_ADMIN_PASSWORD in backend/.env then re-run migrate, or use createsuperuser."
+            )
+            return
+
         username = os.getenv("INITIAL_ADMIN_USERNAME", "admin")
         email = os.getenv("INITIAL_ADMIN_EMAIL", "admin@example.com")
-        password = os.getenv("INITIAL_ADMIN_PASSWORD", "Admin@123")
         phone = os.getenv("INITIAL_ADMIN_PHONE", "0000000000")
 
         User.objects.create_superuser(
@@ -25,6 +35,7 @@ def create_initial_admin(sender, **kwargs):
             phone=phone,
             location=os.getenv("INITIAL_ADMIN_LOCATION", ""),
         )
+        logger.info("Created initial superuser %s", username)
     except (OperationalError, IntegrityError):
         pass
 

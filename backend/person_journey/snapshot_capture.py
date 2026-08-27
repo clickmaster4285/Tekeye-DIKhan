@@ -9,22 +9,28 @@ from collections import deque
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
-from django.db import close_old_connections, transaction
+from django.db import close_old_connections, connection, transaction
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
 _crop_queue: deque[int] = deque()
+_crop_queued: set[int] = set()
 _crop_guard = threading.Lock()
 _crop_workers = 0
-_MAX_CROP_WORKERS = 3
+_MAX_CROP_WORKERS = 2
+_MAX_CROP_QUEUE = 40
+
+
+def _release_db() -> None:
+    try:
+        connection.close()
+    except Exception:
+        pass
 
 
 def _ensure_db_connection() -> None:
     close_old_connections()
-    from django.db import connection
-
-    connection.ensure_connection()
 
 
 def _journey_jpeg_quality() -> int:
@@ -151,16 +157,19 @@ def capture_journey_crop_sync(journey_event_id: int) -> str:
             detection = DetectionEvent.objects.filter(pk=journey_event.detection_event_id).first()
 
         camera = journey_event.camera
+        bbox = journey_event.bbox or (detection.bbox if detection else []) or []
+        person_label = _person_label(journey_event)
+        confidence = journey_event.confidence
+        camera_name = (camera.name or camera.zone or "").strip() if camera else ""
+        journey_person = journey_event.journey_person
+        _release_db()
+
         frame = read_journey_hd_frame(camera)
         if frame is None:
             return ""
 
         h, w = frame.shape[:2]
-        bbox = journey_event.bbox or (detection.bbox if detection else []) or []
         crop_box = _resolve_crop_box(bbox, w, h, camera, detection)
-        person_label = _person_label(journey_event)
-        confidence = journey_event.confidence
-        camera_name = (camera.name or camera.zone or "").strip() if camera else ""
 
         if _journey_full_frame():
             output = draw_journey_snapshot_on_frame(
@@ -197,10 +206,12 @@ def capture_journey_crop_sync(journey_event_id: int) -> str:
                 )
                 if ok_crop and crop_encoded is not None:
                     update_person_embeddings_from_crop(
-                        journey_event.journey_person, crop_encoded.tobytes()
+                        journey_person or journey_event.journey_person, crop_encoded.tobytes()
                     )
             else:
-                update_person_embeddings_from_crop(journey_event.journey_person, jpeg_bytes)
+                update_person_embeddings_from_crop(
+                    journey_person or journey_event.journey_person, jpeg_bytes
+                )
 
         logger.info(
             "Saved journey snapshot for event %s (%s, %sx%s)",
@@ -214,7 +225,7 @@ def capture_journey_crop_sync(journey_event_id: int) -> str:
         logger.exception("Journey snapshot capture failed for event %s", journey_event_id)
         return ""
     finally:
-        close_old_connections()
+        _release_db()
 
 
 def _process_crop_queue() -> None:
@@ -225,22 +236,38 @@ def _process_crop_queue() -> None:
                 _crop_workers -= 1
                 return
             journey_event_id = _crop_queue.popleft()
-        capture_journey_crop_sync(journey_event_id)
+            _crop_queued.discard(journey_event_id)
+        try:
+            capture_journey_crop_sync(journey_event_id)
+        except Exception:
+            logger.exception("Journey snapshot worker failed for event %s", journey_event_id)
+        finally:
+            _release_db()
 
 
 def _enqueue_journey_crop(journey_event_id: int) -> None:
     global _crop_workers
+    dropped = None
+    spawn = False
     with _crop_guard:
-        if journey_event_id in _crop_queue:
+        if journey_event_id in _crop_queued:
             return
+        if len(_crop_queue) >= _MAX_CROP_QUEUE:
+            dropped = _crop_queue.popleft()
+            _crop_queued.discard(dropped)
         _crop_queue.append(journey_event_id)
-        if _crop_workers < _MAX_CROP_WORKERS:
+        _crop_queued.add(journey_event_id)
+        spawn = _crop_workers < _MAX_CROP_WORKERS
+        if spawn:
             _crop_workers += 1
-            threading.Thread(
-                target=_process_crop_queue,
-                daemon=True,
-                name="journey-snapshot-worker",
-            ).start()
+    if dropped:
+        logger.warning("Journey snapshot queue full; dropped event %s", dropped)
+    if spawn:
+        threading.Thread(
+            target=_process_crop_queue,
+            daemon=True,
+            name="journey-snapshot-worker",
+        ).start()
 
 
 def capture_and_attach_snapshot_sync(

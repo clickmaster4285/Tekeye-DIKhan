@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { clearAuth, getStoredUser, isAuthenticated, AUTH_USER_UPDATED_EVENT } from "@/lib/auth"
+import { queryClient } from "@/lib/query-client"
 import { clearLegacyVmsLocalStorage } from "@/lib/vms-list-api"
 import { getRoleDisplayLabel } from "@/lib/role-access"
 import { isGlobalAdmin } from "@/lib/location-access"
@@ -70,6 +71,7 @@ export const Header = memo(function Header({ onMenuClick }: HeaderProps) {
 
   const handleLogout = () => {
     clearAuth()
+    queryClient.clear()
     clearLegacyVmsLocalStorage()
     navigate(ROUTES.LOGIN, { replace: true })
   }

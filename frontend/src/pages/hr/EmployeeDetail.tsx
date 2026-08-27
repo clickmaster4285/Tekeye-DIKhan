@@ -6,9 +6,9 @@ import {
   downloadStaffDocument,
   deleteStaff,
   resolveStaffPhotoGallery,
+  resolveStaffProfileImageUrl,
   type StaffRecord,
 } from "@/lib/staff-api"
-import { API_BASE_URL } from "@/lib/api"
 import { ROUTES } from "@/routes/config"
 import { useToast } from "@/hooks/use-toast"
 import { Button } from "@/components/ui/button"
@@ -41,11 +41,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 
 /** Build full URL for a document path returned by the API */
 function documentUrl(path: string | null | undefined): string | null {
-  if (!path || !String(path).trim()) return null
-  const p = String(path).trim()
-  if (p.startsWith("http")) return p
-  const base = API_BASE_URL.replace(/\/$/, "")
-  return p.startsWith("/") ? `${base}${p}` : `${base}/media/${p}`
+  return resolveStaffProfileImageUrl(path) ?? null
 }
 
 const IMAGE_EXT = /\.(jpe?g|png|gif|webp|bmp)$/i

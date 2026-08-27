@@ -1,5 +1,5 @@
 import React, { useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { useNavigate, useSearchParams } from "react-router-dom"
 import { Lock, User, Eye, EyeOff, Info, CheckCircle2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -13,13 +13,15 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { setAuthenticatedWithToken } from "@/lib/auth"
+import { setAuthenticatedWithToken, goToSafeMediaNext } from "@/lib/auth"
+import { queryClient } from "@/lib/query-client"
 import { login } from "@/lib/auth-api"
 import { getHomeRouteForRole } from "@/lib/role-access"
 import { clearLegacyVmsLocalStorage } from "@/lib/vms-list-api"
 
 export default function LoginPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
@@ -32,9 +34,12 @@ export default function LoginPage() {
     setIsLoading(true)
     try {
       const { token, user } = await login(username.trim(), password)
+      queryClient.clear()
       clearLegacyVmsLocalStorage()
       setAuthenticatedWithToken(token, user)
-      navigate(getHomeRouteForRole(user.role, user.allowed_modules), { replace: true })
+      if (!goToSafeMediaNext(searchParams.get("next"))) {
+        navigate(getHomeRouteForRole(user.role, user.allowed_modules), { replace: true })
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Invalid username or password.")
     } finally {

@@ -4,10 +4,10 @@ URL configuration for config project.
 The `urlpatterns` list routes URLs to views. For more information please see:
     https://docs.djangoproject.com/en/6.0/topics/http/urls/
 """
-from django.conf import settings
-from django.conf.urls.static import static
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import include, path, re_path
+
+from config.media_views import protected_media
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -23,8 +23,6 @@ urlpatterns = [
     path("api/", include("object_tracking.urls")),
     path("api/recognition/", include("recognition.urls")),
     path("api/", include("ops_central.urls")),
+    # Detection clips, staff photos, attendance video, etc. — login required.
+    re_path(r"^media/(?P<path>.*)$", protected_media, name="protected_media"),
 ]
-
-# Serve uploaded media files in development (e.g. /media/staff_docs/CRM.docx)
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

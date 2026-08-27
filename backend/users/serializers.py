@@ -273,18 +273,22 @@ _STAFF_FACE_PRIVATE_FIELDS = (
 )
 
 
-def staff_photo_urls_for(staff, request) -> list[str]:
+def staff_photo_urls_for(staff, request=None) -> list[str]:
+    """Same-origin /media/ paths so Vite/nginx can proxy with the auth cookie."""
     from django.conf import settings
 
-    from .staff_photos import staff_photo_paths
+    from .staff_photos import staff_display_photo_paths
 
-    urls: list[str] = []
-    for path in staff_photo_paths(staff):
-        if request is not None:
-            urls.append(request.build_absolute_uri(settings.MEDIA_URL + path))
-        else:
-            urls.append(settings.MEDIA_URL + path)
-    return urls
+    prefix = settings.MEDIA_URL if str(settings.MEDIA_URL).endswith("/") else f"{settings.MEDIA_URL}/"
+    return [f"{prefix}{path.lstrip('/')}" for path in staff_display_photo_paths(staff)]
+
+
+def _apply_staff_photo_urls(data: dict, instance) -> dict:
+    urls = staff_photo_urls_for(instance)
+    data["staff_photo_urls"] = urls
+    if urls:
+        data["profile_image"] = urls[0]
+    return data
 
 
 # -----------------------------
@@ -301,8 +305,7 @@ class StaffSerializer(serializers.ModelSerializer):
         read_only_fields = ["created_at", "staff_photos", *_STAFF_FACE_PRIVATE_FIELDS]
 
     def get_staff_photo_urls(self, obj):
-        request = self.context.get("request")
-        return staff_photo_urls_for(obj, request)
+        return staff_photo_urls_for(obj)
 
     def get_national_id(self, obj):
         return getattr(obj, "national_id", None) or obj.cnic
@@ -321,7 +324,7 @@ class StaffSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        data["staff_photo_urls"] = staff_photo_urls_for(instance, self.context.get("request"))
+        _apply_staff_photo_urls(data, instance)
         for key in _STAFF_FACE_PRIVATE_FIELDS:
             data.pop(key, None)
         return data
@@ -386,7 +389,7 @@ class StaffCreateSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data["national_id"] = getattr(instance, "national_id", None) or instance.cnic
-        data["staff_photo_urls"] = staff_photo_urls_for(instance, self.context.get("request"))
+        _apply_staff_photo_urls(data, instance)
         for key in ("first_name", "last_name", "street_address", "emergency_contact_phone", "emergency_contact_name", "date_of_joining"):
             data.pop(key, None)
         for key in _STAFF_FACE_PRIVATE_FIELDS:
@@ -479,7 +482,7 @@ class StaffUpdateSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        data["staff_photo_urls"] = staff_photo_urls_for(instance, self.context.get("request"))
+        _apply_staff_photo_urls(data, instance)
         for key in _STAFF_FACE_PRIVATE_FIELDS:
             data.pop(key, None)
         return data
@@ -533,7 +536,7 @@ class StaffListSerializer(serializers.ModelSerializer):
             return obj.cnic
 
     def get_staff_photo_urls(self, obj):
-        return staff_photo_urls_for(obj, self.context.get("request"))
+        return staff_photo_urls_for(obj)
 
     def get_face_enrolled(self, obj):
         embeddings = getattr(obj, "face_embeddings", None)
@@ -543,6 +546,11 @@ class StaffListSerializer(serializers.ModelSerializer):
             return False
         emb = obj.face_embedding
         return isinstance(emb, list) and len(emb) > 0
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        _apply_staff_photo_urls(data, instance)
+        return data
 
 
 # -----------------------------

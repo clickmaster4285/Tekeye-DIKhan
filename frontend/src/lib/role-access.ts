@@ -72,6 +72,19 @@ export function isHrRole(role: string | undefined | null): boolean {
   return normalizeRole(role) === "HR"
 }
 
+/** Collectorate officers — full app nav, location-scoped in APIs. Not Super Admin. */
+const SITE_FULL_ACCESS_ROLES = new Set([
+  "LOCATION_ADMIN",
+  "OPERATION_MANAGER",
+  "COLLECTOR",
+  "DEPUTY_COLLECTOR",
+  "ASSISTANT_COLLECTOR",
+])
+
+export function isSiteFullAccessRole(role: string | undefined | null): boolean {
+  return SITE_FULL_ACCESS_ROLES.has(normalizeRole(role))
+}
+
 type PathRule = { exact: string[]; patterns: RegExp[] }
 
 const ROLE_PATH_RULES: Record<RestrictedRole, PathRule> = {
@@ -113,6 +126,7 @@ const ROLE_PATH_RULES: Record<RestrictedRole, PathRule> = {
       ROUTES.CONTRACTOR_PASSES,
       ROUTES.CARGO_DELIVERY_LOGS,
       ROUTES.INCIDENT_CREATION,
+      ROUTES.GUARD_RECEPTION_PANEL,
     ],
     // allow any visitors path (list, filters, details, sub-pages)
     patterns: [/^\/visitors(\/.*)?$/],
@@ -502,6 +516,11 @@ export function isPathAllowedForRole(
   const modules = (allowedModules ?? []).map((m) => m.trim()).filter(Boolean)
   const restricted = getRestrictedRole(role)
 
+  if (isSiteFullAccessRole(role)) {
+    if (path === ROUTES.OPS_CENTRAL || path.startsWith(`${ROUTES.OPS_CENTRAL}/`)) return false
+    return true
+  }
+
   // Main `/` dashboard: Super Admin only (handled above). Restricted / granted users
   // go to their module home. Unconfigured users (no template, no grants) may use `/`
   // until Super Admin assigns modules.
@@ -546,6 +565,7 @@ export function getHomeRouteForRole(
   const normalized = normalizeRole(role)
   if (normalized === "ADMIN") return ROUTES.DASHBOARD
   if (normalized === "IT_SUPERADMIN") return ROUTES.OPS_CENTRAL
+  if (isSiteFullAccessRole(role)) return ROUTES.DASHBOARD
 
   const modules = (allowedModules ?? []).map((m) => m.trim()).filter(Boolean)
   if (modules.length > 0) {

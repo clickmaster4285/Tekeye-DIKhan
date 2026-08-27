@@ -37,7 +37,17 @@ def _schedule_ml_camera_sync() -> None:
 @receiver(post_save, sender=Camera)
 def camera_saved_sync_ml(sender, instance: Camera, created: bool = False, **kwargs) -> None:
     _schedule_ml_camera_sync()
-    # Auto-start / sync InsightFace attendance worker for this camera
+    try:
+        from config.runtime import skip_embedded_background_workers
+
+        if skip_embedded_background_workers():
+            return
+    except Exception:
+        import sys
+
+        if "runserver" in sys.argv:
+            return
+    # Auto-start / sync InsightFace attendance worker for this camera (WSGI / worker process only)
     try:
         from recognition.services.attendance_cameras import sync_camera_attendance_worker
 

@@ -37,7 +37,7 @@ CAMERA_PURPOSE_OPTIONS: tuple[CameraPurpose, ...] = (
     CameraPurpose.ANPR,
 )
 
-DEFAULT_CAMERA_PURPOSES: list[str] = [c.value for c in CAMERA_PURPOSE_OPTIONS]
+DEFAULT_CAMERA_PURPOSES: list[str] = [CameraPurpose.GENERAL_OBJECTS]
 
 
 class CameraType(models.TextChoices):

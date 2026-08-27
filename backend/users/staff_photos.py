@@ -38,6 +38,51 @@ def staff_photo_paths(staff: Staff) -> list[str]:
     return []
 
 
+def _media_file_exists(path: str) -> bool:
+    norm = _normalize_path(path)
+    return bool(norm) and default_storage.exists(norm)
+
+
+def staff_display_photo_paths(staff: Staff) -> list[str]:
+    """Paths that actually exist on disk (HR photos, then face-enrollment images)."""
+    seen: set[str] = set()
+    existing: list[str] = []
+
+    def _add(path: str) -> None:
+        norm = _normalize_path(path)
+        if not norm or norm in seen or not _media_file_exists(norm):
+            return
+        seen.add(norm)
+        existing.append(norm)
+
+    for path in staff_photo_paths(staff):
+        _add(path)
+
+    from django.core.exceptions import ObjectDoesNotExist
+
+    try:
+        enrollment = staff.face_enrollment
+    except ObjectDoesNotExist:
+        enrollment = None
+    except Exception:
+        enrollment = None
+
+    if enrollment is not None:
+        if enrollment.profile_image:
+            _add(str(enrollment.profile_image.name or ""))
+        folder = _normalize_path(enrollment.dataset_folder or "")
+        if folder and default_storage.exists(folder):
+            try:
+                _dirs, files = default_storage.listdir(folder)
+            except OSError:
+                files = []
+            for name in sorted(files):
+                if Path(name).suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+                    _add(f"{folder}/{name}")
+
+    return existing
+
+
 def _unique_staff_path(original_name: str) -> str:
     ext = Path(original_name or "photo.jpg").suffix.lower()
     if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:

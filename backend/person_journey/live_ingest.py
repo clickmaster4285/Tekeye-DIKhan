@@ -17,7 +17,7 @@ from .bridge_detection import (
     _resolve_person_from_detection,
     record_journey_sighting,
 )
-from .matching import resolve_staff_from_face_label
+from .matching import resolve_staff_from_face_label, resolve_visitor_from_face_label
 from .models import JourneyEvent, JourneyPerson, PersonStatus, PersonType
 from .unknown_resolution import live_ingest_unknowns_enabled, resolve_unknown_person
 
@@ -27,9 +27,32 @@ _MIN_CONFIDENCE = 0.30
 _EVENT_DEDUP_SECONDS = 4
 
 
+def _is_unidentified_person(label: str, class_name: str, employee_name: str = "") -> bool:
+    """True when this is a person/face with no enrolled staff identity (never attendance)."""
+    emp = (employee_name or "").strip().lower()
+    if emp and emp not in _GENERIC_LABELS and not emp.startswith("unknown"):
+        return False
+    lbl = (label or "").strip().lower()
+    cls = (class_name or "").strip().lower()
+    if lbl.startswith("unknown"):
+        return True
+    if lbl.startswith(("gp", "go", "gv")) and lbl[2:].isdigit():
+        return True
+    if lbl.startswith("t") and lbl[1:].isdigit():
+        return True
+    if lbl in _GENERIC_LABELS and cls in ("person", "face", ""):
+        return True
+    if cls in ("person", "face") and (not lbl or lbl in _GENERIC_LABELS):
+        return True
+    return False
+
+
 def _filter_person_detections(detections: list[dict]) -> list[dict]:
     kept: list[dict] = []
     for det in detections or []:
+        object_type = str(det.get("object_type") or "").strip().lower()
+        if object_type in ("vehicle", "object"):
+            continue
         label = str(det.get("label") or det.get("class_name") or "").strip()
         class_name = str(det.get("class_name") or label or "object").strip()
         try:
@@ -82,7 +105,7 @@ def ingest_camera_detections(camera, detections: list[dict]) -> int:
         confidence = det["confidence"]
         employee_name = det.get("employee_name") or ""
         personal_number = det.get("personal_number") or ""
-        is_generic_unknown = (label or "").lower() in _GENERIC_LABELS
+        is_generic_unknown = _is_unidentified_person(label, class_name, employee_name)
 
         if is_generic_unknown and not unknowns_enabled:
             continue
@@ -105,6 +128,9 @@ def ingest_camera_detections(camera, detections: list[dict]) -> int:
         )
 
         staff_id, staff_name = resolve_staff_from_face_label(employee_name or label)
+        visitor_id, visitor_name = (None, "")
+        if not staff_id:
+            visitor_id, visitor_name = resolve_visitor_from_face_label(employee_name or label)
         if not staff_id and personal_number:
             from users.models import Staff
 
@@ -115,6 +141,24 @@ def ingest_camera_detections(camera, detections: list[dict]) -> int:
 
         if staff_id:
             person, created = _resolve_person_from_detection(proxy)
+        elif visitor_id:
+            from .services import register_visitor_journey_person
+            from visitors.models import Visitor
+
+            visitor = Visitor.objects.filter(pk=visitor_id).first()
+            person = (
+                register_visitor_journey_person(visitor)
+                if visitor
+                else JourneyPerson.objects.filter(
+                    visitor_id=visitor_id, status=PersonStatus.ACTIVE
+                ).first()
+            )
+            created = False
+            if person is None:
+                continue
+            if visitor_name and person.display_name != visitor_name:
+                person.display_name = visitor_name
+                person.save(update_fields=["display_name", "updated_at"])
         elif is_generic_unknown:
             person, created = resolve_unknown_person(
                 camera=camera,

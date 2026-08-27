@@ -21,9 +21,8 @@ class MlConfig(AppConfig):
 
         def _deferred_face_reload() -> None:
             try:
-                close_old_connections = __import__(
-                    "django.db", fromlist=["close_old_connections"]
-                ).close_old_connections
+                from django.db import close_old_connections
+
                 close_old_connections()
                 from .face_sync import enroll_missing_staff_faces, push_face_embeddings_to_ml
 
@@ -42,6 +41,19 @@ class MlConfig(AppConfig):
                 sync_cameras_to_ml()
             except Exception:
                 logger.exception("[face-sync] Could not push face embeddings to ML")
+            finally:
+                from config.db import release_db
+
+                release_db()
+
+        try:
+            from config.runtime import skip_embedded_background_workers
+
+            if skip_embedded_background_workers() and "run_background_workers" not in sys.argv:
+                return
+        except Exception:
+            if "runserver" in sys.argv:
+                return
 
         try:
             threading.Timer(5.0, _deferred_face_reload).start()

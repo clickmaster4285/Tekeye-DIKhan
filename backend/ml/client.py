@@ -241,6 +241,38 @@ def ml_live_mjpeg_raw_url(stream_key: str, rtsp_url: str | None = None) -> str:
     return f"{base}?{urlencode(params)}"
 
 
+def ml_live_jpeg_url(stream_key: str, rtsp_url: str | None = None) -> str:
+    key = (stream_key or "").strip()
+    base = f"{_base_url()}/live/cam/{key}/jpeg"
+    params = _live_rtsp_params(rtsp_url)
+    if not params:
+        return base
+    return f"{base}?{urlencode(params)}"
+
+
+def ml_live_jpeg_raw_url(stream_key: str, rtsp_url: str | None = None) -> str:
+    """Single-frame raw JPEG (use this for snapshots; do not hang on MJPEG)."""
+    key = (stream_key or "").strip()
+    base = f"{_base_url()}/live/cam/{key}/jpeg/raw"
+    params = _live_rtsp_params(rtsp_url)
+    if not params:
+        return base
+    return f"{base}?{urlencode(params)}"
+
+
+def ml_live_jpeg_attendance_url(
+    stream_key: str,
+    rtsp_url: str | None = None,
+    *,
+    width: int = 1280,
+) -> str:
+    key = (stream_key or "").strip()
+    base = f"{_base_url()}/live/cam/{key}/jpeg/attendance"
+    params = dict(_live_rtsp_params(rtsp_url))
+    params["width"] = str(max(640, min(4096, int(width or 3840))))
+    return f"{base}?{urlencode(params)}"
+
+
 def ml_live_mjpeg_attendance_url(
     stream_key: str,
     rtsp_url: str | None = None,

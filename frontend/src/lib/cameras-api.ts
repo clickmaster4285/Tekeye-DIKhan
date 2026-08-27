@@ -228,15 +228,17 @@ export function getMlLiveMultipartUrl(
 ): string | null {
   const direct = (camera.ml_live_stream_url || "").trim()
   const streamKey = (camera.ml_stream_key || "").trim()
-  const route = streamKey || `cam-${camera.id}`
+  const route = streamKey || (camera.id ? `cam-${camera.id}` : "")
   let url = ""
-  if (direct.startsWith("/ml/")) {
+  if (direct.startsWith("/ml/") || /^https?:\/\//i.test(direct)) {
     if (direct.endsWith("/jpeg")) url = `${direct.slice(0, -"/jpeg".length)}/mjpeg`
     else if (direct.includes("/jpeg")) url = direct.replace(/\/jpeg(\/|$)/, "/mjpeg$1")
     else if (direct.includes("/mjpeg")) url = direct
     else url = direct
-  } else {
+  } else if (streamKey || direct) {
     url = `/ml/live/cam/${encodeURIComponent(route)}/mjpeg`
+  } else {
+    return null
   }
 
   // Always attach purposes so ML gates models even if Django URL is stale

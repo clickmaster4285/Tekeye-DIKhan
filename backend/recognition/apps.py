@@ -1,4 +1,3 @@
-import os
 import sys
 
 from django.apps import AppConfig
@@ -15,16 +14,11 @@ class RecognitionConfig(AppConfig):
             return
 
         # Skip management commands (migrate, shell, test, ...) — only start
-        # with a real server process.
+        # with a real server process. runserver stays HTTP-only; CCTV boots
+        # from `run_background_workers` instead.
         argv = " ".join(sys.argv).lower()
-        is_runserver = "runserver" in argv
         is_wsgi_server = any(k in argv for k in ("gunicorn", "daphne", "uvicorn", "waitress"))
-        if not (is_runserver or is_wsgi_server):
-            return
-
-        # Under runserver the autoreloader spawns two processes; only the
-        # child with RUN_MAIN=true serves requests.
-        if is_runserver and os.environ.get("RUN_MAIN") != "true":
+        if "runserver" in argv or not is_wsgi_server:
             return
 
         from recognition.services.autostart import schedule_autostart

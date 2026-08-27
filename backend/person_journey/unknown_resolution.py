@@ -68,7 +68,7 @@ def journey_pipeline_handles_unknowns() -> bool:
 
 
 def journey_pipeline_active() -> bool:
-    """True when ML journey API is reachable (ByteTrack+ReID pipelines running)."""
+    """True only when ML journey pipelines are actually ingesting tracks (not merely reachable)."""
     if not journey_pipeline_handles_unknowns():
         return False
     try:
@@ -77,7 +77,12 @@ def journey_pipeline_active() -> bool:
         if not ml_service_enabled():
             return False
         res = _request("GET", "/journey/status", timeout=(1.0, 2.0))
-        return res.status_code == 200
+        if res.status_code != 200:
+            return False
+        data = res.json() if res.content else {}
+        pipelines = int(data.get("running_pipelines") or 0)
+        ingest_url = str(data.get("ingest_url") or "").strip()
+        return pipelines > 0 and bool(ingest_url)
     except Exception:
         return False
 
