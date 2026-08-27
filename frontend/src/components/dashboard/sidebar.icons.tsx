@@ -23,6 +23,7 @@ import {
   ListChecks,
   ListOrdered,
   Lock,
+  MapPin,
   Monitor,
   Package,
   Play,
@@ -63,6 +64,7 @@ const PRIMARY_MENU_ICONS: Record<string, SidebarIconComponent> = {
   "Human Resource Management System": Users,
   "System Configuration": Cog,
   "Central Ops": Server,
+  "GPS Tracking": MapPin,
 }
 
 const EXPLICIT_SUBMENU_ICONS: Record<string, SidebarIconComponent> = {
@@ -123,6 +125,8 @@ const EXPLICIT_SUBMENU_ICONS: Record<string, SidebarIconComponent> = {
   "Playback & Search": Play,
   "Thermal Imaging": Thermometer,
   "Camera Management": Camera,
+  "Person Journey": MapPin,
+  "GPS Tracking": MapPin,
   "Alerts & Notifications": Bell,
   "Incident Management": FolderOpen,
   "People Database": Users,
