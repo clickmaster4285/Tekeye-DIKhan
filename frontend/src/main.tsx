@@ -6,6 +6,7 @@ import { registerSW } from "virtual:pwa-register"
 import { router } from "./routes"
 import { queryClient } from "@/lib/query-client"
 import { AUTH_SESSION_EXPIRED_EVENT, handleSessionExpired } from "@/lib/auth"
+import { stopOfficerGpsTracking } from "@/lib/officer-gps-session"
 import "./index.css"
 
 // Production SW can linger and break live MJPEG (/ml multipart). Keep SW off in dev
@@ -40,6 +41,7 @@ void setupServiceWorker()
 
 window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, () => {
   queryClient.clear()
+  void stopOfficerGpsTracking({ endDuty: false })
 })
 
 const originalFetch = window.fetch.bind(window)

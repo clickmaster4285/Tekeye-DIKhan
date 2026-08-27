@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from "vite"
 import react from "@vitejs/plugin-react"
+import basicSsl from "@vitejs/plugin-basic-ssl"
 import { VitePWA } from "vite-plugin-pwa"
 import * as path from "path"
 import * as fs from "fs"
@@ -38,6 +39,7 @@ export default defineConfig(({ mode }) => {
     publicDir: path.join(projectRoot, "public"),
     plugins: [
       ensureDistIconPlugin(),
+      basicSsl(),
       react(),
       VitePWA({
         registerType: "autoUpdate",
@@ -111,6 +113,7 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 3000,
+      host: true,
       ...(useDevProxy
         ? {
             proxy: {
@@ -142,6 +145,7 @@ export default defineConfig(({ mode }) => {
     },
     preview: {
       port: 3000,
+      host: true,
     },
   }
 })
