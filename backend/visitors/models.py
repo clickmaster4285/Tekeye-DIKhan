@@ -291,6 +291,34 @@ class Visitor(models.Model):
         return f"{self.full_name} ({self.cnic_number or self.passport_number})"
 
 
+class VisitorFace(models.Model):
+    """InsightFace embedding for a registered visitor. Separate from staff attendance."""
+
+    visitor = models.ForeignKey(
+        Visitor,
+        on_delete=models.CASCADE,
+        related_name="faces",
+    )
+    image = models.ImageField(upload_to="visitor_faces/%Y/%m/%d/", blank=True)
+    embedding = models.JSONField(default=list, blank=True)
+    quality_score = models.FloatField(default=0.0)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [
+            models.Index(fields=["visitor", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"VisitorFace visitor={self.visitor_id} active={self.is_active}"
+
+    @property
+    def gallery_key(self) -> str:
+        return f"visitor-{self.visitor_id}"
+
+
 class ZoneAccessLog(models.Model):
     """
     Logs every zone/gate scan (QR scan at zone). Used for zone access check

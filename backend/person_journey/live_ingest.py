@@ -17,7 +17,7 @@ from .bridge_detection import (
     _resolve_person_from_detection,
     record_journey_sighting,
 )
-from .matching import resolve_staff_from_face_label, resolve_visitor_from_face_label
+from .matching import resolve_staff_from_face_label, resolve_visitor_from_embedding, resolve_visitor_from_face_label
 from .models import JourneyEvent, JourneyPerson, PersonStatus, PersonType
 from .unknown_resolution import live_ingest_unknowns_enabled, resolve_unknown_person
 
@@ -130,6 +130,10 @@ def ingest_camera_detections(camera, detections: list[dict]) -> int:
         staff_id, staff_name = resolve_staff_from_face_label(employee_name or label)
         visitor_id, visitor_name = (None, "")
         if not staff_id:
+            face_emb = det.get("face_embedding") or None
+            if face_emb:
+                visitor_id, visitor_name, _conf = resolve_visitor_from_embedding(face_emb)
+        if not staff_id and not visitor_id:
             visitor_id, visitor_name = resolve_visitor_from_face_label(employee_name or label)
         if not staff_id and personal_number:
             from users.models import Staff

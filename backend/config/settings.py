@@ -286,6 +286,12 @@ ATTENDANCE_CCTV_AUTOSTART = os.getenv("ATTENDANCE_CCTV_AUTOSTART", "True").lower
 ATTENDANCE_INSIGHTFACE_MODEL = os.getenv("ATTENDANCE_INSIGHTFACE_MODEL", "buffalo_l")
 # Comma-separated ONNX providers override, e.g. "CPUExecutionProvider" or "DmlExecutionProvider,CPUExecutionProvider"
 ATTENDANCE_ONNX_PROVIDERS = os.getenv("ATTENDANCE_ONNX_PROVIDERS", "")
+# Visitor Identity gallery — separate from staff attendance. Never punches attendance.
+VISITOR_MIN_ENROLLMENT_IMAGES = int(os.getenv("VISITOR_MIN_ENROLLMENT_IMAGES", "3"))
+VISITOR_MAX_ENROLLMENT_IMAGES = int(os.getenv("VISITOR_MAX_ENROLLMENT_IMAGES", "5"))
+VISITOR_FACE_SIMILARITY_THRESHOLD = float(os.getenv("VISITOR_FACE_SIMILARITY_THRESHOLD", "0.42"))
+VISITOR_GALLERY_CACHE_SECONDS = int(os.getenv("VISITOR_GALLERY_CACHE_SECONDS", "30"))
+
 ATTENDANCE_MARK_ON_FACE_RECOGNITION_CAMERAS = os.getenv(
     "ATTENDANCE_MARK_ON_FACE_RECOGNITION_CAMERAS", "True"
 ).lower() in ("true", "1", "yes")

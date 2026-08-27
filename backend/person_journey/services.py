@@ -12,7 +12,12 @@ from django.utils import timezone
 
 from cameras.models import Camera
 
-from .matching import find_best_match, resolve_staff_from_face_label, resolve_visitor_from_face_label
+from .matching import (
+    find_best_match,
+    resolve_staff_from_face_label,
+    resolve_visitor_from_embedding,
+    resolve_visitor_from_face_label,
+)
 from .models import (
     CameraTrack,
     JourneyEvent,
@@ -160,7 +165,9 @@ def ingest_track_observation(payload: dict[str, Any]) -> dict[str, Any]:
 
     staff_id, staff_name = resolve_staff_from_face_label(face_label)
     visitor_id, visitor_name = (None, "")
-    if not staff_id:
+    if not staff_id and face_embedding:
+        visitor_id, visitor_name, _conf = resolve_visitor_from_embedding(face_embedding)
+    if not staff_id and not visitor_id:
         visitor_id, visitor_name = resolve_visitor_from_face_label(face_label)
     if staff_id:
         person_type_hint = PersonType.STAFF

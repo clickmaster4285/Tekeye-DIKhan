@@ -1,6 +1,7 @@
 from django.contrib import admin
 from .models import (
     Visitor,
+    VisitorFace,
     ZoneAccessLog,
     SecurityAlert,
     Vehicle,
@@ -22,6 +23,13 @@ class VisitorAdmin(admin.ModelAdmin):
     )
     list_filter = ("flow_stage", "visitor_type", "registration_source", "approval_status")
     search_fields = ("full_name", "cnic_number", "passport_number", "qr_code_id")
+
+
+@admin.register(VisitorFace)
+class VisitorFaceAdmin(admin.ModelAdmin):
+    list_display = ("id", "visitor", "quality_score", "is_active", "created_at")
+    list_filter = ("is_active",)
+    search_fields = ("visitor__full_name", "visitor__cnic_number")
 
 
 @admin.register(ZoneAccessLog)

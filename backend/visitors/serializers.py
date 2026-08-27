@@ -15,6 +15,8 @@ class VisitorSerializer(serializers.ModelSerializer):
     """Full visitor schema for API responses."""
 
     created_by = serializers.SerializerMethodField()
+    face_count = serializers.SerializerMethodField()
+    face_enrolled = serializers.SerializerMethodField()
 
     class Meta:
         model = Visitor
@@ -108,6 +110,8 @@ class VisitorSerializer(serializers.ModelSerializer):
             "registered_by_user_id",
             "registered_by_username",
             "created_by",
+            "face_count",
+            "face_enrolled",
             "profile_image",
             "guard_entry_time",
             "guard_name",
@@ -154,6 +158,19 @@ class VisitorSerializer(serializers.ModelSerializer):
     def get_created_by(self, obj):
         label = visitor_created_by_label(obj)
         return label or None
+
+    def get_face_count(self, obj):
+        count = getattr(obj, "face_count", None)
+        if count is not None:
+            return int(count)
+        from .face_gallery import active_face_count
+
+        return active_face_count(obj)
+
+    def get_face_enrolled(self, obj):
+        from .face_gallery import visitor_is_enrolled
+
+        return visitor_is_enrolled(obj, self.get_face_count(obj))
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

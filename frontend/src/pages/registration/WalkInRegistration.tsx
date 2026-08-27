@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useToast } from "@/hooks/use-toast"
 import { createVisitor, fetchVisitors, getVisitor, deleteVisitor, getErrorToastMessage, getVisitorCreatedBy, saveDraftToStore, updateVisitor, type VisitorRecord } from "@/lib/visitor-api"
+import { enrollVisitorPhotosBestEffort } from "@/lib/visitor-face-api"
 import { getVisitorPhotoUrl } from "@/lib/image-match"
 import { buildVisitorQrPayload, validateGroupVisit } from "@/components/walk-in/group-member"
 import { useAccessZones } from "@/hooks/use-access-zones"
@@ -464,6 +465,7 @@ export default function WalkInRegistrationPage() {
   const createVisitorMutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) => createVisitor(payload, "walk-in"),
     onSuccess: async (data) => {
+      void enrollVisitorPhotosBestEffort(data.id, formData.visitorPhotos ?? [])
       await queryClient.invalidateQueries({ queryKey: ["visitors", "walk-in"] })
       toast({
         title: "Walk-In Registration saved",
@@ -523,6 +525,7 @@ export default function WalkInRegistrationPage() {
           toast({ title: "Update failed", variant: "destructive" })
           return
         }
+        void enrollVisitorPhotosBestEffort(updated.id, formData.visitorPhotos ?? [])
         await queryClient.invalidateQueries({ queryKey: ["visitors", "walk-in"] })
         toast({ title: "Registration sent", description: "Draft has been submitted and status updated." })
         setShowForm(false)
