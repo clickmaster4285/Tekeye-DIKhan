@@ -344,6 +344,8 @@ JOURNEY_RECENT_WINDOW_SECONDS = int(os.getenv("JOURNEY_RECENT_WINDOW_SECONDS", "
 # 3840 = 4K width cap; 0 = native camera resolution (no ffmpeg scale). Prefer native RTSP main stream.
 JOURNEY_SNAPSHOT_WIDTH = int(os.getenv("JOURNEY_SNAPSHOT_WIDTH", "3840"))
 JOURNEY_SNAPSHOT_JPEG_QUALITY = int(os.getenv("JOURNEY_SNAPSHOT_JPEG_QUALITY", "98"))
+# Person Journey UI always shows the cropped person. When True, also store the
+# annotated full camera frame on the event (metadata.full_snapshot_path).
 JOURNEY_SNAPSHOT_FULL_FRAME = os.getenv("JOURNEY_SNAPSHOT_FULL_FRAME", "True").lower() in (
     "true",
     "1",

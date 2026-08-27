@@ -62,7 +62,7 @@ function CameraCaptureCard({ capture }: { capture: JourneyCameraCapture }) {
       <JourneySnapshot
         url={capture.snapshot_url}
         alt={capture.camera_name || "Camera capture"}
-        className="h-36 w-full object-cover bg-muted"
+        className="h-44 w-full object-contain bg-muted"
       />
       <div className="p-3 space-y-1">
         <p className="font-medium text-sm truncate">{capture.camera_name || "Camera"}</p>
@@ -139,7 +139,7 @@ function TimelineItem({ event }: { event: JourneyEventRecord }) {
             <JourneySnapshot
               url={snapshot}
               alt={`${event.camera_name || "Camera"} capture`}
-              className="h-24 w-40 rounded border object-cover bg-muted shrink-0"
+              className="h-28 w-20 rounded border object-contain bg-muted shrink-0"
             />
           ) : null}
         </div>
@@ -257,7 +257,7 @@ export default function PersonJourneyDetailPage() {
                 <JourneySnapshot
                   url={person.latest_snapshot_url}
                   alt={person.display_name || person.code}
-                  className="h-48 w-full max-w-md rounded-lg border object-cover bg-muted"
+                  className="h-52 w-40 rounded-lg border object-contain bg-muted"
                 />
               </div>
             ) : null}

@@ -1,4 +1,4 @@
-"""Capture and attach person journey snapshots (full HD frame with person highlighted)."""
+"""Capture person-crop snapshots for journey tracking (unknowns, visitors, staff)."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ _crop_guard = threading.Lock()
 _crop_workers = 0
 _MAX_CROP_WORKERS = 2
 _MAX_CROP_QUEUE = 40
+_SNAPSHOT_KIND_CROP = "person_crop"
 
 
 def _release_db() -> None:
@@ -37,7 +38,8 @@ def _journey_jpeg_quality() -> int:
     return max(90, min(100, int(getattr(settings, "JOURNEY_SNAPSHOT_JPEG_QUALITY", 98))))
 
 
-def _journey_full_frame() -> bool:
+def _keep_full_frame() -> bool:
+    """Keep an annotated full-scene JPEG in metadata (UI still shows the person crop)."""
     return bool(getattr(settings, "JOURNEY_SNAPSHOT_FULL_FRAME", True))
 
 
@@ -54,7 +56,73 @@ def link_detection_clip_to_journey(detection_event_id: int, clip_url: str) -> in
     ).update(snapshot_path=url)
 
 
-def _resolve_crop_box(bbox, frame_w: int, frame_h: int, camera, detection) -> list[int] | None:
+def _event_metadata(journey_event) -> dict:
+    meta = journey_event.metadata
+    return dict(meta) if isinstance(meta, dict) else {}
+
+
+def _is_person_crop(journey_event) -> bool:
+    return _event_metadata(journey_event).get("snapshot_kind") == _SNAPSHOT_KIND_CROP
+
+
+def _media_url_to_storage_name(url: str) -> str:
+    raw = (url or "").strip().split("?", 1)[0]
+    if not raw:
+        return ""
+    marker = "/media/"
+    if marker in raw:
+        return raw.split(marker, 1)[1].lstrip("/")
+    if raw.startswith("media/"):
+        return raw[6:].lstrip("/")
+    return raw.lstrip("/")
+
+
+def _read_frame_from_storage(url_or_name: str):
+    import cv2
+    import numpy as np
+
+    name = _media_url_to_storage_name(url_or_name)
+    if not name:
+        return None
+    try:
+        if not default_storage.exists(name):
+            return None
+        with default_storage.open(name, "rb") as handle:
+            data = handle.read()
+        arr = np.frombuffer(data, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        return frame
+    except Exception:
+        logger.debug("Could not load snapshot %s", name, exc_info=True)
+        return None
+
+
+def _read_detection_clip_frame(detection):
+    if detection is None or not getattr(detection, "clip", None):
+        return None
+    try:
+        name = detection.clip.name or ""
+        if name:
+            frame = _read_frame_from_storage(name)
+            if frame is not None:
+                return frame
+        url = detection.clip.url or ""
+        if url:
+            return _read_frame_from_storage(url)
+    except Exception:
+        logger.debug("Could not load detection clip", exc_info=True)
+    return None
+
+
+def _resolve_crop_box(
+    bbox,
+    frame_w: int,
+    frame_h: int,
+    camera,
+    detection,
+    *,
+    allow_live_infer: bool = False,
+) -> list[int] | None:
     """Map detection bbox to captured frame coordinates."""
     from cameras.clip_capture import _fit_bbox_to_frame, _map_bbox_to_capture_frame
 
@@ -78,7 +146,7 @@ def _resolve_crop_box(bbox, frame_w: int, frame_h: int, camera, detection) -> li
         try:
             from ml.client import ml_live_detections, ml_service_enabled
 
-            if camera and ml_service_enabled():
+            if allow_live_infer and camera and ml_service_enabled():
                 payload = ml_live_detections(
                     camera.stream_key,
                     rtsp_url=camera.effective_stream_url(),
@@ -87,6 +155,9 @@ def _resolve_crop_box(bbox, frame_w: int, frame_h: int, camera, detection) -> li
                 infer_h = int(payload.get("frame_height") or 0)
         except Exception:
             pass
+
+    if infer_w > 0 and infer_h > 0 and (abs(infer_w - frame_w) > 8 or abs(infer_h - frame_h) > 8):
+        return _map_bbox_to_capture_frame(bbox, infer_w, infer_h, frame_w, frame_h)
 
     if x2 > frame_w or y2 > frame_h:
         if infer_w <= 0 or infer_h <= 0:
@@ -110,7 +181,7 @@ def _person_label(journey_event) -> str:
 
 
 def _extract_person_crop(frame, crop_box: list[int] | None):
-    """Tight person crop used only for ReID embedding (not saved as snapshot)."""
+    """Tight person crop used for ReID embedding."""
     if crop_box is None:
         return None
     h, w = frame.shape[:2]
@@ -125,8 +196,93 @@ def _extract_person_crop(frame, crop_box: list[int] | None):
     return frame[y1:y2, x1:x2].copy()
 
 
+def _extract_display_crop(frame, crop_box: list[int] | None, *, min_side: int = 16):
+    """Padded person crop for the UI — extra headroom so the face stays visible."""
+    import cv2
+
+    if crop_box is None or frame is None:
+        return None
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in crop_box]
+    box_w = max(x2 - x1, 1)
+    box_h = max(y2 - y1, 1)
+    pad_x = int(0.18 * box_w)
+    pad_bottom = int(0.12 * box_h)
+    pad_top = int(0.32 * box_h)
+    x1 = max(0, x1 - pad_x)
+    y1 = max(0, y1 - pad_top)
+    x2 = min(w, x2 + pad_x)
+    y2 = min(h, y2 + pad_bottom)
+    if x2 - x1 < min_side or y2 - y1 < min_side:
+        return None
+    crop = frame[y1:y2, x1:x2].copy()
+    ch, cw = crop.shape[:2]
+    target = 220
+    if max(cw, ch) < target:
+        scale = target / max(cw, ch)
+        crop = cv2.resize(
+            crop,
+            (max(1, int(cw * scale)), max(1, int(ch * scale))),
+            interpolation=cv2.INTER_CUBIC,
+        )
+    return crop
+
+
+def _annotate_crop(crop, label: str):
+    import cv2
+
+    output = crop.copy()
+    h, w = output.shape[:2]
+    text = (label or "Person")[:28]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.38, min(0.7, w / 280))
+    thickness = max(1, int(font_scale * 1.6))
+    (_tw, th), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+    bar_h = th + baseline + 10
+    cv2.rectangle(output, (0, max(0, h - bar_h)), (w, h), (0, 0, 0), -1)
+    cv2.putText(
+        output,
+        text,
+        (6, h - 6),
+        font,
+        font_scale,
+        (255, 255, 255),
+        thickness,
+        cv2.LINE_AA,
+    )
+    return output
+
+
+def _encode_jpeg(frame, quality: int) -> bytes:
+    import cv2
+
+    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    if not ok or encoded is None:
+        return b""
+    return encoded.tobytes()
+
+
+def _save_jpeg(rel_path: str, jpeg_bytes: bytes) -> str:
+    saved_path = default_storage.save(rel_path, ContentFile(jpeg_bytes))
+    return default_storage.url(saved_path)
+
+
+def _store_person_thumbnail(person, crop_url: str, crop_area: int) -> None:
+    if person is None or not crop_url:
+        return
+    from .models import JourneyPerson
+
+    meta = dict(person.metadata or {}) if isinstance(person.metadata, dict) else {}
+    prev_area = int(meta.get("thumbnail_area") or 0)
+    if meta.get("thumbnail_url") and crop_area < prev_area:
+        return
+    meta["thumbnail_url"] = crop_url
+    meta["thumbnail_area"] = crop_area
+    JourneyPerson.objects.filter(pk=person.pk).update(metadata=meta)
+
+
 def capture_journey_crop_sync(journey_event_id: int) -> str:
-    """Capture a full HD camera frame with the person boxed and labeled."""
+    """Save a close-up person crop as the journey snapshot (full scene kept in metadata)."""
     _ensure_db_connection()
     try:
         import cv2
@@ -149,7 +305,7 @@ def capture_journey_crop_sync(journey_event_id: int) -> str:
             return ""
 
         existing = (journey_event.snapshot_path or "").strip()
-        if existing and "journey_snapshots/" in existing:
+        if existing and _is_person_crop(journey_event):
             return existing
 
         detection = None
@@ -162,61 +318,90 @@ def capture_journey_crop_sync(journey_event_id: int) -> str:
         confidence = journey_event.confidence
         camera_name = (camera.name or camera.zone or "").strip() if camera else ""
         journey_person = journey_event.journey_person
-        _release_db()
+        event_meta = _event_metadata(journey_event)
 
-        frame = read_journey_hd_frame(camera)
+        frame = _read_detection_clip_frame(detection)
+        if frame is None and existing:
+            frame = _read_frame_from_storage(existing)
+        used_live_grab = False
         if frame is None:
-            return ""
+            _release_db()
+            frame = read_journey_hd_frame(camera)
+            used_live_grab = True
+        else:
+            _release_db()
+
+        if frame is None:
+            return existing
 
         h, w = frame.shape[:2]
-        crop_box = _resolve_crop_box(bbox, w, h, camera, detection)
+        crop_box = _resolve_crop_box(
+            bbox, w, h, camera, detection, allow_live_infer=used_live_grab
+        )
+        display_crop = _extract_display_crop(frame, crop_box)
+        if display_crop is None:
+            if existing and not used_live_grab:
+                return existing
+            display_crop = frame
 
-        if _journey_full_frame():
-            output = draw_journey_snapshot_on_frame(
+        output = _annotate_crop(display_crop, person_label)
+        jpeg_q = _journey_jpeg_quality()
+        jpeg_bytes = _encode_jpeg(output, jpeg_q)
+        if not jpeg_bytes:
+            return existing
+
+        today = timezone.localdate()
+        rel_path = f"journey_snapshots/{today:%Y/%m/%d}/je_{journey_event_id}_crop.jpg"
+        url = _save_jpeg(rel_path, jpeg_bytes)
+
+        full_url = (event_meta.get("full_snapshot_path") or "").strip()
+        if (
+            not full_url
+            and existing
+            and "journey_snapshots/" in existing
+            and "_crop" not in existing
+        ):
+            full_url = existing
+        if _keep_full_frame() and not full_url:
+            full_frame = draw_journey_snapshot_on_frame(
                 frame,
                 bbox=crop_box,
                 person_label=person_label,
                 camera_name=camera_name,
                 confidence=confidence,
             )
-        elif crop_box:
-            output = _extract_person_crop(frame, crop_box) or frame
-        else:
-            output = frame
+            full_bytes = _encode_jpeg(full_frame, jpeg_q)
+            if full_bytes:
+                full_rel = f"journey_snapshots/{today:%Y/%m/%d}/je_{journey_event_id}_full.jpg"
+                full_url = _save_jpeg(full_rel, full_bytes)
 
-        jpeg_q = _journey_jpeg_quality()
-        ok, encoded = cv2.imencode(".jpg", output, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_q])
-        if not ok or encoded is None:
-            return ""
+        event_meta["snapshot_kind"] = _SNAPSHOT_KIND_CROP
+        if full_url:
+            event_meta["full_snapshot_path"] = full_url
 
-        jpeg_bytes = encoded.tobytes()
-        today = timezone.localdate()
-        rel_path = f"journey_snapshots/{today:%Y/%m/%d}/je_{journey_event_id}.jpg"
-        saved_path = default_storage.save(rel_path, ContentFile(jpeg_bytes))
-        url = default_storage.url(saved_path)
-        JourneyEvent.objects.filter(pk=journey_event_id).update(snapshot_path=url)
+        JourneyEvent.objects.filter(pk=journey_event_id).update(
+            snapshot_path=url,
+            metadata=event_meta,
+        )
 
         if journey_event.journey_person_id:
             from .unknown_resolution import update_person_embeddings_from_crop
 
-            person_crop = _extract_person_crop(frame, crop_box)
-            if person_crop is not None:
-                ok_crop, crop_encoded = cv2.imencode(
-                    ".jpg", person_crop, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_q]
-                )
-                if ok_crop and crop_encoded is not None:
-                    update_person_embeddings_from_crop(
-                        journey_person or journey_event.journey_person, crop_encoded.tobytes()
-                    )
-            else:
-                update_person_embeddings_from_crop(
-                    journey_person or journey_event.journey_person, jpeg_bytes
-                )
+            person = journey_person or journey_event.journey_person
+            reid_crop = _extract_person_crop(frame, crop_box)
+            reid_source = reid_crop if reid_crop is not None else display_crop
+            ok_crop, crop_encoded = cv2.imencode(
+                ".jpg", reid_source, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_q]
+            )
+            if ok_crop and crop_encoded is not None:
+                update_person_embeddings_from_crop(person, crop_encoded.tobytes())
+            ch, cw = display_crop.shape[:2]
+            _store_person_thumbnail(person, url, cw * ch)
 
         logger.info(
-            "Saved journey snapshot for event %s (%s, %sx%s)",
+            "Saved journey person crop for event %s (%s, %sx%s)",
             journey_event_id,
-            saved_path,
+            rel_path,
             output.shape[1],
             output.shape[0],
         )
@@ -270,12 +455,49 @@ def _enqueue_journey_crop(journey_event_id: int) -> None:
         ).start()
 
 
+def enqueue_latest_crops_for_persons(persons, *, per_person: int = 1) -> int:
+    """Queue person-crop recapture for live unknowns without blocking the API."""
+    from .models import JourneyEvent, PersonType
+
+    queued = 0
+    unknown_ids = [
+        p.pk
+        for p in persons
+        if getattr(p, "person_type", None) == PersonType.UNKNOWN
+    ]
+    if not unknown_ids:
+        return 0
+
+    from django.db.models import Max
+
+    latest = (
+        JourneyEvent.objects.filter(
+            journey_person_id__in=unknown_ids,
+            camera_id__isnull=False,
+        )
+        .values("journey_person_id")
+        .annotate(max_id=Max("id"))
+    )
+    event_ids = [row["max_id"] for row in latest if row.get("max_id")]
+    if not event_ids:
+        return 0
+
+    for ev in JourneyEvent.objects.filter(pk__in=event_ids).only("id", "metadata"):
+        if _is_person_crop(ev):
+            continue
+        _enqueue_journey_crop(ev.pk)
+        queued += 1
+        if queued >= max(1, per_person) * len(unknown_ids):
+            break
+    return queued
+
+
 def capture_and_attach_snapshot_sync(
     journey_event_id: int,
     detection_event_id: int,
     camera_id: int,
 ) -> str:
-    """Capture a full-frame journey snapshot for this event."""
+    """Capture a person-crop journey snapshot for this event."""
     del detection_event_id, camera_id
     return capture_journey_crop_sync(journey_event_id)
 
@@ -302,6 +524,18 @@ def schedule_journey_snapshot(
     transaction.on_commit(_on_commit)
 
 
+def _events_needing_crop(qs, *, limit: int) -> list[int]:
+    rows = list(qs.order_by("-created_at").values_list("id", "snapshot_path", "metadata")[: max(limit * 3, limit)])
+    ids: list[int] = []
+    for pk, path, meta in rows:
+        kind = meta.get("snapshot_kind") if isinstance(meta, dict) else None
+        if not (path or "").strip() or kind != _SNAPSHOT_KIND_CROP:
+            ids.append(pk)
+        if len(ids) >= limit:
+            break
+    return ids
+
+
 def capture_missing_for_person(
     person,
     *,
@@ -309,7 +543,7 @@ def capture_missing_for_person(
     limit: int = 20,
     timeout: float = 60.0,
 ) -> int:
-    """Capture snapshots for journey events that still have no image."""
+    """Capture or recrop snapshots so the person photo is a close-up, not the full scene."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from .models import JourneyEvent
@@ -317,11 +551,10 @@ def capture_missing_for_person(
     qs = JourneyEvent.objects.filter(
         journey_person=person,
         camera__isnull=False,
-        snapshot_path="",
     )
     if since is not None:
         qs = qs.filter(created_at__gte=since)
-    jobs = list(qs.order_by("-created_at").values_list("id", flat=True)[:limit])
+    jobs = _events_needing_crop(qs, limit=limit)
     if not jobs:
         return 0
 
@@ -341,16 +574,12 @@ def capture_missing_for_person(
 
 
 def capture_all_missing_events(*, limit: int = 100) -> int:
-    """Capture snapshots for any journey events missing images."""
+    """Capture snapshots for any journey events missing person crops."""
     from .models import JourneyEvent
 
-    jobs = list(
-        JourneyEvent.objects.filter(
-            camera__isnull=False,
-            snapshot_path="",
-        )
-        .order_by("-created_at")
-        .values_list("id", flat=True)[:limit]
+    jobs = _events_needing_crop(
+        JourneyEvent.objects.filter(camera__isnull=False),
+        limit=limit,
     )
     done = 0
     for ev_id in jobs:

@@ -182,7 +182,7 @@ export default function PersonJourneyPage() {
                     <JourneySnapshot
                       url={eventSnapshotUrl(ev)}
                       alt={ev.camera_name || "Camera capture"}
-                      className="h-36 w-full rounded-none border-0 object-cover"
+                      className="h-44 w-full rounded-none border-0 object-contain bg-muted"
                     />
                     <div className="p-3 space-y-1">
                       <p className="font-medium text-sm truncate">{ev.camera_name || ev.camera_code}</p>
@@ -258,7 +258,7 @@ export default function PersonJourneyPage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-[100px]">Capture</TableHead>
+                      <TableHead className="w-[88px]">Capture</TableHead>
                       <TableHead>Person</TableHead>
                       <TableHead>Type</TableHead>
                       <TableHead>Last Location</TableHead>
@@ -273,6 +273,7 @@ export default function PersonJourneyPage() {
                           <JourneySnapshot
                             url={personSnapshotUrl(person)}
                             alt={person.display_name || person.code}
+                            className="h-20 w-16 rounded border object-contain bg-muted"
                           />
                         </TableCell>
                         <TableCell>
@@ -330,7 +331,7 @@ export default function PersonJourneyPage() {
                     <JourneySnapshot
                       url={personSnapshotUrl(p)}
                       alt={p.display_name || p.code}
-                      className="h-14 w-20 rounded border object-cover bg-muted shrink-0"
+                      className="h-16 w-14 rounded border object-contain bg-muted shrink-0"
                     />
                     <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
