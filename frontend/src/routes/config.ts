@@ -515,10 +515,7 @@ const ALL_NAV_ITEMS: (NavItem | NavGroup)[] = [
     overviewHref: ROUTES.SEIZURE_MANAGEMENT,
     children: [
       { label: "Dashboard", href: ROUTES.SEIZURE_MANAGEMENT },
-      {
-        label: "Note Sheet",
-        children: [{ label: "Note Sheets", href: ROUTES.SEIZURE_MGMT_NOTE_SHEET }],
-      },
+      { label: "Note Sheet", href: ROUTES.SEIZURE_MGMT_NOTE_SHEET },
       {
         label: "Detention",
         children: [

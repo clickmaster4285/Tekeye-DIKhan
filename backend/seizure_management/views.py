@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta
+
+from django.db.models import Count, Q
+from django.db.models.functions import TruncDate, TruncMonth, TruncWeek
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, status
@@ -131,6 +135,202 @@ class NoteSheetListAPIView(APIView):
         if available:
             qs = qs.filter(status=NoteSheet.STATUS_APPROVED, detention_memo__isnull=True)
         return Response([note_sheet_to_dict(o, request) for o in qs])
+
+
+def _parse_iso_date(raw: str | None) -> date | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _month_end(year: int, month: int) -> date:
+    if month == 12:
+        return date(year, 12, 31)
+    return date(year, month + 1, 1) - timedelta(days=1)
+
+
+def _period_date(value, group: str = "day") -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        d = timezone.localtime(value).date() if timezone.is_aware(value) else value.date()
+    elif isinstance(value, date):
+        d = value
+    else:
+        return None
+    if group == "week":
+        d = d - timedelta(days=d.weekday())
+    elif group == "month":
+        d = date(d.year, d.month, 1)
+    return d
+
+
+def _period_label(group: str, period: date) -> str:
+    if group == "month":
+        return period.strftime("%B %Y")
+    if group == "week":
+        end = period + timedelta(days=6)
+        return f"{period.strftime('%d %b')} – {end.strftime('%d %b %Y')}"
+    return period.strftime("%d %b %Y")
+
+
+def _iter_periods(group: str, start: date, end: date) -> list[date]:
+    out: list[date] = []
+    if group == "day":
+        cursor = start
+        while cursor <= end:
+            out.append(cursor)
+            cursor += timedelta(days=1)
+            if len(out) >= 400:
+                break
+    elif group == "week":
+        cursor = start - timedelta(days=start.weekday())
+        while cursor <= end:
+            out.append(cursor)
+            cursor += timedelta(days=7)
+            if len(out) >= 120:
+                break
+    else:
+        cursor = date(start.year, start.month, 1)
+        while cursor <= end:
+            out.append(cursor)
+            if cursor.month == 12:
+                cursor = date(cursor.year + 1, 1, 1)
+            else:
+                cursor = date(cursor.year, cursor.month + 1, 1)
+            if len(out) >= 120:
+                break
+    return out
+
+
+class NoteSheetCreatedReportAPIView(APIView):
+    """Day / week / month counts of note sheets created, with optional custom dates."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        group = (request.query_params.get("group") or "day").strip().lower()
+        if group not in ("day", "week", "month"):
+            group = "day"
+
+        today = timezone.localdate()
+        date_from = _parse_iso_date(request.query_params.get("date_from"))
+        date_to = _parse_iso_date(request.query_params.get("date_to"))
+        month = (request.query_params.get("month") or "").strip()
+
+        if month and len(month) >= 7 and date_from is None and date_to is None:
+            try:
+                year, month_no = int(month[:4]), int(month[5:7])
+                date_from = date(year, month_no, 1)
+                date_to = _month_end(year, month_no)
+            except ValueError:
+                pass
+
+        if date_from is None and date_to is None:
+            if group == "month":
+                date_from = date(today.year, 1, 1)
+                date_to = today
+            elif group == "week":
+                date_from = today - timedelta(days=83)
+                date_to = today
+            else:
+                date_from = today - timedelta(days=29)
+                date_to = today
+        if date_from is None:
+            date_from = date_to or today
+        if date_to is None:
+            date_to = today
+        if date_from > date_to:
+            date_from, date_to = date_to, date_from
+
+        tz = timezone.get_current_timezone()
+        start_dt = timezone.make_aware(datetime.combine(date_from, datetime.min.time()), tz)
+        end_dt = timezone.make_aware(datetime.combine(date_to + timedelta(days=1), datetime.min.time()), tz)
+
+        qs = NoteSheet.objects.filter(created_at__gte=start_dt, created_at__lt=end_dt)
+        trunc = {
+            "day": TruncDate("created_at", tzinfo=tz),
+            "week": TruncWeek("created_at", tzinfo=tz),
+            "month": TruncMonth("created_at", tzinfo=tz),
+        }[group]
+
+        buckets = {
+            _period_date(row["period"], group): row
+            for row in qs.annotate(period=trunc)
+            .values("period")
+            .annotate(
+                count=Count("id"),
+                draft=Count("id", filter=Q(status=NoteSheet.STATUS_DRAFT)),
+                submitted=Count("id", filter=Q(status=NoteSheet.STATUS_SUBMITTED)),
+                approved=Count("id", filter=Q(status=NoteSheet.STATUS_APPROVED)),
+                rejected=Count("id", filter=Q(status=NoteSheet.STATUS_REJECTED)),
+            )
+            if _period_date(row["period"], group) is not None
+        }
+
+        series = []
+        for period in _iter_periods(group, date_from, date_to):
+            row = buckets.get(period) or {}
+            series.append(
+                {
+                    "period": period.isoformat(),
+                    "label": _period_label(group, period),
+                    "count": int(row.get("count") or 0),
+                    "draft": int(row.get("draft") or 0),
+                    "submitted": int(row.get("submitted") or 0),
+                    "approved": int(row.get("approved") or 0),
+                    "rejected": int(row.get("rejected") or 0),
+                }
+            )
+
+        week_start = today - timedelta(days=today.weekday())
+        month_start = date(today.year, today.month, 1)
+        all_sheets = NoteSheet.objects.all()
+        summary = {
+            "allTime": all_sheets.count(),
+            "today": all_sheets.filter(created_at__date=today).count(),
+            "thisWeek": all_sheets.filter(created_at__date__gte=week_start, created_at__date__lte=today).count(),
+            "thisMonth": all_sheets.filter(created_at__date__gte=month_start, created_at__date__lte=today).count(),
+        }
+
+        rows = [
+            {
+                "id": str(obj.id),
+                "noteSheetNo": obj.note_sheet_no or obj.reference_number or "",
+                "caseNo": obj.case_no or "",
+                "status": obj.status or "",
+                "priority": obj.priority or "",
+                "preparedBy": obj.prepared_by or "",
+                "accusedName": obj.accused_name or "",
+                "subject": obj.subject or "",
+                "createdAt": obj.created_at.isoformat() if obj.created_at else "",
+            }
+            for obj in qs.order_by("-created_at")[:1000]
+        ]
+
+        by_status = {
+            "Draft": qs.filter(status=NoteSheet.STATUS_DRAFT).count(),
+            "Submitted": qs.filter(status=NoteSheet.STATUS_SUBMITTED).count(),
+            "Approved": qs.filter(status=NoteSheet.STATUS_APPROVED).count(),
+            "Rejected": qs.filter(status=NoteSheet.STATUS_REJECTED).count(),
+        }
+
+        return Response(
+            {
+                "group": group,
+                "dateFrom": date_from.isoformat(),
+                "dateTo": date_to.isoformat(),
+                "total": qs.count(),
+                "byStatus": by_status,
+                "summary": summary,
+                "series": series,
+                "rows": rows,
+            }
+        )
 
 
 class NoteSheetCreateAPIView(APIView):
@@ -915,31 +1115,152 @@ class SeizureReportDeleteAPIView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+DETENTION_WINDOW_DAYS = 60
+
+
+def _parse_detention_datetime(raw: str):
+    text = (raw or "").strip()
+    if not text:
+        return None
+    text = text.replace(" ", "T", 1)
+    candidates = [text, text[:19], text[:10]]
+    for value in candidates:
+        try:
+            dt = datetime.fromisoformat(value)
+            if timezone.is_naive(dt):
+                dt = timezone.make_aware(dt, timezone.get_current_timezone())
+            return dt
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+            try:
+                dt = datetime.strptime(value, fmt)
+                return timezone.make_aware(dt, timezone.get_current_timezone())
+            except ValueError:
+                continue
+    return None
+
+
+def _iso(dt) -> str:
+    return dt.isoformat() if dt else ""
+
+
+def _detention_overdue_count() -> int:
+    cutoff = timezone.now() - timedelta(days=DETENTION_WINDOW_DAYS)
+    overdue = 0
+    for raw in DetentionMemo.objects.exclude(date_time_detention="").values_list(
+        "date_time_detention", flat=True
+    ):
+        dt = _parse_detention_datetime(raw)
+        if dt is not None and dt < cutoff:
+            overdue += 1
+    return overdue
+
+
+def _seizure_mgmt_overview() -> dict:
+    today = timezone.localdate()
+    note_sheets = NoteSheet.objects.all()
+    assessments = DetentionAssessment.objects.all()
+    recoveries = RecoveryMemo.objects.all()
+    reports = SeizureReport.objects.all()
+    detentions = DetentionMemo.objects.all()
+
+    recent: list[dict] = []
+    for ns in note_sheets.order_by("-updated_at")[:8]:
+        recent.append(
+            {
+                "kind": "note_sheet",
+                "id": str(ns.id),
+                "title": ns.note_sheet_no or ns.subject or "Note sheet",
+                "subtitle": ns.case_no or ns.accused_name or "",
+                "status": ns.status or "",
+                "at": _iso(ns.updated_at),
+            }
+        )
+    for dm in detentions.order_by("-updated_at")[:8]:
+        recent.append(
+            {
+                "kind": "detention",
+                "id": str(dm.id),
+                "title": dm.case_no or "Detention memo",
+                "subtitle": dm.place_of_detention or dm.owner_name or "",
+                "status": dm.verification_status or dm.settlement_status or "",
+                "at": _iso(dm.updated_at),
+            }
+        )
+    for row in assessments.select_related("detention_memo").order_by("-updated_at")[:8]:
+        memo = row.detention_memo
+        recent.append(
+            {
+                "kind": "assessment",
+                "id": str(row.id),
+                "title": "Assessment",
+                "subtitle": (memo.case_no if memo else "") or row.examining_officer or "",
+                "status": row.status or "",
+                "at": _iso(row.updated_at),
+            }
+        )
+    for row in recoveries.select_related("detention_memo").order_by("-updated_at")[:8]:
+        memo = row.detention_memo
+        recent.append(
+            {
+                "kind": "recovery",
+                "id": str(row.id),
+                "title": "Recovery memo",
+                "subtitle": (memo.case_no if memo else "") or row.category or "",
+                "status": row.approval_status or "",
+                "at": _iso(row.updated_at),
+            }
+        )
+    for row in reports.select_related("detention_memo").order_by("-updated_at")[:8]:
+        memo = row.detention_memo
+        recent.append(
+            {
+                "kind": "seizure_report",
+                "id": str(row.id),
+                "title": "Seizure report",
+                "subtitle": (memo.case_no if memo else "") or row.prepared_by or "",
+                "status": row.status or "",
+                "at": _iso(row.updated_at),
+            }
+        )
+    recent.sort(key=lambda item: item.get("at") or "", reverse=True)
+
+    return {
+        "generatedAt": timezone.now().isoformat(),
+        "detentionWindowDays": DETENTION_WINDOW_DAYS,
+        "noteSheets": note_sheets.count(),
+        "noteSheetsDraft": note_sheets.filter(status=NoteSheet.STATUS_DRAFT).count(),
+        "noteSheetsPending": note_sheets.filter(status=NoteSheet.STATUS_SUBMITTED).count(),
+        "noteSheetsApprovedAvailable": note_sheets.filter(
+            status=NoteSheet.STATUS_APPROVED, detention_memo__isnull=True
+        ).count(),
+        "noteSheetsToday": note_sheets.filter(created_at__date=today).count(),
+        "detentionMemos": detentions.count(),
+        "detentionOverdue": _detention_overdue_count(),
+        "detentionsToday": detentions.filter(created_at__date=today).count(),
+        "assessments": assessments.count(),
+        "assessmentsPending": assessments.filter(status=DetentionAssessment.STATUS_SUBMITTED).count(),
+        "assessmentsApproved": assessments.filter(status=DetentionAssessment.STATUS_APPROVED).count(),
+        "assessmentsToday": assessments.filter(created_at__date=today).count(),
+        "recoveryMemos": recoveries.count(),
+        "recoveryPendingApproval": recoveries.filter(approval_status=RecoveryMemo.STATUS_PENDING).count(),
+        "recoveryApproved": recoveries.filter(approval_status=RecoveryMemo.STATUS_APPROVED).count(),
+        "recoveriesToday": recoveries.filter(created_at__date=today).count(),
+        "seizureReports": reports.count(),
+        "seizureReportsSubmitted": reports.filter(status=SeizureReport.STATUS_SUBMITTED).count(),
+        "seizureReportsDraft": reports.filter(status=SeizureReport.STATUS_DRAFT).count(),
+        "seizureReportsToday": reports.filter(created_at__date=today).count(),
+        "recentActivity": recent[:12],
+    }
+
+
 class SeizureManagementOverviewAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        return Response(
-            {
-                "noteSheets": NoteSheet.objects.count(),
-                "noteSheetsPending": NoteSheet.objects.filter(status=NoteSheet.STATUS_SUBMITTED).count(),
-                "noteSheetsApprovedAvailable": NoteSheet.objects.filter(
-                    status=NoteSheet.STATUS_APPROVED, detention_memo__isnull=True
-                ).count(),
-                "assessments": DetentionAssessment.objects.count(),
-                "assessmentsPending": DetentionAssessment.objects.filter(
-                    status=DetentionAssessment.STATUS_SUBMITTED
-                ).count(),
-                "recoveryMemos": RecoveryMemo.objects.count(),
-                "recoveryPendingApproval": RecoveryMemo.objects.filter(
-                    approval_status=RecoveryMemo.STATUS_PENDING
-                ).count(),
-                "seizureReports": SeizureReport.objects.count(),
-                "seizureReportsSubmitted": SeizureReport.objects.filter(
-                    status=SeizureReport.STATUS_SUBMITTED
-                ).count(),
-            }
-        )
+        del request
+        return Response(_seizure_mgmt_overview())
 
 
 class NoteSheetNotificationListAPIView(APIView):

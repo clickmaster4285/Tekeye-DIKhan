@@ -39,6 +39,7 @@ export async function fetchAttendance(params?: {
     cache: "no-store",
   })
   if (response.status === 401) throw new Error("Unauthorized")
+  if (response.status === 403) throw new Error("You do not have permission to view attendance.")
   if (!response.ok) throw new Error(`Failed to load attendance (${response.status})`)
   const data = await response.json()
   if (Array.isArray(data)) return data
@@ -53,6 +54,7 @@ export async function fetchAttendanceById(id: number): Promise<AttendanceRecord>
     cache: "no-store",
   })
   if (response.status === 401) throw new Error("Unauthorized")
+  if (response.status === 403) throw new Error("You do not have permission to view attendance.")
   if (response.status === 404) throw new Error("Attendance record not found")
   if (!response.ok) throw new Error(`Failed to load attendance (${response.status})`)
   return response.json()

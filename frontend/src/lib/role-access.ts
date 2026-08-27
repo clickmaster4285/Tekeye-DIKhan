@@ -379,7 +379,7 @@ const ROLE_PATH_RULES: Record<RestrictedRole, PathRule> = {
       ROUTES.EDIT_USER,
       ROUTES.LOGS,
       ROUTES.ACTIVITY_LOGS,
-      // Attendance APIs use IsAdminOrHR (includes IT_ADMIN)
+      // Attendance APIs use IsAdminOrHR (IT_ADMIN + collectorate officers + HR module grants)
       ROUTES.ATTENDANCE,
       ROUTES.FACE_ENROLLMENT,
       ROUTES.ATTENDANCE_MONITOR,

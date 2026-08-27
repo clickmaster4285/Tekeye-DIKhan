@@ -262,16 +262,70 @@ export type SeizureReportRecord = {
   updatedAt: string
 }
 
+export type SeizureMgmtActivityKind =
+  | "note_sheet"
+  | "detention"
+  | "assessment"
+  | "recovery"
+  | "seizure_report"
+
+export type SeizureMgmtActivity = {
+  kind: SeizureMgmtActivityKind
+  id: string
+  title: string
+  subtitle: string
+  status: string
+  at: string
+}
+
 export type SeizureMgmtOverview = {
+  generatedAt?: string
+  detentionWindowDays?: number
   noteSheets: number
+  noteSheetsDraft: number
   noteSheetsPending: number
   noteSheetsApprovedAvailable: number
+  noteSheetsToday: number
+  detentionMemos: number
+  detentionOverdue: number
+  detentionsToday: number
   assessments: number
   assessmentsPending: number
+  assessmentsApproved: number
+  assessmentsToday: number
   recoveryMemos: number
   recoveryPendingApproval: number
+  recoveryApproved: number
+  recoveriesToday: number
   seizureReports: number
   seizureReportsSubmitted: number
+  seizureReportsDraft: number
+  seizureReportsToday: number
+  recentActivity: SeizureMgmtActivity[]
+}
+
+export const emptySeizureMgmtOverview: SeizureMgmtOverview = {
+  noteSheets: 0,
+  noteSheetsDraft: 0,
+  noteSheetsPending: 0,
+  noteSheetsApprovedAvailable: 0,
+  noteSheetsToday: 0,
+  detentionMemos: 0,
+  detentionOverdue: 0,
+  detentionsToday: 0,
+  assessments: 0,
+  assessmentsPending: 0,
+  assessmentsApproved: 0,
+  assessmentsToday: 0,
+  recoveryMemos: 0,
+  recoveryPendingApproval: 0,
+  recoveryApproved: 0,
+  recoveriesToday: 0,
+  seizureReports: 0,
+  seizureReportsSubmitted: 0,
+  seizureReportsDraft: 0,
+  seizureReportsToday: 0,
+  recentActivity: [],
 }
 
 export const DETENTION_WINDOW_DAYS = 60
@@ -298,7 +352,72 @@ export async function fetchSeizureMgmtOverview(): Promise<SeizureMgmtOverview> {
   const res = await fetch(`${BASE}/overview/`, { headers: getAuthHeaders(), cache: "no-store" })
   const body = await parseJson(res)
   if (!res.ok) throw new Error(errorMessage(res, body))
-  return body as SeizureMgmtOverview
+  const raw = (body && typeof body === "object" ? body : {}) as Partial<SeizureMgmtOverview>
+  return {
+    ...emptySeizureMgmtOverview,
+    ...raw,
+    recentActivity: Array.isArray(raw.recentActivity) ? raw.recentActivity : [],
+  }
+}
+
+export type NoteSheetCreatedGroup = "day" | "week" | "month"
+
+export type NoteSheetCreatedSeriesRow = {
+  period: string
+  label: string
+  count: number
+  draft: number
+  submitted: number
+  approved: number
+  rejected: number
+}
+
+export type NoteSheetCreatedListRow = {
+  id: string
+  noteSheetNo: string
+  caseNo: string
+  status: string
+  priority: string
+  preparedBy: string
+  accusedName: string
+  subject: string
+  createdAt: string
+}
+
+export type NoteSheetCreatedReport = {
+  group: NoteSheetCreatedGroup
+  dateFrom: string
+  dateTo: string
+  total: number
+  byStatus: Record<string, number>
+  summary: {
+    allTime: number
+    today: number
+    thisWeek: number
+    thisMonth: number
+  }
+  series: NoteSheetCreatedSeriesRow[]
+  rows: NoteSheetCreatedListRow[]
+}
+
+export async function fetchNoteSheetCreatedReport(params: {
+  group: NoteSheetCreatedGroup
+  dateFrom?: string
+  dateTo?: string
+  month?: string
+}): Promise<NoteSheetCreatedReport> {
+  const q = new URLSearchParams()
+  q.set("group", params.group)
+  if (params.dateFrom) q.set("date_from", params.dateFrom)
+  if (params.dateTo) q.set("date_to", params.dateTo)
+  if (params.month) q.set("month", params.month)
+  const res = await fetch(`${BASE}/note-sheets/created-report/?${q.toString()}`, {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  })
+  const body = await parseJson(res)
+  if (!res.ok) throw new Error(errorMessage(res, body))
+  return body as NoteSheetCreatedReport
 }
 
 // ——— Note sheets ———

@@ -85,15 +85,41 @@ def location_admin_may_assign_role(actor, role: str) -> bool:
     return True
 
 
-class IsAdminOrHR(permissions.BasePermission):
-    """Allow access to global admin, location admin, HR, and IT admin."""
+HR_MODULE_KEY = "Human Resource"
 
-    allowed_roles = ("ADMIN", "LOCATION_ADMIN", "HR", "IT_ADMIN")
+# Matches frontend site-full-access roles that already show Attendance / HR in the sidebar.
+SITE_FULL_ACCESS_ROLES = frozenset(
+    {
+        LOCATION_ADMIN_ROLE,
+        "OPERATION_MANAGER",
+        "COLLECTOR",
+        "DEPUTY_COLLECTOR",
+        "ASSISTANT_COLLECTOR",
+    }
+)
+
+HR_API_ROLES = frozenset(
+    {GLOBAL_ADMIN_ROLE, "HR", "IT_ADMIN"} | SITE_FULL_ACCESS_ROLES
+)
+
+
+def has_hr_api_access(user) -> bool:
+    """True when the user may call staff / attendance / leave / recognition APIs."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(user, "role", None) in HR_API_ROLES:
+        return True
+    modules = getattr(user, "allowed_modules", None) or []
+    return HR_MODULE_KEY in modules
+
+
+class IsAdminOrHR(permissions.BasePermission):
+    """Allow HR APIs to the same people who can open Attendance in the UI."""
+
+    allowed_roles = tuple(HR_API_ROLES)
 
     def has_permission(self, request, view):
-        if not request.user or not request.user.is_authenticated:
-            return False
-        return getattr(request.user, "role", None) in self.allowed_roles
+        return has_hr_api_access(request.user)
 
 
 class IsGlobalAdmin(permissions.BasePermission):
