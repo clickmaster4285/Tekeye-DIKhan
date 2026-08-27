@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from .matching import resolve_staff_from_face_label
 from .models import JourneyEvent, JourneyEventType, JourneyPerson, PersonStatus, PersonType
-from .services import _camera_zone, create_journey_person, register_staff_journey_person
+from .services import _camera_zone, create_journey_person, register_staff_journey_person, register_visitor_journey_person
 from .unknown_resolution import generic_unknown_handled_elsewhere, resolve_unknown_person
 
 logger = logging.getLogger(__name__)
@@ -53,24 +53,19 @@ def _generic_unknown_handled_elsewhere() -> bool:
 
 
 def _is_person_detection(class_name: str, label: str, employee_name: str = "") -> bool:
-    """Person / face / recognized staff / named individual — not objects or weapons."""
+    """Person / face only — bags, vehicles, and other objects stay off Person Journey."""
     cls = (class_name or "").strip().lower()
     lbl = (label or "").strip().lower()
     emp = (employee_name or "").strip()
 
-    if cls in _WEAPON_CLASSES:
-        return False
-    if cls in _NON_PERSON_CLASSES:
+    if cls in _WEAPON_CLASSES or cls in _NON_PERSON_CLASSES:
         return False
     if cls in ("person", "face"):
         return True
-    if emp:
+    if emp and cls in ("", "person", "face"):
         return True
-    if lbl in ("person", "face", "unknown"):
-        return cls not in _NON_PERSON_CLASSES
-    # Named labels (e.g. staff face) only when the detector class is person/face.
-    if lbl and lbl not in _GENERIC_LABELS:
-        return cls in ("person", "face") or bool(emp)
+    if lbl in ("person", "face") and cls not in _NON_PERSON_CLASSES:
+        return True
     return False
 
 

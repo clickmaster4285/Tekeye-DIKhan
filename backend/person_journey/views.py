@@ -33,10 +33,13 @@ class JourneyIngestAPIView(APIView):
         from django.conf import settings
 
         expected = getattr(settings, "PERSON_JOURNEY_INGEST_TOKEN", "").strip()
-        if expected:
-            token = (request.headers.get("X-Journey-Ingest-Token") or "").strip()
-            if token != expected:
-                return Response({"detail": "Invalid ingest token."}, status=status.HTTP_403_FORBIDDEN)
+        token = (
+            request.headers.get("X-Journey-Ingest-Token")
+            or request.META.get("HTTP_X_JOURNEY_INGEST_TOKEN")
+            or ""
+        ).strip()
+        if not expected or token != expected:
+            return Response({"detail": "Invalid ingest token."}, status=status.HTTP_403_FORBIDDEN)
 
         ser = IngestObservationSerializer(data=request.data)
         if not ser.is_valid():
@@ -53,7 +56,9 @@ class JourneyPersonListAPIView(generics.ListAPIView):
     serializer_class = JourneyPersonListSerializer
 
     def get_queryset(self):
-        qs = JourneyPerson.objects.select_related("staff", "visitor", "latest_camera").all()
+        qs = JourneyPerson.objects.select_related("staff", "visitor", "latest_camera").filter(
+            person_type__in=[PersonType.STAFF, PersonType.VISITOR, PersonType.UNKNOWN]
+        )
         person_type = self.request.query_params.get("person_type")
         if person_type:
             qs = qs.filter(person_type=person_type.strip())
@@ -143,7 +148,10 @@ class JourneyLiveAPIView(APIView):
             pass
         since = timezone.now() - timedelta(minutes=max(1, minutes))
         qs = (
-            JourneyPerson.objects.filter(latest_seen_at__gte=since)
+            JourneyPerson.objects.filter(
+                latest_seen_at__gte=since,
+                person_type__in=[PersonType.STAFF, PersonType.VISITOR, PersonType.UNKNOWN],
+            )
             .select_related("latest_camera", "staff", "visitor")
             .order_by("-latest_seen_at")[:100]
         )
@@ -164,10 +172,17 @@ class JourneySummaryAPIView(APIView):
         since = timezone.now() - timedelta(hours=24)
         return Response(
             {
-                "active_now": JourneyPerson.objects.filter(status=PersonStatus.ACTIVE).count(),
+                "active_now": JourneyPerson.objects.filter(
+                    status=PersonStatus.ACTIVE,
+                    person_type__in=[PersonType.STAFF, PersonType.VISITOR, PersonType.UNKNOWN],
+                ).count(),
                 "unknown_today": JourneyPerson.objects.filter(
                     person_type=PersonType.UNKNOWN,
                     created_at__date=today,
+                ).count(),
+                "visitors_today": JourneyPerson.objects.filter(
+                    person_type=PersonType.VISITOR,
+                    latest_seen_at__date=today,
                 ).count(),
                 "staff_recognized_24h": JourneyEvent.objects.filter(
                     event_type="staff_recognized",

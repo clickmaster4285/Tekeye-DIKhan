@@ -180,6 +180,7 @@ export const ROUTES = {
   EMPLOYEES: "/employees",
   ADD_STAFF: "/employees/add",
   RECRUITMENT: "/recruitment",
+  VISITOR_EDIT: "/visitors/:id/edit",
   /** Path for employee detail; use getEmployeeDetailPath(id) for links */
   EMPLOYEE_DETAIL: "/employees/:id",
   ATTENDANCE: "/attendance",
@@ -351,6 +352,10 @@ export function isDashboardRoute(pathname: string): boolean {
 /** URL for the shared visitor detail page (used by both Walk-In and Pre-Registration). */
 export function getVisitorDetailPath(id: number | string): string {
   return `/visitors/${id}`
+}
+
+export function getVisitorEditPath(id: number | string): string {
+  return `/visitors/${id}/edit`
 }
 
 /** Build path to People Database person detail page */
@@ -867,6 +872,16 @@ export function getNavSectionsForRole(
   // Super Admin — full sidebar, no Central Ops.
   if (normalized === "ADMIN") return NAV_SECTIONS
 
+  if (
+    normalized === "LOCATION_ADMIN" ||
+    normalized === "OPERATION_MANAGER" ||
+    normalized === "COLLECTOR" ||
+    normalized === "DEPUTY_COLLECTOR" ||
+    normalized === "ASSISTANT_COLLECTOR"
+  ) {
+    return NAV_SECTIONS
+  }
+
   // IT Super Admin — Central Ops only.
   if (normalized === "IT_SUPERADMIN") {
     return [
@@ -934,6 +949,17 @@ export function getModuleLabelForPath(
 ): string | null {
   const path = (pathname.split("?")[0] || "/").replace(/\/+$/, "") || "/"
   if (path === "/" || path === "") return null
+
+  const PREFIX_MODULES: [string, string][] = [
+    ["/visitors", "Visitor Management"],
+    ["/settings/users", "System Configuration"],
+    ["/settings/logs", "System Configuration"],
+    ["/employees", "Human Resource"],
+    ["/recruitment", "Human Resource"],
+  ]
+  for (const [prefix, label] of PREFIX_MODULES) {
+    if (path === prefix || path.startsWith(`${prefix}/`)) return label
+  }
 
   function pathMatchesHref(href: string): boolean {
     if (href === path) return true

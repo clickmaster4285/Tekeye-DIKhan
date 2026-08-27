@@ -615,7 +615,15 @@ class PlateEngine:
         self.detect_width = max(0, _env_int("ML_PLATE_DETECT_WIDTH", 1920))
         self.detect_height = max(0, _env_int("ML_PLATE_DETECT_HEIGHT", 1080))
         self.imgsz = max(640, _env_int("ML_PLATE_IMGSZ", 1280))
-        self.device = os.getenv("ML_DEVICE", "0").strip() or "0"
+        self.device = "cpu"
+        try:
+            from inference_engine import resolve_ml_device
+
+            resolved = resolve_ml_device()
+            self.device = "cpu" if resolved == "cpu" else str(resolved)
+        except Exception:
+            raw = os.getenv("ML_DEVICE", "0").strip() or "0"
+            self.device = "cpu" if raw.lower() == "cpu" else raw
         self.require_vehicle = os.getenv("ML_PLATE_REQUIRE_VEHICLE", "true").strip().lower() in (
             "1",
             "true",
@@ -653,8 +661,16 @@ class PlateEngine:
             import easyocr
 
             use_gpu = self.device.lower() != "cpu"
-            self.reader = easyocr.Reader(["en"], gpu=use_gpu, verbose=False)
-            print(f"[plate] EasyOCR ready (gpu={use_gpu})")
+            try:
+                self.reader = easyocr.Reader(["en"], gpu=use_gpu, verbose=False)
+                print(f"[plate] EasyOCR ready (gpu={use_gpu})")
+            except Exception as gpu_exc:
+                if not use_gpu:
+                    raise
+                print(f"[plate] EasyOCR GPU failed ({gpu_exc}) — retrying CPU")
+                self.device = "cpu"
+                self.reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+                print("[plate] EasyOCR ready (gpu=False)")
         except Exception as exc:
             print(f"[plate] Failed to load EasyOCR: {exc}")
             return

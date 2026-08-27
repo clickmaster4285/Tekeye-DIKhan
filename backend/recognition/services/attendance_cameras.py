@@ -41,7 +41,6 @@ def attendance_camera_queryset(*, for_workers: bool = False):
     preferred = qs.filter(pk__in=preferred_ids)
     if preferred.exists():
         return preferred
-    # No dedicated attendance cams yet — start every active connected camera.
     return qs
 
 

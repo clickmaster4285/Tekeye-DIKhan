@@ -15,6 +15,7 @@ Pipeline (decoupled — capture / infer / render never block each other):
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -649,10 +650,16 @@ def draw_detections(frame: np.ndarray, detections: list[dict[str, Any]], label_s
     font = cv2.FONT_HERSHEY_SIMPLEX
 
     for det in detections:
-        name = str(det.get("label", ""))
+        display_id = str(det.get("display_id") or det.get("global_object_id") or "").strip()
+        name = str(det.get("label") or det.get("class_name") or "")
         conf = float(det.get("confidence", 0))
         x1, y1, x2, y2 = det.get("bbox", [0, 0, 0, 0])
-        is_unknown = name.lower() == "unknown" or name.lower().startswith("unknown:")
+        is_unknown = (
+            bool(det.get("is_unknown"))
+            or name.lower() == "unknown"
+            or name.lower().startswith("unknown")
+            or bool(_OBJECT_ID_LABEL.match(name))
+        )
         is_alert = bool(det.get("alert"))
         if is_alert:
             color = (0, 0, 255)
@@ -661,7 +668,11 @@ def draw_detections(frame: np.ndarray, detections: list[dict[str, Any]], label_s
         else:
             color = (0, 220, 0)
         cv2.rectangle(output, (int(x1), int(y1)), (int(x2), int(y2)), color, box_thickness)
-        label = f"{name} {conf:.2f}"
+        if display_id and display_id.lower() not in name.lower():
+            name = f"{display_id} {name}".strip()
+        elif display_id and not name:
+            name = display_id
+        label = f"{name} {conf:.2f}".strip()
         (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
         text_x = int(x1)
         text_y = max(text_h + 4, int(y1) - 4)
@@ -677,13 +688,37 @@ def draw_detections(frame: np.ndarray, detections: list[dict[str, Any]], label_s
 
 
 _GENERIC_FACE_LABELS = frozenset({"", "unknown", "person", "face"})
+_OBJECT_ID_LABEL = re.compile(r"^(?:gp|go|gv|t)\d+$", re.IGNORECASE)
 
 
 def _is_generic_face_label(label: str) -> bool:
     value = (label or "").strip().lower()
     if not value or value in _GENERIC_FACE_LABELS:
         return True
-    return value.startswith("unknown:")
+    if value.startswith("unknown") or value.startswith("face:unknown"):
+        return True
+    return bool(_OBJECT_ID_LABEL.match(value))
+
+
+def assign_overlay_ids(detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Put a stable ID on every live box: GP/GO/GV from identity, else ByteTrack T#."""
+    for det in detections or []:
+        gid = str(det.get("global_object_id") or "").strip()
+        tid = det.get("track_id")
+        try:
+            track_no = int(tid) if tid is not None else None
+        except (TypeError, ValueError):
+            track_no = None
+        display_id = gid or (f"T{track_no}" if track_no is not None else "")
+        if display_id:
+            det["display_id"] = display_id
+
+        cls = str(det.get("class_name") or "").strip().lower()
+        label = str(det.get("label") or "").strip()
+        if cls in ("person", "face") and _is_generic_face_label(label):
+            det["is_unknown"] = True
+            det["label"] = display_id or "Unknown"
+    return detections
 
 
 def filter_enrolled_staff_detections(detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1104,6 +1139,49 @@ class LiveStreamManager:
         if session is None:
             return None
         return session.stream.get_frame()
+
+    def is_ready(self) -> bool:
+        """True after YOLO infer loops have started. Raw RTSP can run before this."""
+        return bool(self._running)
+
+    def get_raw_jpeg_bytes(self, key: str, *, target_width: int | None = None) -> bytes | None:
+        """Encode the latest raw RTSP frame (does not wait for YOLO)."""
+        raw = self.get_raw_frame(key)
+        if raw is None:
+            return None
+        if target_width:
+            prepared = self._prepare_attendance_frame(raw, int(target_width))
+            quality = 98 if int(target_width) >= 2560 else max(90, min(self._jpeg_quality, 98))
+            return encode_jpeg(prepared, quality)
+        quality = max(70, min(self._jpeg_quality, 98))
+        return encode_jpeg(self._limit_size(raw), quality)
+
+    def wait_for_raw_jpeg(
+        self,
+        key: str,
+        *,
+        timeout_sec: float = 6.0,
+        target_width: int | None = None,
+    ) -> bytes | None:
+        deadline = time.monotonic() + max(0.1, float(timeout_sec))
+        while time.monotonic() < deadline:
+            jpeg = self.get_raw_jpeg_bytes(key, target_width=target_width)
+            if jpeg:
+                return jpeg
+            time.sleep(0.05)
+        return None
+
+    def wait_for_preview_jpeg(self, key: str, *, timeout_sec: float = 2.5) -> bytes | None:
+        deadline = time.monotonic() + max(0.1, float(timeout_sec))
+        while time.monotonic() < deadline:
+            frame = self.get_preview_jpeg(key)
+            if frame:
+                return frame
+            jpeg = self.get_raw_jpeg_bytes(key)
+            if jpeg:
+                return jpeg
+            time.sleep(0.05)
+        return None
 
     def ensure_started(self) -> bool:
         """Start infer/render threads if YOLO is available but loops are not running."""
@@ -1642,6 +1720,7 @@ class LiveStreamManager:
             detections,
             face_db=self._face_db,
         )
+        detections = assign_overlay_ids(detections)
         return detections
 
     def _publish_results(self, camera_key: str, detections: list[dict[str, Any]]) -> None:

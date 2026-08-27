@@ -9,17 +9,25 @@ class PersonJourneyConfig(AppConfig):
     def ready(self):
         from . import signals  # noqa: F401
 
+        try:
+            from config.runtime import skip_embedded_background_workers
+
+            if skip_embedded_background_workers():
+                return
+        except Exception:
+            import sys
+
+            if "runserver" in sys.argv:
+                return
+
         if self._journey_worker_enabled():
             self._start_journey_worker()
         self._start_live_ingest()
 
     def _start_live_ingest(self):
-        import os
+        from .live_worker import start_live_ingest_worker
 
-        if os.environ.get("RUN_MAIN") == "true" or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-            from .live_worker import start_live_ingest_worker
-
-            start_live_ingest_worker()
+        start_live_ingest_worker()
 
     def _journey_worker_enabled(self) -> bool:
         from django.conf import settings
@@ -27,10 +35,6 @@ class PersonJourneyConfig(AppConfig):
         return bool(getattr(settings, "PERSON_JOURNEY_WORKER_ENABLED", False))
 
     def _start_journey_worker(self):
-        import os
+        from .journey_worker import start_journey_worker_thread
 
-        # Avoid double-start under Django autoreload.
-        if os.environ.get("RUN_MAIN") == "true" or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-            from .journey_worker import start_journey_worker_thread
-
-            start_journey_worker_thread()
+        start_journey_worker_thread()

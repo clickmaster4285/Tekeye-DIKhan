@@ -8,6 +8,7 @@ from datetime import datetime, time as dt_time, timedelta
 from typing import Literal
 
 from django.conf import settings
+from django.db import IntegrityError
 from django.db.models import Q
 from django.utils import timezone
 
@@ -65,7 +66,16 @@ def _cooldown_key(*, user: User | None = None, staff: Staff | None = None) -> st
 
 def _is_recognized_identity(identity: str) -> bool:
     lbl = (identity or "").strip()
-    return bool(lbl) and lbl.lower() not in _GENERIC_LABELS
+    if not lbl:
+        return False
+    low = lbl.lower()
+    if low in _GENERIC_LABELS or low.startswith("unknown"):
+        return False
+    if low.startswith(("gp", "go", "gv")) and low[2:].isdigit():
+        return False
+    if low.startswith("t") and low[1:].isdigit():
+        return False
+    return True
 
 
 def resolve_staff_for_face_identity(identity: str) -> Staff | None:
@@ -146,24 +156,28 @@ class AttendanceDecisionEngine:
     @classmethod
     def _get_or_create_today(cls, staff: Staff, source: str, now: datetime) -> Attendance:
         today = timezone.localdate(now)
-        # Prefer user-keyed row when staff has a linked login (preserves historical uniqueness)
-        if staff.user_id and staff.user and not staff.user.is_deleted:
-            record, _ = Attendance.objects.get_or_create(
-                user=staff.user,
-                date=today,
-                defaults={"staff": staff, "source": source},
-            )
-            if record.staff_id is None:
-                record.staff = staff
-                record.save(update_fields=["staff", "updated_at"])
-            return record
+        try:
+            if staff.user_id and staff.user and not staff.user.is_deleted:
+                record, _ = Attendance.objects.get_or_create(
+                    user=staff.user,
+                    date=today,
+                    defaults={"staff": staff, "source": source},
+                )
+                if record.staff_id is None:
+                    record.staff = staff
+                    record.save(update_fields=["staff", "updated_at"])
+                return record
 
-        record, _ = Attendance.objects.get_or_create(
-            staff=staff,
-            date=today,
-            defaults={"source": source},
-        )
-        return record
+            record, _ = Attendance.objects.get_or_create(
+                staff=staff,
+                date=today,
+                defaults={"source": source},
+            )
+            return record
+        except IntegrityError:
+            if staff.user_id:
+                return Attendance.objects.get(user=staff.user, date=today)
+            return Attendance.objects.get(staff=staff, date=today)
 
     @classmethod
     def process_recognition(

@@ -11,10 +11,10 @@ logger = logging.getLogger(__name__)
 
 
 def collect_attendance_cameras() -> list[dict]:
-    """Active cameras with a resolvable RTSP URL (all connected cams)."""
+    """Active cameras with attendance/face purposes and a resolvable RTSP URL."""
     from recognition.services.attendance_cameras import collect_attendance_camera_payloads
 
-    return collect_attendance_camera_payloads(for_workers=False)
+    return collect_attendance_camera_payloads(for_workers=True)
 
 
 def _autostart_worker(delay_seconds: float):
@@ -27,7 +27,7 @@ def _autostart_worker(delay_seconds: float):
 
         cameras = collect_attendance_cameras()
         if not cameras:
-            logger.info("CCTV autostart: no active cameras found")
+            logger.info("CCTV autostart: no attendance-purpose cameras found")
             return
         manager = get_cctv_manager()
         statuses = manager.start_all(cameras)

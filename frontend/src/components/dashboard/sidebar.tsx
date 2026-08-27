@@ -69,6 +69,7 @@ function SidebarChildren({
             >
               <Link
                 to={node.href}
+                onPointerDown={() => onPrefetchHref(node.href)}
                 onMouseEnter={() => onPrefetchHref(node.href)}
                 onFocus={() => onPrefetchHref(node.href)}
                 className={cn("flex-1 min-w-0 flex items-center rounded-none", childLinkClass(node.href), depth > 1 && "pl-2")}
@@ -271,6 +272,7 @@ export const Sidebar = memo(function Sidebar({ mobileOpen = false, onMobileOpenC
                   >
                     <Link
                       to={fav.href}
+                      onPointerDown={() => onPrefetchHref(fav.href)}
                       onMouseEnter={() => onPrefetchHref(fav.href)}
                       onFocus={() => onPrefetchHref(fav.href)}
                       className={cn(
@@ -324,6 +326,7 @@ export const Sidebar = memo(function Sidebar({ mobileOpen = false, onMobileOpenC
                   >
                     <NavLink
                       to={item.href}
+                      onPointerDown={() => onPrefetchHref(item.href)}
                       onMouseEnter={() => onPrefetchHref(item.href)}
                       onFocus={() => onPrefetchHref(item.href)}
                       className={({ isActive }) => cn("flex-1 min-w-0 flex items-center gap-3 border-0", linkClass({ isActive }))}
@@ -362,6 +365,9 @@ export const Sidebar = memo(function Sidebar({ mobileOpen = false, onMobileOpenC
                 <div key={getNodeKey(group)}>
                   <button
                     type="button"
+                    onPointerDown={() => {
+                      if (group.overviewHref) onPrefetchHref(group.overviewHref)
+                    }}
                     onMouseEnter={() => {
                       if (group.overviewHref) onPrefetchHref(group.overviewHref)
                     }}

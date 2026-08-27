@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import requests
 from django.conf import settings
 from django.core.files.base import ContentFile
-from django.db import close_old_connections
+from django.db import close_old_connections, connection
 
 from .stream_utils import ffmpeg_path
 
@@ -24,9 +24,46 @@ logger = logging.getLogger(__name__)
 
 _camera_clip_locks: dict[int, threading.Lock] = {}
 _locks_guard = threading.Lock()
-_camera_queues: dict[int, deque[int]] = {}
 _queue_guard = threading.Lock()
-_active_queue_workers: set[int] = set()
+_clip_jobs: deque[tuple[int, int]] = deque()
+_clip_job_ids: set[int] = set()
+_clip_workers = 0
+_MAX_CLIP_WORKERS = 2
+_MAX_CLIP_QUEUE = 80
+
+_attendance_jobs: deque[dict] = deque()
+_attendance_workers = 0
+_MAX_ATTENDANCE_WORKERS = 1
+_MAX_ATTENDANCE_QUEUE = 20
+
+_ml_fail_until: dict[int, float] = {}
+_ML_COOLDOWN_SEC = 30.0
+
+
+def _release_db() -> None:
+    """Drop this thread's Postgres connection so long ffmpeg/HTTP waits do not hold a slot."""
+    try:
+        connection.close()
+    except Exception:
+        pass
+
+
+def _safe_snapshot_url(url: str) -> str:
+    """Log path only — RTSP credentials often sit in the query string."""
+    text = (url or "").strip()
+    if not text:
+        return ""
+    return text.split("?", 1)[0]
+
+
+def _ml_on_cooldown(camera_id: int) -> bool:
+    return bool(camera_id) and time.monotonic() < _ml_fail_until.get(int(camera_id), 0.0)
+
+
+def _mark_ml_fail(camera_id: int | None) -> None:
+    if not camera_id:
+        return
+    _ml_fail_until[int(camera_id)] = time.monotonic() + _ML_COOLDOWN_SEC
 
 
 def _clip_enabled() -> bool:
@@ -82,6 +119,7 @@ def _update_clip_status(event_id: int, status: str) -> None:
     from .models import DetectionEvent
 
     DetectionEvent.objects.filter(pk=event_id).update(clip_status=status)
+    _release_db()
 
 
 def _camera_lock(camera_id: int) -> threading.Lock:
@@ -362,8 +400,25 @@ def _draw_detection_on_frame(frame, event: DetectionEvent):
     return output
 
 
-def _read_mjpeg_snapshot(mjpeg_url: str, *, timeout_sec: float = 12.0) -> object | None:
-    """Read one JPEG frame from the ML MJPEG stream."""
+def _mjpeg_url_to_jpeg_url(url: str) -> str | None:
+    """Map continuous MJPEG paths to single-frame JPEG (same query string)."""
+    text = (url or "").strip()
+    if not text:
+        return None
+    for old, new in (
+        ("/mjpeg/attendance", "/jpeg/attendance"),
+        ("/mjpeg/raw", "/jpeg/raw"),
+        ("/mjpeg", "/jpeg"),
+    ):
+        if old in text:
+            return text.replace(old, new, 1)
+    if "/jpeg" in text:
+        return text
+    return None
+
+
+def _read_jpeg_snapshot(jpeg_url: str, *, timeout_sec: float = 4.0) -> object | None:
+    """Fetch one JPEG from ML. Fail fast so snapshot threads do not hold DB slots."""
     try:
         import cv2
         import numpy as np
@@ -371,31 +426,49 @@ def _read_mjpeg_snapshot(mjpeg_url: str, *, timeout_sec: float = 12.0) -> object
         logger.warning("OpenCV not available for snapshot capture")
         return None
 
-    deadline = time.monotonic() + timeout_sec
-    try:
-        with requests.get(mjpeg_url, stream=True, timeout=(5, timeout_sec)) as resp:
-            if resp.status_code != 200:
-                return None
-            buffer = b""
-            for chunk in resp.iter_content(chunk_size=8192):
-                if time.monotonic() > deadline:
-                    break
-                if not chunk:
-                    continue
-                buffer += chunk
-                while True:
-                    start = buffer.find(b"\xff\xd8")
-                    end = buffer.find(b"\xff\xd9")
-                    if start == -1 or end == -1 or end < start:
-                        break
-                    jpg = buffer[start : end + 2]
-                    buffer = buffer[end + 2 :]
-                    arr = np.frombuffer(jpg, dtype=np.uint8)
-                    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                    if frame is not None:
-                        return frame
-    except requests.RequestException as exc:
-        logger.warning("MJPEG snapshot capture failed: %s", exc)
+    deadline = time.monotonic() + max(1.0, min(6.0, float(timeout_sec)))
+    last_status = None
+    attempts = 0
+    while time.monotonic() < deadline and attempts < 2:
+        attempts += 1
+        remaining = max(0.8, deadline - time.monotonic())
+        try:
+            resp = requests.get(jpeg_url, timeout=(1.5, min(3.5, remaining)))
+        except requests.Timeout:
+            last_status = "timeout"
+            break
+        except requests.RequestException as exc:
+            logger.warning("ML snapshot capture failed: %s", exc)
+            return None
+        last_status = resp.status_code
+        if resp.status_code == 404:
+            logger.warning(
+                "ML snapshot camera not registered: %s",
+                _safe_snapshot_url(jpeg_url),
+            )
+            return None
+        if resp.status_code == 503 or resp.status_code != 200 or not resp.content:
+            time.sleep(0.2)
+            continue
+        arr = np.frombuffer(resp.content, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is not None:
+            return frame
+        time.sleep(0.15)
+    logger.warning(
+        "ML snapshot not ready after %.0fs (%s): %s",
+        timeout_sec,
+        last_status,
+        _safe_snapshot_url(jpeg_url),
+    )
+    return None
+
+
+def _read_mjpeg_snapshot(mjpeg_url: str, *, timeout_sec: float = 4.0) -> object | None:
+    """Read one JPEG frame. Prefers /jpeg so workers do not hang on the live MJPEG stream."""
+    jpeg_url = _mjpeg_url_to_jpeg_url(mjpeg_url)
+    if jpeg_url:
+        return _read_jpeg_snapshot(jpeg_url, timeout_sec=float(timeout_sec))
     return None
 
 
@@ -426,7 +499,7 @@ def _read_rtsp_snapshot(stream_url: str) -> object | None:
         temp_path,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=25)
+        proc = subprocess.run(cmd, capture_output=True, timeout=10)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         logger.warning("RTSP snapshot ffmpeg failed: %s", exc)
         return None
@@ -448,18 +521,28 @@ def _read_rtsp_snapshot(stream_url: str) -> object | None:
 
 
 def _warm_ml_stream(camera) -> None:
+    """Kick the ML RTSP session without blocking on a full JPEG poll."""
+    camera_id = getattr(camera, "pk", None)
+    if _ml_on_cooldown(int(camera_id or 0)):
+        return
+    raw_url = _ml_raw_mjpeg_url(camera)
+    jpeg_url = _mjpeg_url_to_jpeg_url(raw_url or "")
+    if jpeg_url:
+        try:
+            requests.get(jpeg_url, timeout=(1.0, 1.2))
+        except requests.RequestException:
+            pass
+        return
     try:
         from ml.client import ml_live_detections, ml_service_enabled
     except ImportError:
         return
     if not ml_service_enabled():
         return
-    for _ in range(2):
-        try:
-            ml_live_detections(camera.stream_key, rtsp_url=camera.effective_stream_url())
-            return
-        except Exception:
-            time.sleep(0.5)
+    try:
+        ml_live_detections(camera.stream_key, rtsp_url=camera.effective_stream_url())
+    except Exception:
+        pass
 
 
 def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
@@ -476,15 +559,18 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
         camera = Camera.objects.select_related("nvr").get(pk=camera_id)
         event = DetectionEvent.objects.get(pk=event_id)
     except (Camera.DoesNotExist, DetectionEvent.DoesNotExist):
+        _release_db()
         return
 
     if event.clip_status == ClipStatus.SKIPPED:
+        _release_db()
         return
 
     if event.clip:
         _update_clip_status(event_id, ClipStatus.READY)
         _link_journey_snapshot(event_id)
         _link_object_tracking_snapshot(event_id)
+        _release_db()
         return
 
     _update_clip_status(event_id, ClipStatus.RECORDING)
@@ -495,16 +581,19 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
         _update_clip_status(event_id, ClipStatus.FAILED)
         return
 
-    frame = None
     stream_url = camera.effective_stream_url()
+    _release_db()
+
+    frame = None
     if stream_url:
         frame = _read_rtsp_snapshot(stream_url)
 
-    if frame is None:
+    if frame is None and not _ml_on_cooldown(camera_id):
         raw_mjpeg_url = _ml_raw_mjpeg_url(camera)
         if raw_mjpeg_url:
-            _warm_ml_stream(camera)
-            frame = _read_mjpeg_snapshot(raw_mjpeg_url)
+            frame = _read_mjpeg_snapshot(raw_mjpeg_url, timeout_sec=4.0)
+            if frame is None:
+                _mark_ml_fail(camera_id)
 
     if frame is None:
         if not stream_url and not _ml_raw_mjpeg_url(camera):
@@ -542,36 +631,58 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
     except Exception:
         logger.exception("Failed to save snapshot for detection event %s", event_id)
         _update_clip_status(event_id, ClipStatus.FAILED)
+    finally:
+        _release_db()
 
 
-def _process_camera_queue(camera_id: int) -> None:
+def _process_clip_jobs() -> None:
+    global _clip_workers
     while True:
         with _queue_guard:
-            queue = _camera_queues.get(camera_id)
-            if not queue:
-                _active_queue_workers.discard(camera_id)
+            if not _clip_jobs:
+                _clip_workers -= 1
                 return
-            event_id = queue.popleft()
-
-        with _camera_lock(camera_id):
-            capture_detection_clip_sync(camera_id, event_id)
+            camera_id, event_id = _clip_jobs.popleft()
+            _clip_job_ids.discard(event_id)
+        try:
+            with _camera_lock(camera_id):
+                capture_detection_clip_sync(camera_id, event_id)
+        except Exception:
+            logger.exception(
+                "Detection snapshot worker failed camera=%s event=%s",
+                camera_id,
+                event_id,
+            )
+        finally:
+            _release_db()
 
 
 def _enqueue_clip(camera_id: int, event_id: int) -> None:
+    global _clip_workers
+    dropped = None
+    spawn = False
     with _queue_guard:
-        queue = _camera_queues.setdefault(camera_id, deque())
-        if event_id in queue:
+        if event_id in _clip_job_ids:
             return
-        queue.append(event_id)
-        if camera_id not in _active_queue_workers:
-            _active_queue_workers.add(camera_id)
-            thread = threading.Thread(
-                target=_process_camera_queue,
-                args=(camera_id,),
-                daemon=True,
-                name=f"det-snapshot-q-{camera_id}",
-            )
-            thread.start()
+        if len(_clip_jobs) >= _MAX_CLIP_QUEUE:
+            dropped = _clip_jobs.popleft()
+            _clip_job_ids.discard(dropped[1])
+        _clip_jobs.append((camera_id, event_id))
+        _clip_job_ids.add(event_id)
+        spawn = _clip_workers < _MAX_CLIP_WORKERS
+        if spawn:
+            _clip_workers += 1
+    if dropped:
+        logger.warning(
+            "Detection snapshot queue full; dropped event %s",
+            dropped[1],
+        )
+    if spawn:
+        threading.Thread(
+            target=_process_clip_jobs,
+            daemon=True,
+            name="det-snapshot-worker",
+        ).start()
 
 
 def requeue_pending_clips(*, limit: int = 200) -> int:
@@ -589,6 +700,7 @@ def requeue_pending_clips(*, limit: int = 200) -> int:
         .order_by("created_at")
         .values_list("camera_id", "id")[:limit]
     )
+    _release_db()
     for camera_id, event_id in rows:
         _enqueue_clip(camera_id, event_id)
     if rows:
@@ -692,7 +804,7 @@ def _read_rtsp_native_snapshot(stream_url: str) -> object | None:
         temp_path,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=45)
+        proc = subprocess.run(cmd, capture_output=True, timeout=12)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         logger.warning("Journey native RTSP snapshot failed: %s", exc)
         return None
@@ -744,7 +856,7 @@ def _read_rtsp_hd_snapshot(stream_url: str, *, target_width: int) -> object | No
         temp_path,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=30)
+        proc = subprocess.run(cmd, capture_output=True, timeout=10)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         logger.warning("Journey HD RTSP snapshot failed: %s", exc)
         return None
@@ -785,15 +897,17 @@ def read_journey_hd_frame(camera: Camera) -> object | None:
         if frame is not None:
             return frame
 
-    _warm_ml_stream(camera)
-    ml_width = target_width if target_width > 0 else 3840
-    attendance_url = _ml_attendance_mjpeg_url(camera, target_width=ml_width)
-    if attendance_url:
-        frame = _read_mjpeg_snapshot(attendance_url, timeout_sec=25.0)
-        if frame is not None:
-            if target_width > 0:
-                return _upscale_frame_to_hd(frame, target_width)
-            return frame
+    camera_id = getattr(camera, "pk", None)
+    if not _ml_on_cooldown(int(camera_id or 0)):
+        ml_width = target_width if target_width > 0 else 3840
+        attendance_url = _ml_attendance_mjpeg_url(camera, target_width=ml_width)
+        if attendance_url:
+            frame = _read_mjpeg_snapshot(attendance_url, timeout_sec=4.0)
+            if frame is not None:
+                if target_width > 0:
+                    return _upscale_frame_to_hd(frame, target_width)
+                return frame
+            _mark_ml_fail(camera_id)
 
     if stream_url:
         frame = _read_rtsp_snapshot(stream_url)
@@ -803,11 +917,14 @@ def read_journey_hd_frame(camera: Camera) -> object | None:
             return frame
 
     raw_url = _ml_raw_mjpeg_url(camera)
-    if raw_url:
-        frame = _read_mjpeg_snapshot(raw_url, timeout_sec=20.0)
-        if frame is not None and target_width > 0:
+    if raw_url and not _ml_on_cooldown(int(camera_id or 0)):
+        frame = _read_mjpeg_snapshot(raw_url, timeout_sec=4.0)
+        if frame is None:
+            _mark_ml_fail(camera_id)
+        elif target_width > 0:
             return _upscale_frame_to_hd(frame, target_width)
-        return frame
+        else:
+            return frame
     return None
 
 
@@ -1136,12 +1253,14 @@ def capture_attendance_snapshot_sync(
         camera = Camera.objects.select_related("nvr").get(pk=camera_id)
         attendance = Attendance.objects.get(pk=attendance_id)
     except (Camera.DoesNotExist, Attendance.DoesNotExist):
+        _release_db()
         return
 
     try:
         import cv2
     except ImportError:
         logger.warning("OpenCV not available for attendance clip capture")
+        _release_db()
         return
 
     duration = _attendance_video_seconds()
@@ -1149,6 +1268,9 @@ def capture_attendance_snapshot_sync(
     hd_width = _attendance_video_width()
     jpeg_q = _attendance_jpeg_quality()
     display_name = (employee_name or label or "staff").strip()[:80]
+    stream_url = camera.effective_stream_url()
+    skip_ml = _ml_on_cooldown(camera_id)
+    _release_db()
     frames: list = []
     bbox_state: dict[str, object] = {
         "bbox": None,
@@ -1187,11 +1309,11 @@ def capture_attendance_snapshot_sync(
             confidence=conf,
         )
 
-    _warm_ml_stream(camera)
-    stream_url = camera.effective_stream_url()
+    if not skip_ml:
+        _warm_ml_stream(camera)
 
     # 1) HD main-stream via ML + label only the marked staff member.
-    attendance_url = _ml_attendance_mjpeg_url(camera, target_width=hd_width)
+    attendance_url = None if skip_ml else _ml_attendance_mjpeg_url(camera, target_width=hd_width)
     if attendance_url:
         frames = _read_mjpeg_clip(
             attendance_url,
@@ -1201,7 +1323,7 @@ def capture_attendance_snapshot_sync(
         )
 
     # 2) Raw MJPEG + single staff overlay.
-    if not frames:
+    if not frames and not skip_ml:
         raw_url = _ml_raw_mjpeg_url(camera)
         if raw_url:
             frames = _read_mjpeg_clip(
@@ -1266,11 +1388,34 @@ def capture_attendance_snapshot_sync(
     except Exception:
         logger.exception("Failed to save attendance clip for record %s", attendance_id)
     finally:
+        _release_db()
         try:
             if os.path.isfile(temp_mp4):
                 os.remove(temp_mp4)
         except OSError:
             pass
+
+
+def _process_attendance_jobs() -> None:
+    global _attendance_workers
+    while True:
+        with _queue_guard:
+            if not _attendance_jobs:
+                _attendance_workers -= 1
+                return
+            payload = _attendance_jobs.popleft()
+        camera_id = int(payload.get("camera_id") or 0)
+        try:
+            with _camera_lock(camera_id):
+                capture_attendance_snapshot_sync(**payload)
+        except Exception:
+            logger.exception(
+                "Attendance snapshot worker failed camera=%s attendance=%s",
+                camera_id,
+                payload.get("attendance_id"),
+            )
+        finally:
+            _release_db()
 
 
 def schedule_attendance_snapshot(
@@ -1287,6 +1432,7 @@ def schedule_attendance_snapshot(
     infer_frame_h: int = 0,
 ) -> None:
     """Capture attendance proof clip — only the marked staff member is labeled."""
+    global _attendance_workers
     if not _attendance_snapshot_enabled():
         return
 
@@ -1303,13 +1449,21 @@ def schedule_attendance_snapshot(
         "infer_frame_h": infer_frame_h,
     }
 
-    def _run() -> None:
-        with _camera_lock(camera_id):
-            capture_attendance_snapshot_sync(**payload)
-
-    thread = threading.Thread(
-        target=_run,
-        daemon=True,
-        name=f"attendance-snap-{attendance_id}",
-    )
-    thread.start()
+    spawn = False
+    with _queue_guard:
+        if len(_attendance_jobs) >= _MAX_ATTENDANCE_QUEUE:
+            dropped = _attendance_jobs.popleft()
+            logger.warning(
+                "Attendance snapshot queue full; dropped record %s",
+                dropped.get("attendance_id"),
+            )
+        _attendance_jobs.append(payload)
+        spawn = _attendance_workers < _MAX_ATTENDANCE_WORKERS
+        if spawn:
+            _attendance_workers += 1
+    if spawn:
+        threading.Thread(
+            target=_process_attendance_jobs,
+            daemon=True,
+            name="attendance-snapshot-worker",
+        ).start()

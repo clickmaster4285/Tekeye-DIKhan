@@ -5,6 +5,7 @@ import {
   Route,
   Users,
   UserX,
+  Contact,
   Activity,
   Search,
   RefreshCw,
@@ -112,18 +113,18 @@ export default function PersonJourneyPage() {
   return (
     <ModulePageLayout
       title="Person Journey"
-      description="Enterprise cross-camera tracking — YOLO + ByteTrack + Face + ReID matching with unified Person UUID timeline."
+      description="Track staff, visitors, and unknown people across live CCTV. Bags, vehicles, and other objects stay on the camera overlay only."
       breadcrumbs={[{ label: "AI Analytics" }, { label: "Person Journey" }]}
     >
       <div className="space-y-6">
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
           <Card>
             <CardHeader className="pb-2">
               <CardDescription>Active Now</CardDescription>
               <CardTitle className="text-3xl">{summary?.active_now ?? "—"}</CardTitle>
             </CardHeader>
             <CardContent className="text-xs text-muted-foreground flex items-center gap-1">
-              <Activity className="h-3.5 w-3.5" /> Persons with open journeys
+              <Activity className="h-3.5 w-3.5" /> Staff, visitors, and unknowns
             </CardContent>
           </Card>
           <Card>
@@ -132,7 +133,16 @@ export default function PersonJourneyPage() {
               <CardTitle className="text-3xl">{summary?.unknown_today ?? "—"}</CardTitle>
             </CardHeader>
             <CardContent className="text-xs text-muted-foreground flex items-center gap-1">
-              <UserX className="h-3.5 w-3.5" /> New unknown UUIDs created
+              <UserX className="h-3.5 w-3.5" /> Unidentified people
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>Visitors Today</CardDescription>
+              <CardTitle className="text-3xl">{summary?.visitors_today ?? summary?.by_type?.visitor ?? "—"}</CardTitle>
+            </CardHeader>
+            <CardContent className="text-xs text-muted-foreground flex items-center gap-1">
+              <Contact className="h-3.5 w-3.5" /> Registered visitor tracks
             </CardContent>
           </Card>
           <Card>
@@ -198,7 +208,7 @@ export default function PersonJourneyPage() {
             <CardHeader className="flex flex-row items-center justify-between gap-4">
               <div>
                 <CardTitle>Live Persons</CardTitle>
-                <CardDescription>Seen in the last 30 minutes across all cameras</CardDescription>
+                <CardDescription>Seen in the last 30 minutes — staff, visitors, and unknown people</CardDescription>
               </div>
               <Button
                 variant="outline"

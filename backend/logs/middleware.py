@@ -12,7 +12,12 @@ except ImportError:
 
 
 # Paths we don't log (e.g. report endpoint to avoid duplicate entries, or health checks)
-SKIP_LOG_PATHS = ("/api/activity-logs/report/", "/api/activity-logs/report", "/favicon.ico")
+SKIP_LOG_PATHS = (
+    "/api/activity-logs/report/",
+    "/api/activity-logs/report",
+    "/favicon.ico",
+    "/media/",
+)
 
 
 def get_ip(request):

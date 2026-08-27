@@ -11,6 +11,8 @@ import cv2
 from django.conf import settings
 from django.db import close_old_connections
 
+from config.db import release_db
+
 from recognition.models import FaceEnrollment
 from recognition.services.face_engine import get_face_engine
 from recognition.services.rtsp_utils import open_rtsp_capture
@@ -50,6 +52,11 @@ class CameraRuntimeState:
 
 
 class CCTVWorkerManager:
+    _gallery_lock = threading.Lock()
+    _gallery_cache: dict[str, list[float]] = {}
+    _gallery_at = 0.0
+    _GALLERY_TTL = 30.0
+
     def __init__(self):
         self._lock = threading.Lock()
         self._cameras: dict[int, CameraRuntimeState] = {}
@@ -165,16 +172,29 @@ class CCTVWorkerManager:
             "has_snapshot": state.last_jpeg is not None,
         }
 
+    def _shared_gallery(self) -> dict[str, list[float]]:
+        now = time.time()
+        with self._gallery_lock:
+            if self._gallery_cache and now - self._gallery_at < self._GALLERY_TTL:
+                return self._gallery_cache
+            gallery = self._build_gallery()
+            type(self)._gallery_cache = gallery
+            type(self)._gallery_at = now
+            return gallery
+
     def _build_gallery(self) -> dict[str, list[float]]:
         close_old_connections()
         gallery = {}
-        enrollments = FaceEnrollment.objects.filter(
-            is_trained=True,
-            embedding__isnull=False,
-        ).select_related("staff")
-        for enrollment in enrollments:
-            gallery[enrollment.gallery_key] = enrollment.embedding
-        return gallery
+        try:
+            enrollments = FaceEnrollment.objects.filter(
+                is_trained=True,
+                embedding__isnull=False,
+            ).select_related("staff")
+            for enrollment in enrollments:
+                gallery[enrollment.gallery_key] = enrollment.embedding
+            return gallery
+        finally:
+            release_db()
 
     def _face_bbox_size(self, face) -> tuple[int, int]:
         bbox = getattr(face, "bbox", None)
@@ -286,7 +306,7 @@ class CCTVWorkerManager:
                     continue
                 last_infer_at = now
                 if now - gallery_refresh_at > 30:
-                    gallery = self._build_gallery()
+                    gallery = self._shared_gallery()
                     gallery_refresh_at = now
                     state.gallery_size = len(gallery)
 
@@ -407,6 +427,7 @@ class CCTVWorkerManager:
                                 decision["action"],
                                 confidence,
                             )
+                            release_db()
 
                     if gallery_key or confidence >= 0.28:
                         state.last_events.appendleft(event)
@@ -418,10 +439,12 @@ class CCTVWorkerManager:
                 if cap is not None:
                     cap.release()
                     cap = None
+                release_db()
                 time.sleep(reconnect_delay)
 
         if cap is not None:
             cap.release()
+        release_db()
         state.running = False
         state.connected = False
         logger.info("Stopped CCTV attendance worker for camera %s", state.camera_id)

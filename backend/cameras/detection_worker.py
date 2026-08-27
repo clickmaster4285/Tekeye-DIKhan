@@ -11,6 +11,9 @@ from pathlib import Path
 
 from django.conf import settings
 from django.db import close_old_connections
+from django.db.utils import OperationalError
+
+from config.db import release_db
 
 logger = logging.getLogger(__name__)
 
@@ -152,24 +155,34 @@ def run_worker_forever() -> None:
 
     while not _stop_event.is_set():
         close_old_connections()
-        now = time.monotonic()
-        if not camera_ids or now - last_refresh >= refresh_sec:
-            camera_ids = _active_camera_ids()
-            last_refresh = now
-            if camera_ids:
-                logger.info("[detection-worker] Tracking %s active camera(s)", len(camera_ids))
-            else:
-                logger.debug("[detection-worker] No active cameras configured")
+        try:
+            now = time.monotonic()
+            if not camera_ids or now - last_refresh >= refresh_sec:
+                camera_ids = _active_camera_ids()
+                last_refresh = now
+                if camera_ids:
+                    logger.info("[detection-worker] Tracking %s active camera(s)", len(camera_ids))
+                else:
+                    logger.debug("[detection-worker] No active cameras configured")
 
-        if camera_ids:
-            cam_id = camera_ids[index % len(camera_ids)]
-            index += 1
-            try:
-                saved = _poll_camera(cam_id)
-                if saved:
-                    logger.info("[detection-worker] Saved %s detection(s) for camera %s", saved, cam_id)
-            except Exception:
-                logger.exception("[detection-worker] Unexpected error polling camera %s", cam_id)
+            if camera_ids:
+                cam_id = camera_ids[index % len(camera_ids)]
+                index += 1
+                try:
+                    saved = _poll_camera(cam_id)
+                    if saved:
+                        logger.info("[detection-worker] Saved %s detection(s) for camera %s", saved, cam_id)
+                except OperationalError:
+                    logger.warning(
+                        "[detection-worker] Postgres has no free slots; backing off 15s"
+                    )
+                    release_db()
+                    _stop_event.wait(15)
+                    continue
+                except Exception:
+                    logger.exception("[detection-worker] Unexpected error polling camera %s", cam_id)
+        finally:
+            release_db()
 
         _stop_event.wait(interval)
 
@@ -196,8 +209,16 @@ def should_autostart_in_process() -> bool:
         return False
     if os.environ.get("TEKEYE_DETECTION_WORKER") == "1":
         return False
-    if "run_detection_worker" in sys.argv:
+    if "run_detection_worker" in sys.argv or "run_background_workers" in sys.argv:
         return False
+    try:
+        from config.runtime import skip_embedded_background_workers
+
+        if skip_embedded_background_workers():
+            return False
+    except Exception:
+        if "runserver" in sys.argv:
+            return False
     if "runserver" in sys.argv and os.environ.get("RUN_MAIN") != "true":
         return False
     return True

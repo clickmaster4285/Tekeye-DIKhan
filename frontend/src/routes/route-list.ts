@@ -14,6 +14,7 @@ export const DASHBOARD_ROUTES: { index?: true; path?: string; page: string }[] =
   { path: toChildPath(ROUTES.PRE_REGISTRATION), page: "PreRegistration" },
   { path: toChildPath(ROUTES.WALK_IN_REGISTRATION), page: "WalkInRegistration" },
   { path: toChildPath(ROUTES.VISITOR_DETAIL), page: "VisitorDetail" },
+  { path: toChildPath(ROUTES.VISITOR_EDIT), page: "VisitorEdit" },
   { path: toChildPath(ROUTES.STREAMED_UPLOAD), page: "StreamedUpload" },
   { path: toChildPath(ROUTES.PHOTO_CAPTURE), page: "PhotoCapture" },
   { path: toChildPath(ROUTES.QR_CODE_GENERATION), page: "QRCodeGeneration" },
@@ -162,9 +163,10 @@ export const DASHBOARD_ROUTES: { index?: true; path?: string; page: string }[] =
   // WMS User Management (reuse existing pages)
   { path: toChildPath(ROUTES.USER_ACCOUNTS), page: "UserRoleManagement" },
   { path: toChildPath(ROUTES.ROLES_PERMISSIONS), page: "UserRoleManagement" },
-  { path: toChildPath(ROUTES.ACTIVITY_LOGS), page: "SecurityAccess" },
+  { path: toChildPath(ROUTES.ACTIVITY_LOGS), page: "ActivityLogs" },
   // HR
   { path: toChildPath(ROUTES.EMPLOYEES), page: "Employees" },
+  { path: toChildPath(ROUTES.RECRUITMENT), page: "Recruitment" },
   { path: toChildPath(ROUTES.ADD_STAFF), page: "AddStaff" },
   { path: "employees/:id", page: "EmployeeDetail" },
   { path: "employees/:id/edit", page: "EmployeeEdit" },

@@ -1,4 +1,5 @@
 import os
+import logging
 from django.utils import timezone
 from django.http import FileResponse, Http404
 from django.conf import settings
@@ -14,6 +15,8 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q
+
+logger = logging.getLogger(__name__)
 from .models import (
     Staff,
     Attendance,
@@ -51,6 +54,7 @@ from .serializers import (
 )
 from logs.middleware import create_activity_log
 from decimal import Decimal
+from config.media_views import attach_media_auth_cookie
 
 
 class LoginView(APIView):
@@ -65,10 +69,11 @@ class LoginView(APIView):
             user = serializer.validated_data["user"]
             token, _ = Token.objects.get_or_create(user=user)
             create_activity_log(user, request, "POST /api/auth/login (success)")
-            return Response(
+            response = Response(
                 LoginResponseSerializer({"token": token.key, "user": user}).data,
                 status=status.HTTP_200_OK,
             )
+            return attach_media_auth_cookie(response, token.key, request)
         except ValidationError:
             create_activity_log(None, request, "POST /api/auth/login (failed)")
             raise
@@ -165,7 +170,8 @@ class StaffViewSet(viewsets.ModelViewSet):
     ordering_fields = ["full_name", "created_at"]
 
     def get_queryset(self):
-        return apply_location_filter(Staff.objects.all(), self.request.user, field="user__location")
+        qs = Staff.objects.select_related("user", "face_enrollment")
+        return apply_location_filter(qs, self.request.user, field="user__location")
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -214,7 +220,7 @@ class StaffViewSet(viewsets.ModelViewSet):
 
                 sync_staff_faces_after_save(staff, force=True)
             except Exception:
-                pass
+                logger.exception("Staff face sync failed")
         create_activity_log(
             self.request.user,
             self.request,
@@ -234,7 +240,7 @@ class StaffViewSet(viewsets.ModelViewSet):
 
                 sync_staff_faces_after_save(staff, force=True)
             except Exception:
-                pass
+                logger.exception("Staff face sync failed")
         create_activity_log(
             self.request.user,
             self.request,
@@ -279,7 +285,7 @@ class StaffViewSet(viewsets.ModelViewSet):
 
                 sync_staff_identity_after_user_link(staff)
             except Exception:
-                pass
+                logger.exception("Staff face sync failed")
 
             create_activity_log(
                 request.user,
@@ -393,7 +399,7 @@ class StaffViewSet(viewsets.ModelViewSet):
 
             sync_staff_identity_after_user_link(staff)
         except Exception:
-            pass
+            logger.exception("Staff face sync failed after linking user")
 
         create_activity_log(
             request.user,

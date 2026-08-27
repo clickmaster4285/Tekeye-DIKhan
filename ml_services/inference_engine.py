@@ -23,6 +23,27 @@ YOLO_WEIGHTS_CUSTOM = WEIGHTS_DIR / "best.pt"
 YOLO_WEIGHTS_SMOKE = WEIGHTS_DIR / "best_Smoke_Detection.pt"
 YOLO_WEIGHTS_WEAPON = WEIGHTS_DIR / "best_weapon_detection.pt"
 
+# Ultralytics can auto-download these names. Custom trained files must exist on disk.
+ULTRALYTICS_NAMED_WEIGHTS = frozenset(
+    {
+        "yolo26n.pt",
+        "yolo26s.pt",
+        "yolo26m.pt",
+        "yolo26l.pt",
+        "yolo26x.pt",
+        "yolov8n.pt",
+        "yolov8s.pt",
+        "yolov8m.pt",
+        "yolov8l.pt",
+        "yolov8x.pt",
+        "yolo11n.pt",
+        "yolo11s.pt",
+        "yolo11m.pt",
+        "yolo11l.pt",
+        "yolo11x.pt",
+    }
+)
+
 YOLO_WEIGHTS_ENV = os.getenv("ML_YOLO_WEIGHTS", "").strip()
 YOLO_CUSTOM_WEIGHTS_ENV = os.getenv("ML_YOLO_CUSTOM_WEIGHTS", "").strip()
 YOLO_SMOKE_WEIGHTS_ENV = os.getenv("ML_YOLO_SMOKE_WEIGHTS", "").strip()
@@ -230,8 +251,11 @@ def _resolve_weights(value: str) -> str | None:
     candidate = Path(value)
     if candidate.is_file():
         return str(candidate)
-    if value.endswith(".pt"):
-        return value
+    name = Path(value).name.lower()
+    if name in ULTRALYTICS_NAMED_WEIGHTS:
+        dest = candidate if candidate.is_absolute() else (BASE_DIR / value)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        return str(dest)
     return None
 
 
@@ -289,10 +313,19 @@ def warmup_all_models() -> dict[str, Any]:
     global _warmup_done
     status = get_cuda_status()
     print(f"[ml] Device: {status.get('ml_device')} — {status.get('cuda_device_name') or 'CPU'}")
-    get_yolo_coco_model()
-    get_yolo_custom_model()
-    get_yolo_smoke_model()
-    get_yolo_weapon_model()
+    loaders = (
+        ("coco", get_yolo_coco_model),
+        ("custom", get_yolo_custom_model),
+        ("smoke", get_yolo_smoke_model),
+        ("weapon", get_yolo_weapon_model),
+    )
+    for name, loader in loaders:
+        try:
+            model = loader()
+            if model is None:
+                print(f"[ml] {name} weights missing — skipped")
+        except Exception as exc:
+            print(f"[ml] {name} model failed to load: {exc}")
     _warmup_done = True
     status["models_warmed"] = True
     return status
@@ -305,8 +338,12 @@ def get_yolo_coco_model():
     weights = resolve_coco_weights_path()
     if not weights:
         return None
-    _yolo_coco = _load_yolo(weights)
-    return _yolo_coco
+    try:
+        _yolo_coco = _load_yolo(weights)
+        return _yolo_coco
+    except Exception as exc:
+        print(f"[ml] COCO YOLO load failed ({weights}): {exc}")
+        return None
 
 
 def get_yolo_custom_model():
@@ -316,12 +353,15 @@ def get_yolo_custom_model():
     weights = resolve_custom_weights_path()
     if not weights:
         return None
-    _yolo_custom = _load_yolo(weights)
-    # Cache custom-only IDs (80+). COCO 0–79 are never predicted/emitted from best.pt.
-    custom_names = custom_only_class_names(_yolo_custom)
-    custom_only_class_ids(_yolo_custom)
-    print(f"[ml] best.pt custom-only classes ({len(custom_names)}): {custom_names}")
-    return _yolo_custom
+    try:
+        _yolo_custom = _load_yolo(weights)
+        custom_names = custom_only_class_names(_yolo_custom)
+        custom_only_class_ids(_yolo_custom)
+        print(f"[ml] best.pt custom-only classes ({len(custom_names)}): {custom_names}")
+        return _yolo_custom
+    except Exception as exc:
+        print(f"[ml] custom YOLO load failed ({weights}): {exc}")
+        return None
 
 
 def get_yolo_smoke_model():
@@ -331,8 +371,12 @@ def get_yolo_smoke_model():
     weights = resolve_smoke_weights_path()
     if not weights:
         return None
-    _yolo_smoke = _load_yolo(weights)
-    return _yolo_smoke
+    try:
+        _yolo_smoke = _load_yolo(weights)
+        return _yolo_smoke
+    except Exception as exc:
+        print(f"[ml] smoke YOLO load failed ({weights}): {exc}")
+        return None
 
 
 def get_yolo_weapon_model():
@@ -342,8 +386,12 @@ def get_yolo_weapon_model():
     weights = resolve_weapon_weights_path()
     if not weights:
         return None
-    _yolo_weapon = _load_yolo(weights)
-    return _yolo_weapon
+    try:
+        _yolo_weapon = _load_yolo(weights)
+        return _yolo_weapon
+    except Exception as exc:
+        print(f"[ml] weapon YOLO load failed ({weights}): {exc}")
+        return None
 
 
 def get_yolo_general_model():
@@ -886,10 +934,13 @@ def health_status() -> dict[str, Any]:
     custom_ids: list[int] = []
     custom_names: list[str] = []
     if custom_weights:
-        custom_model = _yolo_custom or get_yolo_custom_model()
-        if custom_model is not None:
-            custom_ids = custom_only_class_ids(custom_model)
-            custom_names = sorted(custom_only_class_names(custom_model).values())
+        try:
+            custom_model = _yolo_custom or get_yolo_custom_model()
+            if custom_model is not None:
+                custom_ids = custom_only_class_ids(custom_model)
+                custom_names = sorted(custom_only_class_names(custom_model).values())
+        except Exception as exc:
+            print(f"[ml] custom class probe failed: {exc}")
 
     plate_info: dict[str, Any] = {"plate_available": False, "plate_weights": None}
     try:

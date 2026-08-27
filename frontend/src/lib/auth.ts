@@ -2,6 +2,31 @@
 export const AUTH_SESSION_KEY = "pakistan_customs_auth";
 const AUTH_TOKEN_KEY = "pakistan_customs_token";
 const AUTH_USER_KEY = "pakistan_customs_user";
+/** Same-origin cookie so /media/ images and new-tab links work without an Authorization header. */
+export const AUTH_TOKEN_COOKIE = "tekeye_auth_token";
+
+function authCookieSuffix(): string {
+  const secure = typeof window !== "undefined" && window.location.protocol === "https:" ? "; Secure" : "";
+  return `; Path=/; SameSite=Lax${secure}`;
+}
+
+function setAuthTokenCookie(token: string) {
+  if (typeof document === "undefined") return;
+  document.cookie = `${AUTH_TOKEN_COOKIE}=${encodeURIComponent(token)}${authCookieSuffix()}`;
+}
+
+function clearAuthTokenCookie() {
+  if (typeof document === "undefined") return;
+  document.cookie = `${AUTH_TOKEN_COOKIE}=; Max-Age=0${authCookieSuffix()}`;
+}
+
+/** Keep the media cookie in sync with sessionStorage (covers already-logged-in tabs). */
+export function syncAuthCookieFromSession() {
+  if (typeof window === "undefined") return;
+  const token = window.sessionStorage.getItem(AUTH_TOKEN_KEY);
+  if (token) setAuthTokenCookie(token);
+  else clearAuthTokenCookie();
+}
 
 export type AuthUser = {
   id: number;
@@ -35,6 +60,7 @@ export function setAuthenticatedWithToken(token: string, user: AuthUser) {
   window.sessionStorage.setItem(AUTH_TOKEN_KEY, token);
   window.sessionStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
   window.sessionStorage.setItem(AUTH_SESSION_KEY, "true");
+  setAuthTokenCookie(token);
 }
 
 export function getStoredUser(): AuthUser | null {
@@ -60,6 +86,7 @@ export function updateStoredUser(partial: Partial<AuthUser>): AuthUser | null {
 }
 
 export const AUTH_USER_UPDATED_EVENT = "tekeye-auth-user-updated";
+export const AUTH_SESSION_EXPIRED_EVENT = "tekeye-auth-session-expired";
 
 export function isAuthenticated(): boolean {
   if (typeof window === "undefined") return false;
@@ -71,5 +98,48 @@ export function clearAuth() {
     window.sessionStorage.removeItem(AUTH_SESSION_KEY);
     window.sessionStorage.removeItem(AUTH_TOKEN_KEY);
     window.sessionStorage.removeItem(AUTH_USER_KEY);
+    clearAuthTokenCookie();
   }
+}
+
+/** Clear session after a 401. Listeners drop React Query cache. */
+export function handleSessionExpired() {
+  if (typeof window === "undefined") return;
+  if (!isAuthenticated()) return;
+  clearAuth();
+  window.dispatchEvent(new CustomEvent(AUTH_SESSION_EXPIRED_EVENT));
+  if (!window.location.pathname.startsWith("/login")) {
+    window.location.assign("/login");
+  }
+}
+
+if (typeof window !== "undefined") {
+  syncAuthCookieFromSession();
+}
+
+/** Only same-origin /media/... paths (blocks open redirects). */
+export function getSafeMediaNext(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let value = raw.trim();
+  if (!value) return null;
+  try {
+    if (/^https?:\/\//i.test(value)) {
+      const parsed = new URL(value);
+      if (typeof window !== "undefined" && parsed.origin !== window.location.origin) return null;
+      value = `${parsed.pathname}${parsed.search}`;
+    }
+  } catch {
+    return null;
+  }
+  if (!value.startsWith("/media/")) return null;
+  if (value.startsWith("//") || value.includes("\\") || /:\/\//.test(value)) return null;
+  return value;
+}
+
+/** Full navigation so the browser requests the file from Django (not a React route). */
+export function goToSafeMediaNext(raw: string | null | undefined): boolean {
+  const path = getSafeMediaNext(raw);
+  if (!path || typeof window === "undefined") return false;
+  window.location.replace(path);
+  return true;
 }

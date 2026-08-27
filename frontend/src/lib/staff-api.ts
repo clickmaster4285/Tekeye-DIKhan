@@ -121,15 +121,28 @@ export function hasStaffProfileImage(profileImage: string | null | undefined): b
   return true;
 }
 
-/** Resolve staff photo URL for display; returns undefined when there is no real image. */
+/** Same-origin /media/... so the Vite proxy can send the auth cookie. */
 export function resolveStaffProfileImageUrl(
   profileImage: string | null | undefined
 ): string | undefined {
   if (!hasStaffProfileImage(profileImage)) return undefined;
   const p = profileImage!.trim();
   if (p.startsWith("data:")) return p;
-  if (p.startsWith("http")) return p;
-  return `${API_BASE_URL}${p.startsWith("/") ? "" : "/"}${p}`;
+  if (/^https?:\/\//i.test(p)) {
+    try {
+      const parsed = new URL(p);
+      const path = `${parsed.pathname}${parsed.search}`;
+      if (path.startsWith("/media/")) {
+        return `${API_BASE_URL.replace(/\/$/, "")}${path}`;
+      }
+    } catch {
+      return p;
+    }
+    return p;
+  }
+  if (p.startsWith("/media/")) return `${API_BASE_URL.replace(/\/$/, "")}${p}`;
+  if (p.startsWith("media/")) return `${API_BASE_URL.replace(/\/$/, "")}/${p}`;
+  return `${API_BASE_URL.replace(/\/$/, "")}/media/${p.replace(/^\/+/, "")}`;
 }
 
 /** All staff photo URLs for gallery display (falls back to profile_image). */
@@ -138,7 +151,9 @@ export function resolveStaffPhotoGallery(staff: {
   staff_photos?: string[] | null;
   profile_image?: string | null;
 }): string[] {
-  const fromUrls = (staff.staff_photo_urls ?? []).filter(Boolean) as string[];
+  const fromUrls = (staff.staff_photo_urls ?? [])
+    .map((p) => resolveStaffProfileImageUrl(p))
+    .filter((u): u is string => Boolean(u));
   if (fromUrls.length) return fromUrls;
   const fromPaths = (staff.staff_photos ?? [])
     .map((p) => resolveStaffProfileImageUrl(p))
@@ -656,10 +671,7 @@ export type CreateStaffPayload = {
 
 /** Resolve a staff media path for display in forms. */
 export function resolveStaffMediaUrl(path: string | null | undefined): string | undefined {
-  if (!path?.trim()) return undefined;
-  const p = path.trim();
-  if (p.startsWith("data:") || p.startsWith("http")) return p;
-  return `${API_BASE_URL}${p.startsWith("/") ? "" : "/"}${p}`;
+  return resolveStaffProfileImageUrl(path);
 }
 
 const STAFF_FILE_FIELD_MAP: Record<string, string> = {

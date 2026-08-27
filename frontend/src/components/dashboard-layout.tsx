@@ -1,14 +1,40 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { Outlet } from "react-router-dom"
 import { Sidebar } from "@/components/dashboard/sidebar"
 import { Header } from "@/components/dashboard/header"
 import { ActivityLogger } from "@/components/activity-logger"
 import { SessionPermissionSync } from "@/components/session-permission-sync"
+import { getStoredUser } from "@/lib/auth"
+import { getNavSectionsForRole, type NavGroup, type NavItem } from "@/routes/config"
+import { prefetchHrefsIdle } from "@/routes/prefetch"
+
+function collectNavHrefs(limit = 24): string[] {
+  const user = getStoredUser()
+  const sections = getNavSectionsForRole(user?.role, user?.allowed_modules)
+  const hrefs: string[] = ["/"]
+  const walk = (nodes: (NavItem | NavGroup)[]) => {
+    for (const node of nodes) {
+      if ("href" in node) {
+        hrefs.push(node.href)
+        continue
+      }
+      if (node.overviewHref) hrefs.push(node.overviewHref)
+      walk(node.children)
+    }
+  }
+  for (const section of sections) walk(section.items)
+  return [...new Set(hrefs)].slice(0, limit)
+}
 
 export function DashboardLayout() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const openMobileSidebar = useCallback(() => setMobileSidebarOpen(true), [])
   const setMobileOpen = useCallback((open: boolean) => setMobileSidebarOpen(open), [])
+
+  useEffect(() => {
+    const id = window.setTimeout(() => prefetchHrefsIdle(collectNavHrefs()), 400)
+    return () => window.clearTimeout(id)
+  }, [])
 
   return (
     <div className="flex min-h-screen min-w-0 max-w-full overflow-x-hidden bg-[#f8fafc]">

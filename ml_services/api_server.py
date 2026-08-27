@@ -41,9 +41,15 @@ _live = get_live_manager()
 def _boot_live_streams():
     try:
         warmup_all_models()
+    except Exception as exc:
+        print(f"[live] Model warmup failed (continuing): {exc}")
+    try:
         from plate_recognizer import get_plate_engine
 
         get_plate_engine()
+    except Exception as exc:
+        print(f"[live] Plate engine failed (ANPR off): {exc}")
+    try:
         _live.configure_from_env()
         _live.ensure_started()
     except Exception as exc:
@@ -93,8 +99,11 @@ def _resolve_live_stream(
     *,
     purpose: str = "",
     purposes: str = "",
+    require_engine: bool = True,
 ) -> str:
-    _live.ensure_started()
+    # Do not block HTTP on YOLO load. Raw JPEG/RTSP can serve before infer is ready.
+    if require_engine and not _live.is_ready():
+        raise HTTPException(status_code=503, detail="Live engine still starting")
     purpose_list = [p.strip() for p in (purposes or "").split(",") if p.strip()]
     if purpose_list or (purpose or "").strip():
         applied = _live.set_camera_purposes(key, purpose=purpose, purposes=purpose_list)
@@ -116,6 +125,11 @@ def _mjpeg_headers() -> dict[str, str]:
         "Pragma": "no-cache",
         "X-Accel-Buffering": "no",
     }
+
+
+@app.get("/")
+def root():
+    return {"service": "Custom ML Inference", "health": "/health"}
 
 
 @app.get("/health")
@@ -326,8 +340,55 @@ def live_jpeg(
     key = camera_key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="camera_key required")
-    _resolve_live_stream(key, rtsp_url, purpose=purpose, purposes=purposes)
-    frame = _live.get_preview_jpeg(key)
+    _resolve_live_stream(key, rtsp_url, purpose=purpose, purposes=purposes, require_engine=False)
+    if _live.is_ready():
+        frame = _live.wait_for_preview_jpeg(key, timeout_sec=2.5)
+    else:
+        frame = _live.wait_for_raw_jpeg(key, timeout_sec=2.5)
+    if not frame:
+        raise HTTPException(status_code=503, detail="No frame yet")
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers=_mjpeg_headers(),
+    )
+
+
+@app.get("/live/cam/{camera_key}/jpeg/raw")
+def live_jpeg_raw(
+    camera_key: str,
+    rtsp_url: str | None = None,
+    purpose: str = "",
+    purposes: str = "",
+):
+    """Single raw JPEG from the live RTSP session. Does not wait for YOLO warmup."""
+    key = camera_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="camera_key required")
+    _resolve_live_stream(key, rtsp_url, purpose=purpose, purposes=purposes, require_engine=False)
+    frame = _live.wait_for_raw_jpeg(key, timeout_sec=2.0)
+    if not frame:
+        raise HTTPException(status_code=503, detail="No frame yet")
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers=_mjpeg_headers(),
+    )
+
+
+@app.get("/live/cam/{camera_key}/jpeg/attendance")
+def live_jpeg_attendance(
+    camera_key: str,
+    rtsp_url: str | None = None,
+    width: int = 3840,
+):
+    """Single HD JPEG from the same RTSP session used for attendance clips."""
+    key = camera_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="camera_key required")
+    _resolve_live_stream(key, rtsp_url, require_engine=False)
+    target_width = max(640, min(4096, int(width or 3840)))
+    frame = _live.wait_for_raw_jpeg(key, timeout_sec=2.5, target_width=target_width)
     if not frame:
         raise HTTPException(status_code=503, detail="No frame yet")
     return Response(
@@ -365,7 +426,7 @@ def live_mjpeg_raw(
     key = camera_key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="camera_key required")
-    _resolve_live_stream(key, rtsp_url, purpose=purpose, purposes=purposes)
+    _resolve_live_stream(key, rtsp_url, purpose=purpose, purposes=purposes, require_engine=False)
     return StreamingResponse(
         _live.iter_mjpeg_raw(key),
         media_type="multipart/x-mixed-replace; boundary=frame",
@@ -383,7 +444,7 @@ def live_mjpeg_attendance(
     key = camera_key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="camera_key required")
-    _resolve_live_stream(key, rtsp_url)
+    _resolve_live_stream(key, rtsp_url, require_engine=False)
     target_width = max(640, min(4096, int(width or 3840)))
     return StreamingResponse(
         _live.iter_mjpeg_attendance(key, target_width=target_width),

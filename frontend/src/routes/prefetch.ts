@@ -53,3 +53,21 @@ export function prefetchRoute(href: string): void {
     })
   )
 }
+
+/** Prefetch page chunks during idle time so sidebar clicks skip the JS wait. */
+export function prefetchHrefsIdle(hrefs: string[]): void {
+  const unique = [...new Set(hrefs.filter(Boolean))]
+  let i = 0
+  const tick = () => {
+    if (i >= unique.length) return
+    prefetchRoute(unique[i++])
+    if (i >= unique.length) return
+    const ric = window.requestIdleCallback
+    if (typeof ric === "function") {
+      ric(tick, { timeout: 1500 })
+    } else {
+      window.setTimeout(tick, 120)
+    }
+  }
+  tick()
+}

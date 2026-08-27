@@ -57,6 +57,7 @@ export type JourneyPersonDetail = JourneyPersonRecord & {
 export type JourneySummary = {
   active_now: number;
   unknown_today: number;
+  visitors_today?: number;
   staff_recognized_24h: number;
   events_24h: number;
   by_type: Record<string, number>;

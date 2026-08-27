@@ -9,6 +9,9 @@ import time
 
 from django.conf import settings
 from django.db import close_old_connections
+from django.db.utils import OperationalError
+
+from config.db import release_db
 
 logger = logging.getLogger(__name__)
 
@@ -84,22 +87,30 @@ def _worker_loop() -> None:
 
     while not _stop.is_set():
         close_old_connections()
-        now = time.monotonic()
-        if not camera_ids or now - last_refresh >= refresh_sec:
-            camera_ids = _active_camera_ids()
-            last_refresh = now
-            if camera_ids:
-                logger.info("Journey live ingest tracking %s camera(s)", len(camera_ids))
+        try:
+            now = time.monotonic()
+            if not camera_ids or now - last_refresh >= refresh_sec:
+                camera_ids = _active_camera_ids()
+                last_refresh = now
+                if camera_ids:
+                    logger.info("Journey live ingest tracking %s camera(s)", len(camera_ids))
 
-        if camera_ids:
-            cam_id = camera_ids[index % len(camera_ids)]
-            index += 1
-            try:
-                count = _poll_camera(cam_id)
-                if count:
-                    logger.debug("Journey live ingest camera %s: %s persons", cam_id, count)
-            except Exception:
-                logger.exception("Journey live ingest failed for camera %s", cam_id)
+            if camera_ids:
+                cam_id = camera_ids[index % len(camera_ids)]
+                index += 1
+                try:
+                    count = _poll_camera(cam_id)
+                    if count:
+                        logger.debug("Journey live ingest camera %s: %s persons", cam_id, count)
+                except OperationalError:
+                    logger.warning("Journey live ingest: Postgres full; backing off 15s")
+                    release_db()
+                    _stop.wait(15)
+                    continue
+                except Exception:
+                    logger.exception("Journey live ingest failed for camera %s", cam_id)
+        finally:
+            release_db()
 
         _stop.wait(interval)
 

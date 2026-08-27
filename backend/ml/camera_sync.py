@@ -11,31 +11,35 @@ logger = logging.getLogger(__name__)
 
 def collect_active_camera_entries() -> list[dict[str, str]]:
     from cameras.models import Camera
+    from config.db import release_db
 
     close_old_connections()
-    rows = (
-        Camera.objects.filter(
-            is_active=True,
-            nvr__is_active=True,
-            nvr__site__is_active=True,
+    try:
+        rows = (
+            Camera.objects.filter(
+                is_active=True,
+                nvr__is_active=True,
+                nvr__site__is_active=True,
+            )
+            .select_related("nvr", "nvr__site")
+            .order_by("id")
         )
-        .select_related("nvr", "nvr__site")
-        .order_by("id")
-    )
-    entries: list[dict[str, str]] = []
-    for camera in rows:
-        rtsp_url = (camera.effective_stream_url() or "").strip()
-        if not rtsp_url:
-            continue
-        entries.append(
-            {
-                "key": camera.stream_key,
-                "rtsp_url": rtsp_url,
-                "purpose": camera.purpose,
-                "purposes": camera.purpose_list(),
-            }
-        )
-    return entries
+        entries: list[dict[str, str]] = []
+        for camera in rows:
+            rtsp_url = (camera.effective_stream_url() or "").strip()
+            if not rtsp_url:
+                continue
+            entries.append(
+                {
+                    "key": camera.stream_key,
+                    "rtsp_url": rtsp_url,
+                    "purpose": camera.purpose,
+                    "purposes": camera.purpose_list(),
+                }
+            )
+        return entries
+    finally:
+        release_db()
 
 
 def sync_cameras_to_ml(*, retries: int = 3) -> dict | None:
