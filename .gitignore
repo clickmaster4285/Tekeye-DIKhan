@@ -1,0 +1,71 @@
+# ----------------------
+# Python / Django
+# ----------------------
+# Always version Django migrations (never ignore them)
+!**/migrations/
+!**/migrations/*.py
+!**/migrations/**/*.py
+
+*.pyc
+*.py[cod]
+__pycache__/
+venv/
+.venv/
+env/
+*.sqlite3
+db.sqlite3
+*.log
+media/
+staticfiles/
+local_settings.py
+.detection_worker.lock
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment variables (backend & frontend — never commit secrets)
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# ----------------------
+# React / Node
+# ----------------------
+node_modules/
+dist/
+build/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.tsbuildinfo
+
+# ----------------------
+# VS Code / IDE
+# ----------------------
+.vscode/
+.idea/
+
+# ----------------------
+# OS / system files
+# ----------------------
+.DS_Store
+Thumbs.db
+
+# ML service — keep source; ignore weights / training artifacts / secrets
+ml_services/runs/
+ml_services/.env
+
+# FFmpeg binaries
+tools/ffmpeg/bin/
