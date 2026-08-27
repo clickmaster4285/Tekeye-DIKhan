@@ -1,0 +1,4 @@
+# Keep this directory tracked even if a parent gitignore excludes migrations.
+*
+!.gitignore
+!*.py
