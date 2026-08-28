@@ -40,7 +40,7 @@ import { promoteDetentionToSeizedAndInventory } from "@/lib/wms-stock-storage"
 import { toast } from "@/components/ui/use-toast"
 import { ExportMenu } from "@/components/seizure/export-menu"
 import DetentionMemoReportPrint from "@/components/detention/DetentionMemoReportPrint"
-import { downloadCsv, joinList } from "@/lib/csv-export"
+import { downloadDetentionMemoCsv } from "@/lib/detention-memo-csv"
 import { useBatchPdfExport } from "@/hooks/use-batch-pdf-export"
 import { PdfExportHost } from "@/components/seizure/pdf-export-host"
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100]
@@ -152,115 +152,7 @@ export default function DetentionMemoPage() {
   const pdf = useBatchPdfExport<DetentionMemoRow>(`detention-memos-${new Date().toISOString().slice(0, 10)}.pdf`)
 
   const exportCsv = () => {
-    const headers = [
-      "Sheet Sr. No",
-      "Record ID",
-      "Case No",
-      "Detention Memo No",
-      "FIR Number",
-      "Date/Time of Occurrence",
-      "Place of Occurrence",
-      "Date/Time of Detention",
-      "Place of Detention",
-      "Detention Type",
-      "Directorate",
-      "Reason for Detention",
-      "Location of Detention",
-      "GD Number",
-      "GD Number 2",
-      "Where Deposited",
-      "Search / Chassis Number",
-      "Receipt Officer",
-      "Settlement Status",
-      "Verification Status",
-      "Disposition Status",
-      "Brief Facts",
-      "Forwarding Officer Remarks",
-      "Purpose of Detention",
-      "Owner Name",
-      "Owner CNIC",
-      "Owner Contact",
-      "Driver Name",
-      "Driver CNIC",
-      "Driver Contact",
-      "Seizing Officer Notes",
-      "Examining Officer Notes",
-      "Detention Notes",
-      "Goods Line No",
-      "Goods QR",
-      "Description of Goods",
-      "PCT Code",
-      "Quantity",
-      "Unit",
-      "Condition",
-      "Assessable Value (PKR)",
-      "Perishable",
-      "ID / Chassis No",
-      "Item Notes",
-      "Goods Image URLs",
-      "Created By",
-      "Updated By",
-      "Created At",
-      "Updated At",
-    ]
-    const out: unknown[][] = []
-    filteredRows.forEach((r, index) => {
-      const goods = r.goodsItems?.length ? r.goodsItems : [null]
-      goods.forEach((item, itemIndex) => {
-        out.push([
-          index + 1,
-          r.id,
-          r.caseNo,
-          r.referenceNumber,
-          r.firNumber,
-          r.dateTimeOccurrence,
-          r.placeOfOccurrence,
-          r.dateTimeDetention,
-          r.placeOfDetention,
-          r.detentionType,
-          r.directorate,
-          r.reasonForDetention,
-          r.locationOfDetention,
-          r.gdNumber,
-          r.gdNumber2,
-          r.whereDeposited,
-          r.searchChassisNumber,
-          r.receiptOfficer,
-          r.settlementStatus,
-          r.verificationStatus,
-          r.dispositionStatus,
-          r.briefFacts,
-          r.forwardingOfficerRemarks,
-          r.purposeOfDetention,
-          r.owner?.name,
-          r.owner?.cnic,
-          r.owner?.contact,
-          r.driver?.name,
-          r.driver?.cnic,
-          r.driver?.contact,
-          r.seizingOfficerNotes,
-          r.examiningOfficerNotes,
-          r.detentionNotes,
-          item ? itemIndex + 1 : "",
-          item?.qrCodeNumber,
-          item?.description,
-          item?.pctCode,
-          item?.quantity,
-          item?.unit,
-          item?.condition,
-          item?.assessableValuePkr,
-          item ? (item.perishable ? "Yes" : "No") : "",
-          item?.identificationRef,
-          item?.itemNotes,
-          joinList(item?.images),
-          r.createdBy,
-          r.updatedBy,
-          r.createdAt,
-          r.updatedAt,
-        ])
-      })
-    })
-    downloadCsv(`detention-memos-${new Date().toISOString().slice(0, 10)}.csv`, headers, out)
+    downloadDetentionMemoCsv(`detention-memos-${new Date().toISOString().slice(0, 10)}.csv`, filteredRows)
   }
 
   const handleSeize = async (row: DetentionMemoRow) => {

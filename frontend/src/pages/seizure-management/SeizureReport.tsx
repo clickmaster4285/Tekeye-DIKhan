@@ -52,12 +52,8 @@ export default function SeizureReportPage() {
 
   const exportCsv = () => {
     downloadCsv(`seizure-reports-${new Date().toISOString().slice(0, 10)}.csv`, [
-      "Record ID",
       "Seizure Report No",
       "Case No",
-      "Detention Memo ID",
-      "Assessment ID",
-      "Recovery Memo ID",
       "Report Date",
       "Prepared By",
       "Summary",
@@ -67,12 +63,8 @@ export default function SeizureReportPage() {
       "Created At",
       "Updated At",
     ], filtered.map((r) => [
-      r.id,
       r.referenceNumber,
       r.caseNo,
-      r.detentionMemoId,
-      r.assessmentId,
-      r.recoveryMemoId,
       r.reportDate,
       r.preparedBy,
       r.summary,

@@ -166,7 +166,6 @@ function emptyGoodsLine(): NoteSheetItem {
 
 const NOTE_SHEET_CSV_HEADERS = [
   "Sheet Sr. No",
-  "Record ID",
   "Note Sheet No",
   "Reference Number",
   "Date & Time",
@@ -197,7 +196,6 @@ const NOTE_SHEET_CSV_HEADERS = [
   "Additional Notes",
   "Recommendation",
   "Goods Line No",
-  "Goods Line ID",
   "Goods QR Code",
   "Description of Goods",
   "PCT Code",
@@ -214,7 +212,6 @@ const NOTE_SHEET_CSV_HEADERS = [
   "Prepared Signature",
   "Prepared Date",
   "Forward To",
-  "Forward To User ID",
   "Approved By",
   "Approved At",
   "Approval Remarks",
@@ -222,7 +219,6 @@ const NOTE_SHEET_CSV_HEADERS = [
   "Submitted At",
   "Viewed At",
   "Detention Memo Status",
-  "Detention Memo ID",
   "Created By",
   "Updated By",
   "Created At",
@@ -239,7 +235,6 @@ function noteSheetCsvRow(
 ): string {
   return [
     sheetIndex,
-    row.id,
     row.noteSheetNo || "",
     row.referenceNumber || "",
     row.dateTime || "",
@@ -270,7 +265,6 @@ function noteSheetCsvRow(
     row.content || "",
     row.recommendation || "",
     goodsLineNo,
-    item.id || "",
     item.qrCodeNumber || "",
     item.product || item.description || "",
     item.pctCode || "",
@@ -287,7 +281,6 @@ function noteSheetCsvRow(
     row.preparedSignature || "",
     row.preparedDate || "",
     row.forwardTo || "",
-    row.forwardToUserId ?? "",
     row.approvedBy || "",
     row.approvedAt || "",
     row.approvalRemarks || "",
@@ -295,7 +288,6 @@ function noteSheetCsvRow(
     row.submittedAt || "",
     row.viewedAt || "",
     detentionMemoLabel(row),
-    row.detentionMemoId || "",
     row.createdBy || "",
     row.updatedBy || "",
     row.createdAt || "",

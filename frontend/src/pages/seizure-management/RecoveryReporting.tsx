@@ -57,11 +57,8 @@ export default function RecoveryReportingPage() {
 
   const exportCsv = () => {
     downloadCsv(`recovery-report-${new Date().toISOString().slice(0, 10)}.csv`, [
-      "Record ID",
       "Recovery Memo No",
       "Case No",
-      "Detention Memo ID",
-      "Assessment ID",
       "Category",
       "Recovery Date",
       "Recovery Officer",
@@ -74,17 +71,13 @@ export default function RecoveryReportingPage() {
       "Approval Remarks",
       "Rejection Reason",
       "Submitted At",
-      "Deposit Account ID",
       "Created By",
       "Updated By",
       "Created At",
       "Updated At",
     ], filtered.map((r) => [
-      r.id,
       r.referenceNumber,
       r.caseNo,
-      r.detentionMemoId,
-      r.assessmentId,
       r.category,
       r.recoveryDate,
       r.recoveryOfficer,
@@ -97,7 +90,6 @@ export default function RecoveryReportingPage() {
       r.approvalRemarks,
       r.rejectionReason,
       r.submittedAt,
-      r.depositAccountId,
       r.createdBy,
       r.updatedBy,
       r.createdAt,

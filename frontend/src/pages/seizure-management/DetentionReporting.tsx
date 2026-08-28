@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { ExportMenu } from "@/components/seizure/export-menu"
 import DetentionMemoReportPrint from "@/components/detention/DetentionMemoReportPrint"
-import { downloadCsv, joinList } from "@/lib/csv-export"
+import { downloadDetentionMemoCsv } from "@/lib/detention-memo-csv"
 import { useBatchPdfExport } from "@/hooks/use-batch-pdf-export"
 import { PdfExportHost } from "@/components/seizure/pdf-export-host"
 import {
@@ -75,125 +75,17 @@ export default function DetentionReportingPage() {
   const pdf = useBatchPdfExport<DetentionMemoApiRecord>(`detention-report-${new Date().toISOString().slice(0, 10)}.pdf`)
 
   const exportCsv = () => {
-    const headers = [
-      "Sheet Sr. No",
-      "Record ID",
-      "Case No",
-      "Detention Memo No",
-      "FIR Number",
-      "Date/Time of Occurrence",
-      "Place of Occurrence",
-      "Date/Time of Detention",
-      "Place of Detention",
-      "Detention Type",
-      "Directorate",
-      "Reason for Detention",
-      "Location of Detention",
-      "GD Number",
-      "GD Number 2",
-      "Where Deposited",
-      "Search / Chassis Number",
-      "Receipt Officer",
-      "Settlement Status",
-      "Verification Status",
-      "Disposition Status",
-      "Brief Facts",
-      "Forwarding Officer Remarks",
-      "Purpose of Detention",
-      "Owner Name",
-      "Owner CNIC",
-      "Owner Contact",
-      "Driver Name",
-      "Driver CNIC",
-      "Driver Contact",
-      "Seizing Officer Notes",
-      "Examining Officer Notes",
-      "Detention Notes",
-      "Days Since Detention",
-      "Assessment",
-      "60-Day Status",
-      "Goods Line No",
-      "Goods QR",
-      "Description of Goods",
-      "PCT Code",
-      "Quantity",
-      "Unit",
-      "Condition",
-      "Assessable Value (PKR)",
-      "Perishable",
-      "ID / Chassis No",
-      "Item Notes",
-      "Goods Image URLs",
-      "Created By",
-      "Updated By",
-      "Created At",
-      "Updated At",
-    ]
-    const rows: unknown[][] = []
-    filtered.forEach((r, index) => {
-      const days = daysSinceDetention(r.dateTimeDetention)
-      const hasAssessment = assessedMemoIds.has(r.id)
-      const windowStatus =
-        days === null ? "" : days > DETENTION_WINDOW_DAYS ? "Overdue" : "Within window"
-      const goods = r.goodsItems?.length ? r.goodsItems : [null]
-      goods.forEach((item, itemIndex) => {
-        rows.push([
-          index + 1,
-          r.id,
-          r.caseNo,
-          r.referenceNumber,
-          r.firNumber,
-          r.dateTimeOccurrence,
-          r.placeOfOccurrence,
-          r.dateTimeDetention,
-          r.placeOfDetention,
-          r.detentionType,
-          r.directorate,
-          r.reasonForDetention,
-          r.locationOfDetention,
-          r.gdNumber,
-          r.gdNumber2,
-          r.whereDeposited,
-          r.searchChassisNumber,
-          r.receiptOfficer,
-          r.settlementStatus,
-          r.verificationStatus,
-          r.dispositionStatus,
-          r.briefFacts,
-          r.forwardingOfficerRemarks,
-          r.purposeOfDetention,
-          r.owner?.name,
-          r.owner?.cnic,
-          r.owner?.contact,
-          r.driver?.name,
-          r.driver?.cnic,
-          r.driver?.contact,
-          r.seizingOfficerNotes,
-          r.examiningOfficerNotes,
-          r.detentionNotes,
+    downloadDetentionMemoCsv(`detention-report-${new Date().toISOString().slice(0, 10)}.csv`, filtered, {
+      headers: ["Days Since Detention", "Assessment", "60-Day Status"],
+      values: (r) => {
+        const days = daysSinceDetention(r.dateTimeDetention)
+        return [
           days ?? "",
-          hasAssessment ? "Yes" : "No",
-          windowStatus,
-          item ? itemIndex + 1 : "",
-          item?.qrCodeNumber,
-          item?.description,
-          item?.pctCode,
-          item?.quantity,
-          item?.unit,
-          item?.condition,
-          item?.assessableValuePkr,
-          item ? (item.perishable ? "Yes" : "No") : "",
-          item?.identificationRef,
-          item?.itemNotes,
-          joinList(item?.images),
-          r.createdBy,
-          r.updatedBy,
-          r.createdAt,
-          r.updatedAt,
-        ])
-      })
+          assessedMemoIds.has(r.id) ? "Yes" : "No",
+          days === null ? "" : days > DETENTION_WINDOW_DAYS ? "Overdue" : "Within window",
+        ]
+      },
     })
-    downloadCsv(`detention-report-${new Date().toISOString().slice(0, 10)}.csv`, headers, rows)
   }
 
   return (

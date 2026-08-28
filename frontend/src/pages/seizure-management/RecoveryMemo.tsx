@@ -59,11 +59,8 @@ export default function RecoveryMemoPage() {
 
   const exportCsv = () => {
     downloadCsv(`recovery-memos-${new Date().toISOString().slice(0, 10)}.csv`, [
-      "Record ID",
       "Recovery Memo No",
       "Case No",
-      "Detention Memo ID",
-      "Assessment ID",
       "Category",
       "Recovery Date",
       "Recovery Officer",
@@ -76,17 +73,13 @@ export default function RecoveryMemoPage() {
       "Approval Remarks",
       "Rejection Reason",
       "Submitted At",
-      "Deposit Account ID",
       "Created By",
       "Updated By",
       "Created At",
       "Updated At",
     ], filtered.map((r) => [
-      r.id,
       r.referenceNumber,
       r.caseNo,
-      r.detentionMemoId,
-      r.assessmentId,
       r.category,
       r.recoveryDate,
       r.recoveryOfficer,
@@ -99,7 +92,6 @@ export default function RecoveryMemoPage() {
       r.approvalRemarks,
       r.rejectionReason,
       r.submittedAt,
-      r.depositAccountId,
       r.createdBy,
       r.updatedBy,
       r.createdAt,

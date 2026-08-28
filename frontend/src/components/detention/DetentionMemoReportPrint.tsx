@@ -25,8 +25,31 @@ function getGoodsQrPayload(memoId: string, item: DetentionMemoGoodsLineApi): str
   return `${window.location.origin}${getDetentionMemoDetailPath(memoId)}?goodsQr=${encodeURIComponent(ref)}&view=goods`
 }
 
-function hasPerson(person?: { name?: string; cnic?: string; contact?: string }) {
-  return Boolean(person?.name?.trim() || person?.cnic?.trim() || person?.contact?.trim())
+function PersonPhoto({ src, alt }: { src?: string | null; alt: string }) {
+  if (!src?.trim()) return null
+  return (
+    <img
+      src={src}
+      alt={alt}
+      style={{
+        width: 72,
+        height: 72,
+        objectFit: "cover",
+        border: "1px solid #d1d5db",
+        borderRadius: 4,
+        background: "#fff",
+      }}
+    />
+  )
+}
+
+function NoteBlock({ heading, value }: { heading: string; value?: string | null }) {
+  return (
+    <div>
+      <div style={{ fontWeight: 800, fontSize: 10, marginBottom: 2 }}>{heading}</div>
+      <div className="narrative">{dash(value)}</div>
+    </div>
+  )
 }
 
 export default function DetentionMemoReportPrint({
@@ -37,14 +60,10 @@ export default function DetentionMemoReportPrint({
   embedded = false,
 }: DetentionMemoReportPrintProps) {
   const goodsItems = row.goodsItems ?? []
-  const hasGoods = goodsItems.length > 0
-  const showPctCode = goodsItems.some((item) => Boolean(item.pctCode?.trim()))
-  const showAssessable = goodsItems.some((item) => Boolean(item.assessableValuePkr?.trim()))
-  const showPerishable = goodsItems.some((item) => Boolean(item.perishable))
-  const showIdentificationRef = goodsItems.some((item) => Boolean(item.identificationRef?.trim()))
-  const showNotes = goodsItems.some((item) => Boolean(item.itemNotes?.trim()))
-  const hasAdditionalNotes = Boolean(
-    row.seizingOfficerNotes || row.examiningOfficerNotes || row.detentionNotes || row.forwardingOfficerRemarks
+  const attachments = row.mediaAttachments ?? []
+  const auditLog = row.auditLog ?? []
+  const goodsImages = goodsItems.flatMap((item) =>
+    (item.images || []).map((url) => ({ url, label: item.qrCodeNumber || item.description || item.id }))
   )
   const payload =
     qrPayload ||
@@ -65,11 +84,12 @@ export default function DetentionMemoReportPrint({
       qrNumber={number}
       qrAlt="Detention Memo QR"
       meta={[
-        { label: "No.", value: sheetNo },
-        { label: "Office", value: row.directorate },
-        { label: "Case", value: row.caseNo },
-        { label: "Status", value: row.verificationStatus || row.settlementStatus },
-        { label: "Date", value: row.dateTimeDetention || row.dateTimeOccurrence },
+        { label: "No.", value: dash(sheetNo) },
+        { label: "FIR", value: dash(row.firNumber) },
+        { label: "Office", value: dash(row.directorate) },
+        { label: "Case", value: dash(row.caseNo) },
+        { label: "Status", value: dash(row.verificationStatus || row.settlementStatus) },
+        { label: "Date", value: dash(row.dateTimeDetention || row.dateTimeOccurrence) },
       ]}
     />
   )
@@ -88,10 +108,17 @@ export default function DetentionMemoReportPrint({
             <div className="info-grid">
               <ReportInfoRow label="Detention Memo No.:" value={sheetNo} />
               <ReportInfoRow label="Case Number:" value={row.caseNo} />
+              <ReportInfoRow label="FIR Number:" value={row.firNumber} />
               <ReportInfoRow label="Detention Type:" value={row.detentionType} />
+              <ReportInfoRow label="Directorate:" value={row.directorate} />
+              <ReportInfoRow label="Disposition:" value={row.dispositionStatus} />
+              <ReportInfoRow label="Settlement:" value={row.settlementStatus} />
+              <ReportInfoRow label="Verification:" value={row.verificationStatus} />
+              <ReportInfoRow label="Memo QR No.:" value={row.memoQrCodeNumber || number} />
               <ReportInfoRow label="Created By:" value={row.createdBy} />
               <ReportInfoRow label="Created Date:" value={row.createdAt} />
-              <ReportInfoRow label="Verification:" value={row.verificationStatus} />
+              <ReportInfoRow label="Updated By:" value={row.updatedBy} />
+              <ReportInfoRow label="Updated Date:" value={row.updatedAt} />
             </div>
           </div>
 
@@ -103,49 +130,63 @@ export default function DetentionMemoReportPrint({
                 <ReportInfoRow label="Place of Occurrence:" value={row.placeOfOccurrence} />
                 <ReportInfoRow label="Date/Time of Detention:" value={row.dateTimeDetention} />
                 <ReportInfoRow label="Place of Detention:" value={row.placeOfDetention} />
-                <ReportInfoRow label="Directorate:" value={row.directorate} />
-                <ReportInfoRow label="Where Deposited:" value={row.whereDeposited} />
-                <ReportInfoRow label="Settlement Status:" value={row.settlementStatus} />
-                <ReportInfoRow label="Reason for Detention:" value={row.reasonForDetention} />
+                <ReportInfoRow label="Location of Detention:" value={row.locationOfDetention} />
+                <ReportInfoRow label="Goods Detained At:" value={row.whereDeposited} />
+                <ReportInfoRow label="GD Number:" value={row.gdNumber} />
+                <ReportInfoRow label="GD Number 2:" value={row.gdNumber2} />
+                <ReportInfoRow label="Search / Chassis No.:" value={row.searchChassisNumber} />
+                <ReportInfoRow label="Receipt Officer:" value={row.receiptOfficer} />
+                <ReportInfoRow label="Reason for Detention:" value={row.reasonForDetention} span2 />
               </div>
             </div>
           </div>
 
-          {hasPerson(row.owner) && (
-            <div className="report-section">
-              <div className="section-title">2. Owner / Accused</div>
-              <div className="box">
+          <div className="report-section">
+            <div className="section-title">2. Owner / Accused</div>
+            <div className="box">
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: row.owner?.picture ? "1fr 72px" : "1fr",
+                  gap: 10,
+                  alignItems: "start",
+                }}
+              >
                 <div className="info-grid">
                   <ReportInfoRow label="Name:" value={row.owner?.name} />
                   <ReportInfoRow label="CNIC:" value={row.owner?.cnic} />
                   <ReportInfoRow label="Contact:" value={row.owner?.contact} span2 />
                 </div>
+                <PersonPhoto src={row.owner?.picture} alt="Owner" />
               </div>
             </div>
-          )}
+          </div>
 
-          {hasPerson(row.driver) && (
-            <div className="report-section">
-              <div className="section-title">{hasPerson(row.owner) ? "3" : "2"}. Driver</div>
-              <div className="box">
+          <div className="report-section">
+            <div className="section-title">3. Driver</div>
+            <div className="box">
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: row.driver?.picture ? "1fr 72px" : "1fr",
+                  gap: 10,
+                  alignItems: "start",
+                }}
+              >
                 <div className="info-grid">
                   <ReportInfoRow label="Name:" value={row.driver?.name} />
                   <ReportInfoRow label="CNIC:" value={row.driver?.cnic} />
                   <ReportInfoRow label="Contact:" value={row.driver?.contact} span2 />
                 </div>
+                <PersonPhoto src={row.driver?.picture} alt="Driver" />
               </div>
             </div>
-          )}
+          </div>
 
-          {(row.purposeOfDetention || row.briefFacts) && (
-            <div className="report-section">
-              <div className="section-title">
-                {1 + (hasPerson(row.owner) ? 1 : 0) + (hasPerson(row.driver) ? 1 : 0) + 1}.{" "}
-                {row.purposeOfDetention ? "Purpose of Detention" : "Memo Description"}
-              </div>
-              <div className="box narrative">{dash(row.purposeOfDetention || row.briefFacts)}</div>
-            </div>
-          )}
+          <div className="report-section">
+            <div className="section-title">4. Purpose of Detention</div>
+            <div className="box narrative">{dash(row.purposeOfDetention)}</div>
+          </div>
         </div>
         <OfficialFooter
           page={1}
@@ -159,26 +200,35 @@ export default function DetentionMemoReportPrint({
       <div className="print-page">
         {letterhead}
         <div className="ns-page-body">
-          {hasGoods && (
-            <div className="report-section">
-              <div className="section-title">Goods Information</div>
-              <table className="goods-table">
-                <thead>
+          <div className="report-section">
+            <div className="section-title">5. Brief Facts / Memo Description</div>
+            <div className="box narrative">{dash(row.briefFacts)}</div>
+          </div>
+
+          <div className="report-section">
+            <div className="section-title">6. Goods Information</div>
+            <table className="goods-table">
+              <thead>
+                <tr>
+                  <th style={{ width: "48px" }}>QR</th>
+                  <th>Description of Goods</th>
+                  <th style={{ width: "40px" }}>Qty</th>
+                  <th style={{ width: "40px" }}>Unit</th>
+                  <th style={{ width: "70px" }}>Condition</th>
+                  <th style={{ width: "72px" }}>Assessable (PKR)</th>
+                  <th style={{ width: "56px" }}>PCT</th>
+                  <th style={{ width: "48px" }}>Perish.</th>
+                  <th style={{ width: "78px" }}>ID / Chassis</th>
+                  <th>Item Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {goodsItems.length === 0 ? (
                   <tr>
-                    <th style={{ width: "52px" }}>QR</th>
-                    <th>Description of Goods</th>
-                    <th style={{ width: "44px" }}>Qty</th>
-                    <th style={{ width: "42px" }}>Unit</th>
-                    <th style={{ width: "78px" }}>Condition</th>
-                    {showAssessable && <th style={{ width: "80px" }}>Assessable (PKR)</th>}
-                    {showPctCode && <th style={{ width: "62px" }}>PCT</th>}
-                    {showPerishable && <th style={{ width: "52px" }}>Perish.</th>}
-                    {showIdentificationRef && <th style={{ width: "90px" }}>ID / Chassis</th>}
-                    {showNotes && <th>Item Notes</th>}
+                    <td colSpan={10}>No goods recorded.</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {goodsItems.map((item) => (
+                ) : (
+                  goodsItems.map((item) => (
                     <tr key={item.id}>
                       <td>
                         {item.qrCodeNumber || item.id ? (
@@ -189,7 +239,7 @@ export default function DetentionMemoReportPrint({
                               alt={item.qrCodeNumber || item.id}
                             />
                             <div style={{ fontSize: 7.5, marginTop: 2, wordBreak: "break-all", lineHeight: 1.1 }}>
-                              {item.qrCodeNumber || "—"}
+                              {item.qrCodeNumber || item.id || "—"}
                             </div>
                           </>
                         ) : (
@@ -200,61 +250,100 @@ export default function DetentionMemoReportPrint({
                       <td>{dash(item.quantity)}</td>
                       <td>{dash(item.unit)}</td>
                       <td>{dash(item.condition)}</td>
-                      {showAssessable && <td>{dash(item.assessableValuePkr)}</td>}
-                      {showPctCode && <td>{dash(item.pctCode)}</td>}
-                      {showPerishable && <td>{item.perishable ? "Yes" : "No"}</td>}
-                      {showIdentificationRef && <td>{dash(item.identificationRef)}</td>}
-                      {showNotes && <td>{dash(item.itemNotes)}</td>}
+                      <td>{dash(item.assessableValuePkr)}</td>
+                      <td>{dash(item.pctCode)}</td>
+                      <td>{item.perishable ? "Yes" : "No"}</td>
+                      <td>{dash(item.identificationRef)}</td>
+                      <td>{dash(item.itemNotes)}</td>
                     </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {goodsImages.length > 0 && (
+            <div className="report-section">
+              <div className="section-title">Goods Photographs</div>
+              <div className="box" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {goodsImages.map((img, idx) => (
+                  <div key={`${img.url}-${idx}`} style={{ width: 72, textAlign: "center" }}>
+                    <img
+                      src={img.url}
+                      alt={img.label}
+                      style={{
+                        width: 72,
+                        height: 72,
+                        objectFit: "cover",
+                        border: "1px solid #d1d5db",
+                        borderRadius: 4,
+                        background: "#fff",
+                      }}
+                    />
+                    <div style={{ fontSize: 7, marginTop: 2, wordBreak: "break-all", lineHeight: 1.1 }}>
+                      {dash(img.label)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="report-section">
+            <div className="section-title">7. Additional Notes &amp; Remarks</div>
+            <div className="box">
+              <div style={{ display: "grid", gap: 8 }}>
+                <NoteBlock heading="Seizing Officer Notes:" value={row.seizingOfficerNotes} />
+                <NoteBlock heading="Examining Officer Notes:" value={row.examiningOfficerNotes} />
+                <NoteBlock heading="Detention / Customs Notes:" value={row.detentionNotes} />
+                <NoteBlock heading="Forwarding Officer Remarks:" value={row.forwardingOfficerRemarks} />
+              </div>
+            </div>
+          </div>
+
+          <div className="report-section">
+            <div className="section-title">8. Attached Documents &amp; Videos</div>
+            <div className="box">
+              {attachments.length === 0 ? (
+                <div className="narrative">None</div>
+              ) : (
+                <div style={{ display: "grid", gap: 6 }}>
+                  {attachments.map((att) => (
+                    <div key={att.id} style={{ fontSize: 9.5, wordBreak: "break-all" }}>
+                      <strong>{att.kind === "video" ? "Video" : "Document"}:</strong>{" "}
+                      {att.originalFilename || "Attachment"}
+                      {att.url ? ` — ${att.url}` : ""}
+                    </div>
                   ))}
-                </tbody>
-              </table>
+                </div>
+              )}
             </div>
-          )}
+          </div>
 
-          {row.briefFacts && row.purposeOfDetention && (
+          {auditLog.length > 0 && (
             <div className="report-section">
-              <div className="section-title">Memo Description</div>
-              <div className="box narrative">{dash(row.briefFacts)}</div>
-            </div>
-          )}
-
-          {hasAdditionalNotes && (
-            <div className="report-section">
-              <div className="section-title">Additional Notes &amp; Remarks</div>
+              <div className="section-title">9. Audit Log</div>
               <div className="box">
-                <div style={{ display: "grid", gap: 10 }}>
-                  {row.seizingOfficerNotes && (
-                    <div>
-                      <div style={{ fontWeight: 800, fontSize: 10, marginBottom: 2 }}>Seizing Officer Notes:</div>
-                      <div className="narrative">{row.seizingOfficerNotes}</div>
+                <div style={{ display: "grid", gap: 6 }}>
+                  {auditLog.map((entry) => (
+                    <div key={entry.id} style={{ fontSize: 9.5 }}>
+                      <strong>{entry.actionLabel || entry.action}</strong>
+                      {entry.performedBy ? ` · ${entry.performedBy}` : ""}
+                      {entry.createdAt ? ` · ${formatDate(entry.createdAt)}` : ""}
+                      {entry.message ? (
+                        <div className="narrative" style={{ fontSize: 9 }}>
+                          {entry.message}
+                        </div>
+                      ) : null}
                     </div>
-                  )}
-                  {row.examiningOfficerNotes && (
-                    <div>
-                      <div style={{ fontWeight: 800, fontSize: 10, marginBottom: 2 }}>Examining Officer Notes:</div>
-                      <div className="narrative">{row.examiningOfficerNotes}</div>
-                    </div>
-                  )}
-                  {row.detentionNotes && (
-                    <div>
-                      <div style={{ fontWeight: 800, fontSize: 10, marginBottom: 2 }}>Detention / Customs Notes:</div>
-                      <div className="narrative">{row.detentionNotes}</div>
-                    </div>
-                  )}
-                  {row.forwardingOfficerRemarks && (
-                    <div>
-                      <div style={{ fontWeight: 800, fontSize: 10, marginBottom: 2 }}>Forwarding Officer Remarks:</div>
-                      <div className="narrative">{row.forwardingOfficerRemarks}</div>
-                    </div>
-                  )}
+                  ))}
                 </div>
               </div>
             </div>
           )}
 
           <div className="report-section">
-            <div className="section-title">Certification &amp; Signatures</div>
+            <div className="section-title">{auditLog.length > 0 ? "10" : "9"}. Certification &amp; Signatures</div>
             <div className="sign-grid">
               <ReportSignBox
                 heading="Prepared by"
@@ -265,7 +354,7 @@ export default function DetentionMemoReportPrint({
               <ReportSignBox
                 heading="Examining / Forwarding"
                 name={row.updatedBy || row.receiptOfficer || ""}
-                extra={`Status: ${dash(row.verificationStatus)}`}
+                extra={`Status: ${dash(row.verificationStatus)} · Receipt: ${dash(row.receiptOfficer)}`}
                 date={row.updatedAt}
               />
             </div>

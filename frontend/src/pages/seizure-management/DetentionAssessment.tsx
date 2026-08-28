@@ -153,7 +153,6 @@ export default function DetentionAssessmentPage() {
   const exportCsv = () => {
     const headers = [
       "Sheet Sr. No",
-      "Detention Memo ID",
       "Case No",
       "Detention Memo No",
       "Detention Date",
@@ -161,7 +160,6 @@ export default function DetentionAssessmentPage() {
       "Detention Type",
       "Owner",
       "Verification",
-      "Assessment ID",
       "Assessment No",
       "Assessment Date",
       "Examining Officer",
@@ -198,7 +196,6 @@ export default function DetentionAssessmentPage() {
       goods.forEach((item, itemIndex) => {
         rows.push([
           index + 1,
-          memo.id,
           memo.caseNo,
           memo.referenceNumber,
           memo.dateTimeDetention,
@@ -206,7 +203,6 @@ export default function DetentionAssessmentPage() {
           memo.detentionType,
           memo.owner?.name,
           memo.verificationStatus,
-          assessment?.id,
           assessment?.referenceNumber,
           assessment?.assessmentDate,
           assessment?.examiningOfficer,
