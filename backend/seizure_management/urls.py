@@ -23,6 +23,7 @@ from .views import (
     RecoveryMemoReadAPIView,
     RecoveryMemoUpdateAPIView,
     SeizureManagementOverviewAPIView,
+    NoteSheetCreatedReportAPIView,
     SeizureReportCreateAPIView,
     SeizureReportDeleteAPIView,
     SeizureReportListAPIView,
@@ -33,6 +34,7 @@ from .views import (
 urlpatterns = [
     path("seizure-management/overview/", SeizureManagementOverviewAPIView.as_view()),
     # Note sheets
+    path("seizure-management/note-sheets/created-report/", NoteSheetCreatedReportAPIView.as_view()),
     path("seizure-management/note-sheets/list/", NoteSheetListAPIView.as_view()),
     path("seizure-management/note-sheets/create/", NoteSheetCreateAPIView.as_view()),
     path("seizure-management/note-sheets/<uuid:pk>/read/", NoteSheetReadAPIView.as_view()),

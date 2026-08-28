@@ -5,8 +5,8 @@ import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { ROUTES } from "@/routes/config"
-import { fetchDetentionMemos } from "@/lib/detention-memo-api"
 import {
+  emptySeizureMgmtOverview,
   fetchSeizureMgmtOverview,
   type SeizureMgmtOverview,
 } from "@/lib/seizure-management-api"
@@ -38,33 +38,15 @@ const reportLinks = [
   },
 ]
 
-const emptyOverview: SeizureMgmtOverview = {
-  noteSheets: 0,
-  noteSheetsPending: 0,
-  noteSheetsApprovedAvailable: 0,
-  assessments: 0,
-  assessmentsPending: 0,
-  recoveryMemos: 0,
-  recoveryPendingApproval: 0,
-  seizureReports: 0,
-  seizureReportsSubmitted: 0,
-}
-
 export default function SeizureManagementReportsPage() {
-  const [detentionTotal, setDetentionTotal] = useState(0)
-  const [overview, setOverview] = useState<SeizureMgmtOverview>(emptyOverview)
+  const [overview, setOverview] = useState<SeizureMgmtOverview>(emptySeizureMgmtOverview)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     setLoading(true)
-    Promise.all([
-      fetchDetentionMemos().catch(() => []),
-      fetchSeizureMgmtOverview().catch(() => emptyOverview),
-    ])
-      .then(([memos, ov]) => {
-        setDetentionTotal(memos.length)
-        setOverview(ov)
-      })
+    fetchSeizureMgmtOverview()
+      .then(setOverview)
+      .catch(() => setOverview(emptySeizureMgmtOverview))
       .finally(() => setLoading(false))
   }, [])
 
@@ -82,7 +64,7 @@ export default function SeizureManagementReportsPage() {
           <CardContent className="p-4">
             <p className="text-xs text-muted-foreground">Detentions</p>
             <p className="text-xl font-bold">
-              {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : detentionTotal}
+              {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : overview.detentionMemos}
             </p>
           </CardContent>
         </Card>

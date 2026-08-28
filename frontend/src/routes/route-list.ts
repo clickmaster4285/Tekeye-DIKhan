@@ -99,6 +99,7 @@ export const DASHBOARD_ROUTES: { index?: true; path?: string; page: string }[] =
   { path: toChildPath(ROUTES.SEIZURE_MANAGEMENT), page: "SeizureManagementDashboard" },
   { path: toChildPath(ROUTES.SEIZURE_MGMT_NOTE_SHEET), page: "SeizureMgmtNoteSheet" },
   { path: "seizure-management/note-sheet/create", page: "SeizureMgmtNoteSheetCreate" },
+  { path: "seizure-management/note-sheet/reporting", page: "SeizureMgmtNoteSheet" },
   { path: "seizure-management/note-sheet/:id/edit", page: "SeizureMgmtNoteSheetEdit" },
   { path: "seizure-management/note-sheet/:id", page: "SeizureMgmtNoteSheetDetail" },
   { path: toChildPath(ROUTES.SEIZURE_MGMT_ASSESSMENT), page: "SeizureMgmtAssessment" },
