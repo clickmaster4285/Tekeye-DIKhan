@@ -514,7 +514,7 @@ export default function NoteSheetReportPrint({
                 <ChevronDown className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="center" className="w-44">
+            <DropdownMenuContent align="center" className="min-w-0 w-max">
               <DropdownMenuItem onClick={handlePrint}>
                 <Printer className="h-4 w-4" />
                 Print

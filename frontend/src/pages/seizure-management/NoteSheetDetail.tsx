@@ -297,7 +297,7 @@ export default function NoteSheetDetailPage() {
               <ChevronDown className="h-4 w-4 ml-1" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-44">
+          <DropdownMenuContent align="end" className="min-w-0 w-max">
             <DropdownMenuItem asChild>
               <Link to={`${getSeizureMgmtNoteSheetDetailPath(row.id)}?print=full`}>
                 <Printer className="h-4 w-4" />
