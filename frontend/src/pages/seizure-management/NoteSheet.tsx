@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { Download, Eye, FileDown, FilePlus, Loader2, Pencil, Plus, Printer, Search, Trash2 } from "lucide-react"
+import { Download, Eye, FileDown, FilePlus, Loader2, Pencil, Plus, Printer, Search, Trash2, ChevronDown } from "lucide-react"
 import { TableActionGroup, TableActionIcon } from "@/components/seizure/table-action-icon"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Table,
   TableBody,
@@ -534,7 +540,7 @@ export default function NoteSheetPage() {
         </div>
 
         <CardContent className="p-4 sm:p-5 space-y-4">
-          <div className="flex flex-col xl:flex-row gap-3 xl:items-start xl:justify-between">
+          <div className="flex flex-col xl:flex-row gap-3 xl:items-center xl:justify-between">
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm text-[#697282]">
                 {formatRangeLabel(activeRange.from, activeRange.to)}
@@ -573,7 +579,7 @@ export default function NoteSheetPage() {
                 </Button>
               ) : null}
             </div>
-            <div className="flex flex-col sm:flex-row gap-2 sm:items-start">
+            <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
               <div className="relative w-full sm:w-72">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
@@ -583,32 +589,33 @@ export default function NoteSheetPage() {
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
-              <div className="flex flex-col gap-2 w-full sm:w-[11rem] shrink-0">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full justify-start"
-                  onClick={exportCsv}
-                  disabled={filtered.length === 0 || pdfExporting}
-                >
-                  <Download className="h-4 w-4 mr-2" />
-                  Export CSV
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full justify-start"
-                  onClick={exportPdf}
-                  disabled={filtered.length === 0 || pdfExporting}
-                >
-                  {pdfExporting ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <FileDown className="h-4 w-4 mr-2" />
-                  )}
-                  {pdfExporting ? "Exporting PDF…" : "Export PDF"}
-                </Button>
-              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={filtered.length === 0 || pdfExporting}
+                  >
+                    {pdfExporting ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <Download className="h-4 w-4 mr-2" />
+                    )}
+                    {pdfExporting ? "Exporting PDF…" : "Export"}
+                    <ChevronDown className="h-4 w-4 ml-1" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-44">
+                  <DropdownMenuItem onClick={exportCsv}>
+                    <Download className="h-4 w-4" />
+                    Export CSV
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={exportPdf} disabled={pdfExporting}>
+                    <FileDown className="h-4 w-4" />
+                    Export PDF
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
 

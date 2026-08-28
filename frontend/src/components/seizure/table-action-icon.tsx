@@ -3,9 +3,15 @@ import { Link } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
-export function TableActionGroup({ children }: { children: ReactNode }) {
+export function TableActionGroup({
+  children,
+  className,
+}: {
+  children: ReactNode
+  className?: string
+}) {
   return (
-    <div className="ml-auto flex w-[6.5rem] flex-wrap items-center justify-end gap-0.5">
+    <div className={cn("ml-auto flex w-[6.5rem] flex-wrap items-center justify-end gap-0.5", className)}>
       {children}
     </div>
   )

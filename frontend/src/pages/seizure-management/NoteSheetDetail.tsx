@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
-import { ArrowLeft, CheckCircle, FileOutput, Pencil, Printer, Send, Trash2, XCircle } from "lucide-react"
+import { ArrowLeft, CheckCircle, ChevronDown, FileOutput, Pencil, Printer, Send, Trash2, XCircle } from "lucide-react"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -8,6 +8,12 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Table,
   TableBody,
@@ -283,18 +289,29 @@ export default function NoteSheetDetailPage() {
             </Link>
           </Button>
         )}
-        <Button variant="outline" size="sm" asChild>
-          <Link to={`${getSeizureMgmtNoteSheetDetailPath(row.id)}?print=full`}>
-            <Printer className="h-4 w-4 mr-2" />
-            Print
-          </Link>
-        </Button>
-        <Button size="sm" asChild>
-          <Link to={`${getSeizureMgmtNoteSheetDetailPath(row.id)}?print=full&savepdf=1`}>
-            <FileOutput className="h-4 w-4 mr-2" />
-            Save as PDF
-          </Link>
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm">
+              <Printer className="h-4 w-4 mr-2" />
+              Print
+              <ChevronDown className="h-4 w-4 ml-1" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuItem asChild>
+              <Link to={`${getSeizureMgmtNoteSheetDetailPath(row.id)}?print=full`}>
+                <Printer className="h-4 w-4" />
+                Print
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link to={`${getSeizureMgmtNoteSheetDetailPath(row.id)}?print=full&savepdf=1`}>
+                <FileOutput className="h-4 w-4" />
+                Save as PDF
+              </Link>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         {canDelete && (
           <Button
             variant="outline"
