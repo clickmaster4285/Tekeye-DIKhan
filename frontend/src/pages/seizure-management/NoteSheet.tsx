@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { Download, Eye, FileDown, FilePlus, Loader2, Pencil, Plus, Printer, Search, Trash2, ChevronDown } from "lucide-react"
+import { Download, Eye, FileDown, FilePlus, Pencil, Plus, Printer, Search, Trash2, ChevronDown } from "lucide-react"
 import { TableActionGroup, TableActionIcon } from "@/components/seizure/table-action-icon"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent } from "@/components/ui/card"
@@ -436,10 +436,11 @@ export default function NoteSheetPage() {
     URL.revokeObjectURL(url)
   }
 
-  const pdfExporting = Boolean(pdfRows?.length)
+  const pdfBusyRef = useRef(false)
 
   const exportPdf = () => {
-    if (filtered.length === 0 || pdfExporting) return
+    if (filtered.length === 0 || pdfBusyRef.current) return
+    pdfBusyRef.current = true
     setPdfRows(filtered)
   }
 
@@ -460,6 +461,7 @@ export default function NoteSheetPage() {
             })
           }
         } finally {
+          pdfBusyRef.current = false
           if (!cancelled) setPdfRows(null)
         }
       })()
@@ -594,14 +596,10 @@ export default function NoteSheetPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={filtered.length === 0 || pdfExporting}
+                    disabled={filtered.length === 0}
                   >
-                    {pdfExporting ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <Download className="h-4 w-4 mr-2" />
-                    )}
-                    {pdfExporting ? "Exporting PDF…" : "Export"}
+                    <Download className="h-4 w-4 mr-2" />
+                    Export
                     <ChevronDown className="h-4 w-4 ml-1" />
                   </Button>
                 </DropdownMenuTrigger>
@@ -610,7 +608,7 @@ export default function NoteSheetPage() {
                     <Download className="h-4 w-4" />
                     Export CSV
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={exportPdf} disabled={pdfExporting}>
+                  <DropdownMenuItem onClick={exportPdf}>
                     <FileDown className="h-4 w-4" />
                     Export PDF
                   </DropdownMenuItem>
@@ -725,7 +723,7 @@ export default function NoteSheetPage() {
       <div
         ref={pdfHostRef}
         aria-hidden
-        className="pointer-events-none fixed left-[-10000px] top-0 w-[210mm] bg-white"
+        className="pointer-events-none fixed -left-[100vw] top-0 w-[210mm] opacity-0"
       >
         {pdfRows?.map((row) => (
           <NoteSheetReportPrint key={row.id} row={row} embedded />

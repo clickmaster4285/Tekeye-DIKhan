@@ -199,6 +199,7 @@ export default function NoteSheetReportPrint({
   return (
     <div className="bg-white text-black" data-report-root>
       <style>{`
+        ${embedded ? "" : `
         :root { color-scheme: light; }
         body { margin: 0; background: white !important; color: #111827 !important; }
         aside, nav, header:not(.ns-letterhead), .sidebar, .main-nav, .breadcrumbs, [role="navigation"] {
@@ -215,6 +216,7 @@ export default function NoteSheetReportPrint({
           width: 100% !important;
           max-width: 100% !important;
         }
+        `}
         .print-pages { width: 100%; overflow: visible; }
         .print-page {
           width: min(210mm, 100%);
