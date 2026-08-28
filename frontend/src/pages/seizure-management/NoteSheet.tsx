@@ -24,8 +24,11 @@ import {
   canUserDeleteNoteSheet,
   deleteNoteSheet,
   fetchNoteSheets,
+  type NoteSheetAttachment,
+  type NoteSheetItem,
   type NoteSheetRecord,
   type NoteSheetStatus,
+  type NoteSheetTimelineStep,
 } from "@/lib/seizure-management-api"
 import { getStoredUser } from "@/lib/auth"
 import { toast } from "@/hooks/use-toast"
@@ -90,8 +93,209 @@ function formatRangeLabel(from: string, to: string): string {
   return `Until ${fmt(to)}`
 }
 
-function csvCell(value: string | number): string {
-  return `"${String(value).replace(/"/g, '""')}"`
+function csvCell(value: unknown): string {
+  if (value == null) return '""'
+  if (typeof value === "boolean") return csvCell(value ? "Yes" : "No")
+  const text = String(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+  return `"${text.replace(/"/g, '""')}"`
+}
+
+function joinNonEmpty(values: Array<string | undefined | null>, sep = "; "): string {
+  return values.map((v) => (v || "").trim()).filter(Boolean).join(sep)
+}
+
+function formatEvidence(items: string[] | undefined): string {
+  return joinNonEmpty(items || [])
+}
+
+function formatAttachments(atts: NoteSheetAttachment[] | undefined): string {
+  if (!atts?.length) return ""
+  return atts
+    .map((a) =>
+      joinNonEmpty(
+        [a.originalFilename, a.fileType ? `(${a.fileType})` : "", a.uploadedAt, a.url],
+        " "
+      )
+    )
+    .join(" | ")
+}
+
+function formatTimeline(steps: NoteSheetTimelineStep[] | undefined): string {
+  if (!steps?.length) return ""
+  return steps
+    .map((s) => `${s.label}: ${s.at || "—"} (${s.done ? "Done" : "Pending"})`)
+    .join(" | ")
+}
+
+function formatImageUrls(urls: string[] | undefined): string {
+  return joinNonEmpty(urls || [])
+}
+
+function detentionMemoLabel(row: NoteSheetRecord): string {
+  if (row.detentionMemoId) return "Linked"
+  if (row.status === "Approved") return "Ready"
+  return ""
+}
+
+function emptyGoodsLine(): NoteSheetItem {
+  return {
+    qrCodeNumber: "",
+    product: "",
+    description: "",
+    pctCode: "",
+    quantity: "",
+    unit: "",
+    condition: "",
+    estimatedValue: "",
+    assessableValuePkr: "",
+    perishable: false,
+    identificationRef: "",
+    remarks: "",
+    itemNotes: "",
+    images: [],
+  }
+}
+
+const NOTE_SHEET_CSV_HEADERS = [
+  "Sheet Sr. No",
+  "Record ID",
+  "Note Sheet No",
+  "Reference Number",
+  "Date & Time",
+  "Office / Region",
+  "Case Number",
+  "Priority",
+  "Status",
+  "Subject",
+  "Prepared By",
+  "Badge / ID",
+  "Designation",
+  "Department",
+  "Officer Contact",
+  "Accused Name",
+  "Father Name",
+  "CNIC / Passport",
+  "Accused Mobile",
+  "Accused Address",
+  "Business Name",
+  "NTN / STRN",
+  "Place of Inspection",
+  "Warehouse / Shop",
+  "GPS Location",
+  "Inspection Date",
+  "Grounds of Suspicion",
+  "Evidence Collected",
+  "Preliminary Findings",
+  "Additional Notes",
+  "Recommendation",
+  "Goods Line No",
+  "Goods Line ID",
+  "Goods QR Code",
+  "Description of Goods",
+  "PCT Code",
+  "Quantity",
+  "Unit",
+  "Condition",
+  "Assessable Value (PKR)",
+  "Perishable",
+  "ID / Chassis No",
+  "Item Notes",
+  "Goods Image URLs",
+  "Attachment Count",
+  "Attachments",
+  "Prepared Signature",
+  "Prepared Date",
+  "Forward To",
+  "Forward To User ID",
+  "Approved By",
+  "Approved At",
+  "Approval Remarks",
+  "Rejection Reason",
+  "Submitted At",
+  "Viewed At",
+  "Detention Memo Status",
+  "Detention Memo ID",
+  "Created By",
+  "Updated By",
+  "Created At",
+  "Updated At",
+  "Timeline",
+] as const
+
+function noteSheetCsvRow(
+  row: NoteSheetRecord,
+  sheetIndex: number,
+  item: NoteSheetItem,
+  goodsLineNo: number | "",
+  hasGoods: boolean
+): string {
+  return [
+    sheetIndex,
+    row.id,
+    row.noteSheetNo || "",
+    row.referenceNumber || "",
+    row.dateTime || "",
+    row.office || "",
+    row.caseNo || "",
+    row.priority || "",
+    row.status || "",
+    row.subject || "",
+    row.preparedBy || "",
+    row.badgeId || "",
+    row.designation || "",
+    row.department || "",
+    row.officerContact || "",
+    row.accusedName || "",
+    row.accusedFatherName || "",
+    row.accusedCnic || "",
+    row.accusedMobile || "",
+    row.accusedAddress || "",
+    row.businessName || "",
+    row.ntnStrn || "",
+    row.placeOfInspection || "",
+    row.warehouseShop || "",
+    row.gpsLocation || "",
+    row.inspectionDate || "",
+    row.groundsOfSuspicion || "",
+    formatEvidence(row.evidenceCollected),
+    row.preliminaryFindings || "",
+    row.content || "",
+    row.recommendation || "",
+    goodsLineNo,
+    item.id || "",
+    item.qrCodeNumber || "",
+    item.product || item.description || "",
+    item.pctCode || "",
+    item.quantity || "",
+    item.unit || "",
+    item.condition || "",
+    item.assessableValuePkr || item.estimatedValue || "",
+    hasGoods ? (item.perishable ? "Yes" : "No") : "",
+    item.identificationRef || "",
+    item.remarks || item.itemNotes || "",
+    formatImageUrls(item.images),
+    row.attachments?.length ?? 0,
+    formatAttachments(row.attachments),
+    row.preparedSignature || "",
+    row.preparedDate || "",
+    row.forwardTo || "",
+    row.forwardToUserId ?? "",
+    row.approvedBy || "",
+    row.approvedAt || "",
+    row.approvalRemarks || "",
+    row.rejectionReason || "",
+    row.submittedAt || "",
+    row.viewedAt || "",
+    detentionMemoLabel(row),
+    row.detentionMemoId || "",
+    row.createdBy || "",
+    row.updatedBy || "",
+    row.createdAt || "",
+    row.updatedAt || "",
+    formatTimeline(row.timeline),
+  ]
+    .map(csvCell)
+    .join(",")
 }
 
 export default function NoteSheetPage() {
@@ -203,23 +407,17 @@ export default function NoteSheetPage() {
   }
 
   const exportCsv = () => {
-    const header = ["Sr. No", "Note Sheet No", "Subject", "Case No", "Office", "Priority", "Prepared By", "Status", "Created"]
-    const lines = filtered.map((row, index) =>
-      [
-        index + 1,
-        row.noteSheetNo || row.referenceNumber,
-        row.subject,
-        row.caseNo,
-        row.office,
-        row.priority,
-        row.preparedBy,
-        row.status,
-        row.createdAt || row.dateTime,
-      ]
-        .map(csvCell)
-        .join(",")
-    )
-    const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" })
+    const lines: string[] = [NOTE_SHEET_CSV_HEADERS.map(csvCell).join(",")]
+    filtered.forEach((row, index) => {
+      const items = row.items?.length ? row.items : [emptyGoodsLine()]
+      const hasGoods = Boolean(row.items?.length)
+      items.forEach((item, itemIndex) => {
+        lines.push(
+          noteSheetCsvRow(row, index + 1, item, hasGoods ? itemIndex + 1 : "", hasGoods)
+        )
+      })
+    })
+    const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
