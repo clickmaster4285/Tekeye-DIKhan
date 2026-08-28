@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react"
 import { useParams, Link, useSearchParams, useLocation } from "react-router-dom"
-import { ArrowLeft, FileText, Package, QrCode, Printer, FileOutput, Users, Paperclip } from "lucide-react"
+import { ArrowLeft, FileText, Package, QrCode, Users, Paperclip } from "lucide-react"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { PrintMenu } from "@/components/seizure/print-menu"
 import {
   Table,
   TableBody,
@@ -464,22 +465,14 @@ export default function DetentionMemoDetailPage() {
                 )}
               </p>
             </div>
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:ml-auto">
               <Badge variant={row.verificationStatus === "Verified" ? "default" : "secondary"} className="w-fit">
                 {row.verificationStatus}
               </Badge>
-              <Button variant="outline" asChild size="sm" className="w-full sm:w-auto">
-                <Link to={`${listPath}/${encodeURIComponent(row.id)}?print=full`}>
-                  <Printer className="h-4 w-4 mr-2" />
-                  Print Report
-                </Link>
-              </Button>
-              <Button variant="default" asChild size="sm" className="w-full sm:w-auto">
-                <Link to={`${listPath}/${encodeURIComponent(row.id)}?print=full&savepdf=1`}>
-                  <FileOutput className="h-4 w-4 mr-2" />
-                  Save as PDF
-                </Link>
-              </Button>
+              <PrintMenu
+                printHref={`${listPath}/${encodeURIComponent(row.id)}?print=full`}
+                pdfHref={`${listPath}/${encodeURIComponent(row.id)}?print=full&savepdf=1`}
+              />
             </div>
           </CardHeader>
           <CardContent className="space-y-4 sm:space-y-6 px-4 sm:px-6">
@@ -490,6 +483,7 @@ export default function DetentionMemoDetailPage() {
                   <div className="grid grid-cols-1 gap-x-5 md:grid-cols-2">
                     <DetailRow label="Case No." value={row.caseNo} />
                     <DetailRow label="Detention Memo No." value={row.referenceNumber || "—"} />
+                    <DetailRow label="FIR Number" value={row.firNumber} />
                     <DetailRow label="Date/Time of occurrence" value={row.dateTimeOccurrence} />
                     <DetailRow label="Place of occurrence" value={row.placeOfOccurrence} />
                     <DetailRow label="Date/Time of detention" value={row.dateTimeDetention} />
@@ -497,6 +491,12 @@ export default function DetentionMemoDetailPage() {
                     <DetailRow label="Detention Type" value={row.detentionType} />
                     <DetailRow label="Directorate" value={row.directorate} />
                     <DetailRow label="Reason for detention" value={row.reasonForDetention} />
+                    <DetailRow label="Location of Detention" value={row.locationOfDetention} />
+                    <DetailRow label="Search / Chassis Number" value={row.searchChassisNumber} />
+                    <DetailRow label="Receipt Officer" value={row.receiptOfficer} />
+                    <DetailRow label="GD Number" value={row.gdNumber} />
+                    <DetailRow label="GD Number 2" value={row.gdNumber2} />
+                    <DetailRow label="Disposition Status" value={row.dispositionStatus} />
                   </div>
                 </CardContent>
               </Card>
@@ -526,6 +526,7 @@ export default function DetentionMemoDetailPage() {
                 <DetailRow label="Goods detained at" value={row.whereDeposited} />
                 <DetailRow label="Settlement Status" value={row.settlementStatus} />
                 <DetailRow label="Verification Status" value={row.verificationStatus} />
+                <DetailRow label="Memo QR Number" value={row.memoQrCodeNumber || qrNumber} />
               </CardContent>
             </Card>
 
@@ -564,70 +565,64 @@ export default function DetentionMemoDetailPage() {
               </CardContent>
             </Card>
 
-            {(row.owner?.name || row.owner?.cnic || row.owner?.contact || row.owner?.picture) && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Users className="h-4 w-4" />
-                    Owner
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="grid grid-cols-1 gap-x-5 md:grid-cols-2">
-                    <DetailRow label="Name" value={row.owner?.name} />
-                    <DetailRow label="CNIC" value={row.owner?.cnic} />
-                    <DetailRow label="Contact" value={row.owner?.contact} />
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Users className="h-4 w-4" />
+                  Owner
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-1 gap-x-5 md:grid-cols-2">
+                  <DetailRow label="Name" value={row.owner?.name} />
+                  <DetailRow label="CNIC" value={row.owner?.cnic} />
+                  <DetailRow label="Contact" value={row.owner?.contact} />
+                </div>
+                {row.owner?.picture && (
+                  <div>
+                    <p className="text-xs text-muted-foreground uppercase tracking-wide mb-2">Photo</p>
+                    <img
+                      src={row.owner.picture}
+                      alt="Owner"
+                      className="max-h-48 rounded-lg border object-contain bg-muted/30 w-full sm:w-auto"
+                    />
                   </div>
-                  {row.owner?.picture && (
-                    <div>
-                      <p className="text-xs text-muted-foreground uppercase tracking-wide mb-2">Photo</p>
-                      <img
-                        src={row.owner.picture}
-                        alt="Owner"
-                        className="max-h-48 rounded-lg border object-contain bg-muted/30 w-full sm:w-auto"
-                      />
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            )}
+                )}
+              </CardContent>
+            </Card>
 
-            {(row.driver?.name || row.driver?.cnic || row.driver?.contact || row.driver?.picture) && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Users className="h-4 w-4" />
-                    Driver
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="grid grid-cols-1 gap-x-5 md:grid-cols-2">
-                    <DetailRow label="Name" value={row.driver?.name} />
-                    <DetailRow label="CNIC" value={row.driver?.cnic} />
-                    <DetailRow label="Contact" value={row.driver?.contact} />
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Users className="h-4 w-4" />
+                  Driver
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-1 gap-x-5 md:grid-cols-2">
+                  <DetailRow label="Name" value={row.driver?.name} />
+                  <DetailRow label="CNIC" value={row.driver?.cnic} />
+                  <DetailRow label="Contact" value={row.driver?.contact} />
+                </div>
+                {row.driver?.picture && (
+                  <div>
+                    <p className="text-xs text-muted-foreground uppercase tracking-wide mb-2">Photo</p>
+                    <img
+                      src={row.driver.picture}
+                      alt="Driver"
+                      className="max-h-48 rounded-lg border object-contain bg-muted/30 w-full sm:w-auto"
+                    />
                   </div>
-                  {row.driver?.picture && (
-                    <div>
-                      <p className="text-xs text-muted-foreground uppercase tracking-wide mb-2">Photo</p>
-                      <img
-                        src={row.driver.picture}
-                        alt="Driver"
-                        className="max-h-48 rounded-lg border object-contain bg-muted/30 w-full sm:w-auto"
-                      />
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            )}
+                )}
+              </CardContent>
+            </Card>
 
-            {row.purposeOfDetention && (
-              <Card>
-                <CardHeader><CardTitle className="text-base">Purpose of Detention</CardTitle></CardHeader>
-                <CardContent className="rounded-lg border p-4">
-                  <p className="text-sm whitespace-pre-wrap break-words">{row.purposeOfDetention}</p>
-                </CardContent>
-              </Card>
-            )}
+            <Card>
+              <CardHeader><CardTitle className="text-base">Purpose of Detention</CardTitle></CardHeader>
+              <CardContent className="rounded-lg border p-4">
+                <p className="text-sm whitespace-pre-wrap break-words">{row.purposeOfDetention || "—"}</p>
+              </CardContent>
+            </Card>
 
             {row.mediaAttachments && row.mediaAttachments.length > 0 && (
               <Card>
@@ -663,14 +658,12 @@ export default function DetentionMemoDetailPage() {
               </Card>
             )}
 
-            {row.briefFacts && (
-              <Card>
-                <CardHeader><CardTitle className="text-base">Memo Description</CardTitle></CardHeader>
-                <CardContent className="rounded-lg border p-4">
-                  <p className="text-sm whitespace-pre-wrap break-words">{row.briefFacts}</p>
-                </CardContent>
-              </Card>
-            )}
+            <Card>
+              <CardHeader><CardTitle className="text-base">Memo Description</CardTitle></CardHeader>
+              <CardContent className="rounded-lg border p-4">
+                <p className="text-sm whitespace-pre-wrap break-words">{row.briefFacts || "—"}</p>
+              </CardContent>
+            </Card>
 
             {row.goodsItems && row.goodsItems.length > 0 && (
               <GoodsInformationBlock memoId={row.id} items={row.goodsItems} />
@@ -685,37 +678,27 @@ export default function DetentionMemoDetailPage() {
               description="All warehouse destruction sessions for this detention — view detailed reports with camera evidence and inventory deductions."
             />
 
-            {(row.seizingOfficerNotes || row.examiningOfficerNotes || row.detentionNotes || row.forwardingOfficerRemarks) && (
-              <Card>
-                <CardHeader><CardTitle className="text-base">Additional Information</CardTitle></CardHeader>
-                <CardContent className="rounded-lg border p-4 space-y-4">
-                  {row.seizingOfficerNotes && (
-                    <div>
-                      <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Seizing Officer Notes</p>
-                      <p className="text-sm whitespace-pre-wrap break-words">{row.seizingOfficerNotes}</p>
-                    </div>
-                  )}
-                  {row.examiningOfficerNotes && (
-                    <div>
-                      <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Examining Officer Notes</p>
-                      <p className="text-sm whitespace-pre-wrap break-words">{row.examiningOfficerNotes}</p>
-                    </div>
-                  )}
-                  {row.detentionNotes && (
-                    <div>
-                      <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Detention / Customs Clarification Notes</p>
-                      <p className="text-sm whitespace-pre-wrap break-words">{row.detentionNotes}</p>
-                    </div>
-                  )}
-                  {row.forwardingOfficerRemarks && (
-                    <div>
-                      <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Forwarding Officer Remarks</p>
-                      <p className="text-sm whitespace-pre-wrap break-words">{row.forwardingOfficerRemarks}</p>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            )}
+            <Card>
+              <CardHeader><CardTitle className="text-base">Additional Information</CardTitle></CardHeader>
+              <CardContent className="rounded-lg border p-4 space-y-4">
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Seizing Officer Notes</p>
+                  <p className="text-sm whitespace-pre-wrap break-words">{row.seizingOfficerNotes || "—"}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Examining Officer Notes</p>
+                  <p className="text-sm whitespace-pre-wrap break-words">{row.examiningOfficerNotes || "—"}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Detention / Customs Clarification Notes</p>
+                  <p className="text-sm whitespace-pre-wrap break-words">{row.detentionNotes || "—"}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Forwarding Officer Remarks</p>
+                  <p className="text-sm whitespace-pre-wrap break-words">{row.forwardingOfficerRemarks || "—"}</p>
+                </div>
+              </CardContent>
+            </Card>
 
             <Button asChild variant="outline" className="w-full sm:w-auto">
               <Link to={listPath}>

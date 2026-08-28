@@ -38,6 +38,11 @@ import { fetchDetentionMemos, deleteDetentionMemo, type DetentionMemoApiRecord }
 import { createDepositAccountEntry, fetchDepositAccounts } from "@/lib/deposit-account-api"
 import { promoteDetentionToSeizedAndInventory } from "@/lib/wms-stock-storage"
 import { toast } from "@/components/ui/use-toast"
+import { ExportMenu } from "@/components/seizure/export-menu"
+import DetentionMemoReportPrint from "@/components/detention/DetentionMemoReportPrint"
+import { downloadDetentionMemoCsv } from "@/lib/detention-memo-csv"
+import { useBatchPdfExport } from "@/hooks/use-batch-pdf-export"
+import { PdfExportHost } from "@/components/seizure/pdf-export-host"
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100]
 const DEFAULT_PAGE_SIZE = 10
 const DETENTION_ALERT_DAYS = 60
@@ -143,7 +148,13 @@ export default function DetentionMemoPage() {
 
   const handleSearch = () => setPage(1)
   const handleClear = () => { setCaseNumberSearch(""); setPage(1) }
-  
+
+  const pdf = useBatchPdfExport<DetentionMemoRow>(`detention-memos-${new Date().toISOString().slice(0, 10)}.pdf`)
+
+  const exportCsv = () => {
+    downloadDetentionMemoCsv(`detention-memos-${new Date().toISOString().slice(0, 10)}.csv`, filteredRows)
+  }
+
   const handleSeize = async (row: DetentionMemoRow) => {
     const ok = await promoteDetentionToSeizedAndInventory(row)
     if (ok) {
@@ -285,6 +296,13 @@ export default function DetentionMemoPage() {
               <Button variant="outline" onClick={handleClear} className="w-full gap-2 sm:w-auto">
                 Clear
               </Button>
+              <div className="sm:ml-auto">
+                <ExportMenu
+                  disabled={filteredRows.length === 0}
+                  onExportCsv={exportCsv}
+                  onExportPdf={() => pdf.start(filteredRows)}
+                />
+              </div>
             </div>
 
             {/* Mobile list */}
@@ -588,6 +606,11 @@ export default function DetentionMemoPage() {
           </AlertDialogContent>
         </AlertDialog>
       </div>
+      <PdfExportHost hostRef={pdf.hostRef}>
+        {pdf.items?.map((row) => (
+          <DetentionMemoReportPrint key={row.id} row={row} embedded />
+        ))}
+      </PdfExportHost>
     </ModulePageLayout>
   )
 }

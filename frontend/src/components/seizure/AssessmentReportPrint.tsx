@@ -17,10 +17,12 @@ export default function AssessmentReportPrint({
   row,
   memo,
   autoSavePdf = false,
+  embedded = false,
 }: {
   row: DetentionAssessmentRecord
   memo?: DetentionMemoApiRecord | null
   autoSavePdf?: boolean
+  embedded?: boolean
 }) {
   const goodsItems = memo?.goodsItems ?? []
   const hasGoods = goodsItems.length > 0
@@ -57,6 +59,7 @@ export default function AssessmentReportPrint({
       autoSavePdf={autoSavePdf}
       pdfFilename={pdfFilename}
       documentTitle={(row.caseNo || row.referenceNumber || "").trim()}
+      embedded={embedded}
     >
       <div className="print-page page-break-after">
         {letterhead}

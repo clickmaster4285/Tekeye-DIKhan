@@ -4,11 +4,9 @@ import {
   ArrowLeft,
   CheckCircle,
   ClipboardCheck,
-  FileOutput,
   FileText,
   Package,
   Paperclip,
-  Printer,
   QrCode,
   Send,
   Users,
@@ -18,6 +16,7 @@ import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { PrintMenu } from "@/components/seizure/print-menu"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -247,7 +246,7 @@ export default function AssessmentDetailPage() {
                 )}
               </p>
             </div>
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:ml-auto">
               {statusBadge(row.status)}
               <Badge
                 variant={memo.verificationStatus === "Verified" ? "default" : "secondary"}
@@ -263,18 +262,10 @@ export default function AssessmentDetailPage() {
                   </Link>
                 </Button>
               )}
-              <Button variant="outline" asChild size="sm" className="w-full sm:w-auto">
-                <Link to={`${getSeizureMgmtAssessmentDetailPath(row.id)}?print=full`}>
-                  <Printer className="h-4 w-4 mr-2" />
-                  Print Report
-                </Link>
-              </Button>
-              <Button variant="outline" asChild size="sm" className="w-full sm:w-auto">
-                <Link to={`${getSeizureMgmtAssessmentDetailPath(row.id)}?print=full&savepdf=1`}>
-                  <FileOutput className="h-4 w-4 mr-2" />
-                  Save as PDF
-                </Link>
-              </Button>
+              <PrintMenu
+                printHref={`${getSeizureMgmtAssessmentDetailPath(row.id)}?print=full`}
+                pdfHref={`${getSeizureMgmtAssessmentDetailPath(row.id)}?print=full&savepdf=1`}
+              />
             </div>
           </CardHeader>
 

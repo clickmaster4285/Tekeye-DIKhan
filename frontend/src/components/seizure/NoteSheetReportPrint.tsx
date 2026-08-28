@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
-import { FileDown, Printer } from "lucide-react"
+import { FileDown, Printer, ChevronDown } from "lucide-react"
 import { getSeizureMgmtNoteSheetDetailPath } from "@/routes/config"
 import type { NoteSheetRecord } from "@/lib/seizure-management-api"
 import { clearSavePdfQueryParam, pdfFilenameFromCaseNo, saveElementAsPdf } from "@/lib/save-report-pdf"
 import { toast } from "@/hooks/use-toast"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 
 const CUSTOMS_LOGO_SRC = "/pakistan-customs-logo.png"
 
@@ -121,9 +127,11 @@ function NoteSheetFooter({
 export default function NoteSheetReportPrint({
   row,
   autoSavePdf = false,
+  embedded = false,
 }: {
   row: NoteSheetRecord
   autoSavePdf?: boolean
+  embedded?: boolean
 }) {
   const pagesRef = useRef<HTMLDivElement>(null)
   const [savingPdf, setSavingPdf] = useState(false)
@@ -161,12 +169,13 @@ export default function NoteSheetReportPrint({
   }
 
   useEffect(() => {
+    if (embedded) return
     const previousTitle = document.title
     document.title = (row.caseNo || row.noteSheetNo || "").trim() || previousTitle
     return () => {
       document.title = previousTitle
     }
-  }, [row.caseNo, row.noteSheetNo])
+  }, [row.caseNo, row.noteSheetNo, embedded])
 
   useEffect(() => {
     if (!autoSavePdf) return
@@ -190,6 +199,7 @@ export default function NoteSheetReportPrint({
   return (
     <div className="bg-white text-black" data-report-root>
       <style>{`
+        ${embedded ? "" : `
         :root { color-scheme: light; }
         body { margin: 0; background: white !important; color: #111827 !important; }
         aside, nav, header:not(.ns-letterhead), .sidebar, .main-nav, .breadcrumbs, [role="navigation"] {
@@ -198,7 +208,6 @@ export default function NoteSheetReportPrint({
         .print-action {
           display: flex;
           justify-content: center;
-          gap: 8px;
           padding: 10px 0 6px;
         }
         main, .main-content {
@@ -207,6 +216,7 @@ export default function NoteSheetReportPrint({
           width: 100% !important;
           max-width: 100% !important;
         }
+        `}
         .print-pages { width: 100%; overflow: visible; }
         .print-page {
           width: min(210mm, 100%);
@@ -497,16 +507,28 @@ export default function NoteSheetReportPrint({
         }
       `}</style>
 
-      <div className="print-action relative z-[60]">
-        <Button onClick={handlePrint} variant="outline" className="gap-2">
-          <Printer className="h-4 w-4" />
-          Print
-        </Button>
-        <Button onClick={() => void handleSaveAsPdf()} variant="default" className="gap-2" disabled={savingPdf}>
-          <FileDown className="h-4 w-4" />
-          {savingPdf ? "Saving PDF…" : "Save as PDF"}
-        </Button>
-      </div>
+      {!embedded && (
+        <div className="print-action relative z-[60]">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" className="gap-2" disabled={savingPdf}>
+                {savingPdf ? "Saving PDF…" : "Print"}
+                <ChevronDown className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="center" className="min-w-0 w-max">
+              <DropdownMenuItem onClick={handlePrint}>
+                <Printer className="h-4 w-4" />
+                Print
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => void handleSaveAsPdf()} disabled={savingPdf}>
+                <FileDown className="h-4 w-4" />
+                Save as PDF
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
 
       <div ref={pagesRef} className="print-pages">
         <div className="print-page page-break-after">

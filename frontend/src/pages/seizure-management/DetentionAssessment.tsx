@@ -37,6 +37,11 @@ import {
   type DetentionAssessmentRecord,
 } from "@/lib/seizure-management-api"
 import { toast } from "@/hooks/use-toast"
+import { ExportMenu } from "@/components/seizure/export-menu"
+import AssessmentReportPrint from "@/components/seizure/AssessmentReportPrint"
+import { downloadCsv, joinList } from "@/lib/csv-export"
+import { useBatchPdfExport } from "@/hooks/use-batch-pdf-export"
+import { PdfExportHost } from "@/components/seizure/pdf-export-host"
 
 function goodsSummary(memo: DetentionMemoApiRecord): string {
   const items = memo.goodsItems ?? []
@@ -140,6 +145,113 @@ export default function DetentionAssessmentPage() {
     }
   }, [memos, assessmentByMemoId])
 
+  const pdf = useBatchPdfExport<{
+    row: DetentionAssessmentRecord
+    memo: DetentionMemoApiRecord
+  }>(`assessments-${new Date().toISOString().slice(0, 10)}.pdf`)
+
+  const exportCsv = () => {
+    const headers = [
+      "Sheet Sr. No",
+      "Case No",
+      "Detention Memo No",
+      "Detention Date",
+      "Place of Detention",
+      "Detention Type",
+      "Owner",
+      "Verification",
+      "Assessment No",
+      "Assessment Date",
+      "Examining Officer",
+      "Goods Condition",
+      "Valuation Notes",
+      "Findings",
+      "Document Relevance",
+      "Assessment Status",
+      "Approved By",
+      "Approved At",
+      "Approval Remarks",
+      "Rejection Reason",
+      "Submitted At",
+      "Viewed At",
+      "Created By",
+      "Updated By",
+      "Goods Line No",
+      "Goods QR",
+      "Description of Goods",
+      "PCT Code",
+      "Quantity",
+      "Unit",
+      "Condition",
+      "Assessable Value (PKR)",
+      "Perishable",
+      "ID / Chassis No",
+      "Item Notes",
+      "Goods Image URLs",
+    ]
+    const rows: unknown[][] = []
+    filtered.forEach((memo, index) => {
+      const assessment = assessmentByMemoId.get(memo.id)
+      const goods = memo.goodsItems?.length ? memo.goodsItems : [null]
+      goods.forEach((item, itemIndex) => {
+        rows.push([
+          index + 1,
+          memo.caseNo,
+          memo.referenceNumber,
+          memo.dateTimeDetention,
+          memo.placeOfDetention,
+          memo.detentionType,
+          memo.owner?.name,
+          memo.verificationStatus,
+          assessment?.referenceNumber,
+          assessment?.assessmentDate,
+          assessment?.examiningOfficer,
+          assessment?.goodsCondition,
+          assessment?.valuationNotes,
+          assessment?.findings,
+          assessment?.documentRelevance,
+          assessment?.status,
+          assessment?.approvedBy,
+          assessment?.approvedAt,
+          assessment?.approvalRemarks,
+          assessment?.rejectionReason,
+          assessment?.submittedAt,
+          assessment?.viewedAt,
+          assessment?.createdBy,
+          assessment?.updatedBy,
+          item ? itemIndex + 1 : "",
+          item?.qrCodeNumber,
+          item?.description,
+          item?.pctCode,
+          item?.quantity,
+          item?.unit,
+          item?.condition,
+          item?.assessableValuePkr,
+          item ? (item.perishable ? "Yes" : "No") : "",
+          item?.identificationRef,
+          item?.itemNotes,
+          joinList(item?.images),
+        ])
+      })
+    })
+    downloadCsv(`assessments-${new Date().toISOString().slice(0, 10)}.csv`, headers, rows)
+  }
+
+  const exportPdf = () => {
+    const items = filtered.flatMap((memo) => {
+      const assessment = assessmentByMemoId.get(memo.id)
+      return assessment ? [{ row: assessment, memo }] : []
+    })
+    if (!items.length) {
+      toast({
+        title: "No assessments to export",
+        description: "Create an assessment first, then export PDF.",
+      })
+      return
+    }
+    pdf.start(items)
+  }
+
   const handleDelete = async (id: string) => {
     try {
       await deleteAssessment(id)
@@ -202,12 +314,19 @@ export default function DetentionAssessmentPage() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
-            <Button asChild>
-              <Link to={ROUTES.SEIZURE_MGMT_ASSESSMENT_CREATE}>
-                <Plus className="h-4 w-4 mr-2" />
-                New Assessment
-              </Link>
-            </Button>
+            <div className="flex flex-wrap items-center gap-2 shrink-0 sm:ml-auto">
+              <Button asChild>
+                <Link to={ROUTES.SEIZURE_MGMT_ASSESSMENT_CREATE}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  New Assessment
+                </Link>
+              </Button>
+              <ExportMenu
+                disabled={filtered.length === 0}
+                onExportCsv={exportCsv}
+                onExportPdf={exportPdf}
+              />
+            </div>
           </div>
 
           <Table className="table-fixed w-full" containerClassName="overflow-x-hidden">
@@ -354,6 +473,11 @@ export default function DetentionAssessmentPage() {
             </Table>
         </CardContent>
       </Card>
+      <PdfExportHost hostRef={pdf.hostRef}>
+        {pdf.items?.map((item) => (
+          <AssessmentReportPrint key={item.row.id} row={item.row} memo={item.memo} embedded />
+        ))}
+      </PdfExportHost>
     </ModulePageLayout>
   )
 }

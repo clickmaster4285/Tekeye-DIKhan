@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from "react"
-import { Download, Eye, Loader2, Search } from "lucide-react"
+import { Eye, Loader2, Search } from "lucide-react"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { TableActionGroup, TableActionIcon } from "@/components/seizure/table-action-icon"
 import { Card, CardContent } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
   Table,
@@ -16,6 +15,11 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { ROUTES, getSeizureMgmtRecoveryMemoDetailPath } from "@/routes/config"
 import { fetchRecoveryMemos, type RecoveryMemoRecord } from "@/lib/seizure-management-api"
+import { ExportMenu } from "@/components/seizure/export-menu"
+import RecoveryMemoReportPrint from "@/components/seizure/RecoveryMemoReportPrint"
+import { downloadCsv } from "@/lib/csv-export"
+import { useBatchPdfExport } from "@/hooks/use-batch-pdf-export"
+import { PdfExportHost } from "@/components/seizure/pdf-export-host"
 
 export default function RecoveryReportingPage() {
   const [rows, setRows] = useState<RecoveryMemoRecord[]>([])
@@ -49,20 +53,48 @@ export default function RecoveryReportingPage() {
     return counts
   }, [rows])
 
+  const pdf = useBatchPdfExport<RecoveryMemoRecord>(`recovery-report-${new Date().toISOString().slice(0, 10)}.pdf`)
+
   const exportCsv = () => {
-    const header = ["Case No", "Category", "Date", "Officer", "Approval Status"]
-    const lines = filtered.map((r) =>
-      [r.caseNo, r.category, r.recoveryDate, r.recoveryOfficer, r.approvalStatus]
-        .map((c) => `"${String(c).replace(/"/g, '""')}"`)
-        .join(",")
-    )
-    const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `recovery-report-${new Date().toISOString().slice(0, 10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadCsv(`recovery-report-${new Date().toISOString().slice(0, 10)}.csv`, [
+      "Recovery Memo No",
+      "Case No",
+      "Category",
+      "Recovery Date",
+      "Recovery Officer",
+      "Goods Description",
+      "Quantity",
+      "Remarks",
+      "Approval Status",
+      "Approved By",
+      "Approved At",
+      "Approval Remarks",
+      "Rejection Reason",
+      "Submitted At",
+      "Created By",
+      "Updated By",
+      "Created At",
+      "Updated At",
+    ], filtered.map((r) => [
+      r.referenceNumber,
+      r.caseNo,
+      r.category,
+      r.recoveryDate,
+      r.recoveryOfficer,
+      r.goodsDescription,
+      r.quantity,
+      r.remarks,
+      r.approvalStatus,
+      r.approvedBy,
+      r.approvedAt,
+      r.approvalRemarks,
+      r.rejectionReason,
+      r.submittedAt,
+      r.createdBy,
+      r.updatedBy,
+      r.createdAt,
+      r.updatedAt,
+    ]))
   }
 
   return (
@@ -103,10 +135,13 @@ export default function RecoveryReportingPage() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
-            <Button variant="outline" onClick={exportCsv} disabled={filtered.length === 0}>
-              <Download className="h-4 w-4 mr-2" />
-              Export CSV
-            </Button>
+            <div className="shrink-0 sm:ml-auto">
+              <ExportMenu
+                disabled={filtered.length === 0}
+                onExportCsv={exportCsv}
+                onExportPdf={() => pdf.start(filtered)}
+              />
+            </div>
           </div>
 
           <Table className="table-fixed w-full" containerClassName="overflow-x-hidden">
@@ -154,6 +189,11 @@ export default function RecoveryReportingPage() {
           </Table>
         </CardContent>
       </Card>
+      <PdfExportHost hostRef={pdf.hostRef}>
+        {pdf.items?.map((row) => (
+          <RecoveryMemoReportPrint key={row.id} row={row} embedded />
+        ))}
+      </PdfExportHost>
     </ModulePageLayout>
   )
 }

@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Button } from "@/components/ui/button"
-import { FileDown, Printer } from "lucide-react"
+import { FileDown, Printer, ChevronDown } from "lucide-react"
 import { clearSavePdfQueryParam, saveElementAsPdf } from "@/lib/save-report-pdf"
 import { toast } from "@/hooks/use-toast"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 
 const CUSTOMS_LOGO_SRC = "/pakistan-customs-logo.png"
 
@@ -28,7 +34,7 @@ function logoUrl(): string {
   return `${window.location.origin}${CUSTOMS_LOGO_SRC}`
 }
 
-export const OFFICIAL_REPORT_PRINT_CSS = `
+export const OFFICIAL_REPORT_CHROME_CSS = `
   :root { color-scheme: light; }
   body { margin: 0; background: white !important; color: #111827 !important; }
   aside, nav, header:not(.ns-letterhead), .sidebar, .main-nav, .breadcrumbs, [role="navigation"] {
@@ -37,7 +43,6 @@ export const OFFICIAL_REPORT_PRINT_CSS = `
   .print-action {
     display: flex;
     justify-content: center;
-    gap: 8px;
     padding: 10px 0 6px;
   }
   main, .main-content {
@@ -46,6 +51,9 @@ export const OFFICIAL_REPORT_PRINT_CSS = `
     width: 100% !important;
     max-width: 100% !important;
   }
+`
+
+export const OFFICIAL_REPORT_LAYOUT_CSS = `
   .print-pages { width: 100%; overflow: visible; }
   .print-page {
     width: min(210mm, 100%);
@@ -336,6 +344,9 @@ export const OFFICIAL_REPORT_PRINT_CSS = `
   }
 `
 
+export const OFFICIAL_REPORT_PRINT_CSS = `${OFFICIAL_REPORT_CHROME_CSS}
+${OFFICIAL_REPORT_LAYOUT_CSS}`
+
 export function OfficialLetterhead({
   title,
   subtitle,
@@ -463,11 +474,13 @@ export function OfficialReportPrintFrame({
   autoSavePdf = false,
   pdfFilename,
   documentTitle,
+  embedded = false,
   children,
 }: {
   autoSavePdf?: boolean
   pdfFilename: string
   documentTitle: string
+  embedded?: boolean
   children: ReactNode
 }) {
   const pagesRef = useRef<HTMLDivElement>(null)
@@ -493,12 +506,13 @@ export function OfficialReportPrintFrame({
   }
 
   useEffect(() => {
+    if (embedded) return
     const previousTitle = document.title
     document.title = documentTitle.trim() || previousTitle
     return () => {
       document.title = previousTitle
     }
-  }, [documentTitle])
+  }, [documentTitle, embedded])
 
   useEffect(() => {
     if (!autoSavePdf) return
@@ -517,17 +531,29 @@ export function OfficialReportPrintFrame({
 
   return (
     <div className="bg-white text-black" data-report-root>
-      <style>{OFFICIAL_REPORT_PRINT_CSS}</style>
+      <style>{embedded ? OFFICIAL_REPORT_LAYOUT_CSS : OFFICIAL_REPORT_PRINT_CSS}</style>
+      {!embedded && (
       <div className="print-action relative z-[60]">
-        <Button onClick={handlePrint} variant="outline" className="gap-2">
-          <Printer className="h-4 w-4" />
-          Print
-        </Button>
-        <Button onClick={() => void handleSaveAsPdf()} variant="default" className="gap-2" disabled={savingPdf}>
-          <FileDown className="h-4 w-4" />
-          {savingPdf ? "Saving PDF…" : "Save as PDF"}
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" className="gap-2" disabled={savingPdf}>
+              {savingPdf ? "Saving PDF…" : "Print"}
+              <ChevronDown className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="center" className="min-w-0 w-max">
+            <DropdownMenuItem onClick={handlePrint}>
+              <Printer className="h-4 w-4" />
+              Print
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => void handleSaveAsPdf()} disabled={savingPdf}>
+              <FileDown className="h-4 w-4" />
+              Save as PDF
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
+      )}
       <div ref={pagesRef} className="print-pages">
         {children}
       </div>

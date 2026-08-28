@@ -1,12 +1,18 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { Download, Eye, FilePlus, Pencil, Plus, Printer, Search, Trash2 } from "lucide-react"
+import { Download, Eye, FileDown, FilePlus, Pencil, Plus, Printer, Search, Trash2, ChevronDown } from "lucide-react"
 import { TableActionGroup, TableActionIcon } from "@/components/seizure/table-action-icon"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Table,
   TableBody,
@@ -24,12 +30,17 @@ import {
   canUserDeleteNoteSheet,
   deleteNoteSheet,
   fetchNoteSheets,
+  type NoteSheetAttachment,
+  type NoteSheetItem,
   type NoteSheetRecord,
   type NoteSheetStatus,
+  type NoteSheetTimelineStep,
 } from "@/lib/seizure-management-api"
 import { getStoredUser } from "@/lib/auth"
 import { toast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
+import { saveElementAsPdf } from "@/lib/save-report-pdf"
+import NoteSheetReportPrint from "@/components/seizure/NoteSheetReportPrint"
 
 type PeriodPreset = "all" | "today" | "week" | "month" | "custom"
 
@@ -90,8 +101,201 @@ function formatRangeLabel(from: string, to: string): string {
   return `Until ${fmt(to)}`
 }
 
-function csvCell(value: string | number): string {
-  return `"${String(value).replace(/"/g, '""')}"`
+function csvCell(value: unknown): string {
+  if (value == null) return '""'
+  if (typeof value === "boolean") return csvCell(value ? "Yes" : "No")
+  const text = String(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+  return `"${text.replace(/"/g, '""')}"`
+}
+
+function joinNonEmpty(values: Array<string | undefined | null>, sep = "; "): string {
+  return values.map((v) => (v || "").trim()).filter(Boolean).join(sep)
+}
+
+function formatEvidence(items: string[] | undefined): string {
+  return joinNonEmpty(items || [])
+}
+
+function formatAttachments(atts: NoteSheetAttachment[] | undefined): string {
+  if (!atts?.length) return ""
+  return atts
+    .map((a) =>
+      joinNonEmpty(
+        [a.originalFilename, a.fileType ? `(${a.fileType})` : "", a.uploadedAt, a.url],
+        " "
+      )
+    )
+    .join(" | ")
+}
+
+function formatTimeline(steps: NoteSheetTimelineStep[] | undefined): string {
+  if (!steps?.length) return ""
+  return steps
+    .map((s) => `${s.label}: ${s.at || "—"} (${s.done ? "Done" : "Pending"})`)
+    .join(" | ")
+}
+
+function formatImageUrls(urls: string[] | undefined): string {
+  return joinNonEmpty(urls || [])
+}
+
+function detentionMemoLabel(row: NoteSheetRecord): string {
+  if (row.detentionMemoId) return "Linked"
+  if (row.status === "Approved") return "Ready"
+  return ""
+}
+
+function emptyGoodsLine(): NoteSheetItem {
+  return {
+    qrCodeNumber: "",
+    product: "",
+    description: "",
+    pctCode: "",
+    quantity: "",
+    unit: "",
+    condition: "",
+    estimatedValue: "",
+    assessableValuePkr: "",
+    perishable: false,
+    identificationRef: "",
+    remarks: "",
+    itemNotes: "",
+    images: [],
+  }
+}
+
+const NOTE_SHEET_CSV_HEADERS = [
+  "Sheet Sr. No",
+  "Note Sheet No",
+  "Reference Number",
+  "Date & Time",
+  "Office / Region",
+  "Case Number",
+  "Priority",
+  "Status",
+  "Subject",
+  "Prepared By",
+  "Badge / ID",
+  "Designation",
+  "Department",
+  "Officer Contact",
+  "Accused Name",
+  "Father Name",
+  "CNIC / Passport",
+  "Accused Mobile",
+  "Accused Address",
+  "Business Name",
+  "NTN / STRN",
+  "Place of Inspection",
+  "Warehouse / Shop",
+  "GPS Location",
+  "Inspection Date",
+  "Grounds of Suspicion",
+  "Evidence Collected",
+  "Preliminary Findings",
+  "Additional Notes",
+  "Recommendation",
+  "Goods Line No",
+  "Goods QR Code",
+  "Description of Goods",
+  "PCT Code",
+  "Quantity",
+  "Unit",
+  "Condition",
+  "Assessable Value (PKR)",
+  "Perishable",
+  "ID / Chassis No",
+  "Item Notes",
+  "Goods Image URLs",
+  "Attachment Count",
+  "Attachments",
+  "Prepared Signature",
+  "Prepared Date",
+  "Forward To",
+  "Approved By",
+  "Approved At",
+  "Approval Remarks",
+  "Rejection Reason",
+  "Submitted At",
+  "Viewed At",
+  "Detention Memo Status",
+  "Created By",
+  "Updated By",
+  "Created At",
+  "Updated At",
+  "Timeline",
+] as const
+
+function noteSheetCsvRow(
+  row: NoteSheetRecord,
+  sheetIndex: number,
+  item: NoteSheetItem,
+  goodsLineNo: number | "",
+  hasGoods: boolean
+): string {
+  return [
+    sheetIndex,
+    row.noteSheetNo || "",
+    row.referenceNumber || "",
+    row.dateTime || "",
+    row.office || "",
+    row.caseNo || "",
+    row.priority || "",
+    row.status || "",
+    row.subject || "",
+    row.preparedBy || "",
+    row.badgeId || "",
+    row.designation || "",
+    row.department || "",
+    row.officerContact || "",
+    row.accusedName || "",
+    row.accusedFatherName || "",
+    row.accusedCnic || "",
+    row.accusedMobile || "",
+    row.accusedAddress || "",
+    row.businessName || "",
+    row.ntnStrn || "",
+    row.placeOfInspection || "",
+    row.warehouseShop || "",
+    row.gpsLocation || "",
+    row.inspectionDate || "",
+    row.groundsOfSuspicion || "",
+    formatEvidence(row.evidenceCollected),
+    row.preliminaryFindings || "",
+    row.content || "",
+    row.recommendation || "",
+    goodsLineNo,
+    item.qrCodeNumber || "",
+    item.product || item.description || "",
+    item.pctCode || "",
+    item.quantity || "",
+    item.unit || "",
+    item.condition || "",
+    item.assessableValuePkr || item.estimatedValue || "",
+    hasGoods ? (item.perishable ? "Yes" : "No") : "",
+    item.identificationRef || "",
+    item.remarks || item.itemNotes || "",
+    formatImageUrls(item.images),
+    row.attachments?.length ?? 0,
+    formatAttachments(row.attachments),
+    row.preparedSignature || "",
+    row.preparedDate || "",
+    row.forwardTo || "",
+    row.approvedBy || "",
+    row.approvedAt || "",
+    row.approvalRemarks || "",
+    row.rejectionReason || "",
+    row.submittedAt || "",
+    row.viewedAt || "",
+    detentionMemoLabel(row),
+    row.createdBy || "",
+    row.updatedBy || "",
+    row.createdAt || "",
+    row.updatedAt || "",
+    formatTimeline(row.timeline),
+  ]
+    .map(csvCell)
+    .join(",")
 }
 
 export default function NoteSheetPage() {
@@ -105,6 +309,8 @@ export default function NoteSheetPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [pdfRows, setPdfRows] = useState<NoteSheetRecord[] | null>(null)
+  const pdfHostRef = useRef<HTMLDivElement>(null)
   const currentUser = getStoredUser()
 
   const today = toYmd(new Date())
@@ -203,23 +409,17 @@ export default function NoteSheetPage() {
   }
 
   const exportCsv = () => {
-    const header = ["Sr. No", "Note Sheet No", "Subject", "Case No", "Office", "Priority", "Prepared By", "Status", "Created"]
-    const lines = filtered.map((row, index) =>
-      [
-        index + 1,
-        row.noteSheetNo || row.referenceNumber,
-        row.subject,
-        row.caseNo,
-        row.office,
-        row.priority,
-        row.preparedBy,
-        row.status,
-        row.createdAt || row.dateTime,
-      ]
-        .map(csvCell)
-        .join(",")
-    )
-    const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" })
+    const lines: string[] = [NOTE_SHEET_CSV_HEADERS.map(csvCell).join(",")]
+    filtered.forEach((row, index) => {
+      const items = row.items?.length ? row.items : [emptyGoodsLine()]
+      const hasGoods = Boolean(row.items?.length)
+      items.forEach((item, itemIndex) => {
+        lines.push(
+          noteSheetCsvRow(row, index + 1, item, hasGoods ? itemIndex + 1 : "", hasGoods)
+        )
+      })
+    })
+    const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
@@ -227,6 +427,42 @@ export default function NoteSheetPage() {
     a.click()
     URL.revokeObjectURL(url)
   }
+
+  const pdfBusyRef = useRef(false)
+
+  const exportPdf = () => {
+    if (filtered.length === 0 || pdfBusyRef.current) return
+    pdfBusyRef.current = true
+    setPdfRows(filtered)
+  }
+
+  useEffect(() => {
+    if (!pdfRows?.length) return
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          if (!pdfHostRef.current || cancelled) return
+          await saveElementAsPdf(pdfHostRef.current, `note-sheets-${activeRange.from || "all"}.pdf`)
+        } catch (error) {
+          if (!cancelled) {
+            toast({
+              title: "Could not export PDF",
+              description: error instanceof Error ? error.message : "Please try again.",
+              variant: "destructive",
+            })
+          }
+        } finally {
+          pdfBusyRef.current = false
+          if (!cancelled) setPdfRows(null)
+        }
+      })()
+    }, 500)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [pdfRows, activeRange.from])
 
   const resetFilters = () => {
     setPeriod("all")
@@ -337,7 +573,7 @@ export default function NoteSheetPage() {
                 </Button>
               ) : null}
             </div>
-            <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+            <div className="flex flex-col sm:flex-row gap-2 sm:items-center sm:ml-auto">
               <div className="relative w-full sm:w-72">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
@@ -347,10 +583,29 @@ export default function NoteSheetPage() {
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
-              <Button variant="outline" size="sm" onClick={exportCsv} disabled={filtered.length === 0}>
-                <Download className="h-4 w-4 mr-2" />
-                Export CSV
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={filtered.length === 0}
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Export
+                    <ChevronDown className="h-4 w-4 ml-1" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-0 w-max">
+                  <DropdownMenuItem onClick={exportCsv}>
+                    <Download className="h-4 w-4" />
+                    Export CSV
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={exportPdf}>
+                    <FileDown className="h-4 w-4" />
+                    Export PDF
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
 
@@ -457,6 +712,15 @@ export default function NoteSheetPage() {
           </Table>
         </CardContent>
       </Card>
+      <div
+        ref={pdfHostRef}
+        aria-hidden
+        className="pointer-events-none fixed -left-[100vw] top-0 w-[210mm] opacity-0"
+      >
+        {pdfRows?.map((row) => (
+          <NoteSheetReportPrint key={row.id} row={row} embedded />
+        ))}
+      </div>
     </ModulePageLayout>
   )
 }

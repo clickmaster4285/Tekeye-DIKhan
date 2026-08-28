@@ -3,16 +3,15 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import {
   ArrowLeft,
   ClipboardCheck,
-  FileOutput,
   FileText,
   Package,
-  Printer,
   Send,
 } from "lucide-react"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { PrintMenu } from "@/components/seizure/print-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -328,25 +327,17 @@ export default function SeizureReportDetailPage() {
                 )}
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
               {statusBadge(row.status)}
               {memo?.verificationStatus && (
                 <Badge variant={memo.verificationStatus === "Verified" ? "default" : "secondary"}>
                   {memo.verificationStatus}
                 </Badge>
               )}
-              <Button variant="outline" asChild size="sm">
-                <Link to={`${getSeizureMgmtSeizureReportDetailPath(row.id)}?print=full`}>
-                  <Printer className="h-4 w-4 mr-2" />
-                  Print Report
-                </Link>
-              </Button>
-              <Button variant="outline" asChild size="sm">
-                <Link to={`${getSeizureMgmtSeizureReportDetailPath(row.id)}?print=full&savepdf=1`}>
-                  <FileOutput className="h-4 w-4 mr-2" />
-                  Save as PDF
-                </Link>
-              </Button>
+              <PrintMenu
+                printHref={`${getSeizureMgmtSeizureReportDetailPath(row.id)}?print=full`}
+                pdfHref={`${getSeizureMgmtSeizureReportDetailPath(row.id)}?print=full&savepdf=1`}
+              />
             </div>
           </CardHeader>
 

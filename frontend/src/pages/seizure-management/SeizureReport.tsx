@@ -17,6 +17,11 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { ROUTES, getSeizureMgmtSeizureReportDetailPath } from "@/routes/config"
 import { fetchSeizureReports, type SeizureReportRecord } from "@/lib/seizure-management-api"
+import { ExportMenu } from "@/components/seizure/export-menu"
+import SeizureReportPrint from "@/components/seizure/SeizureReportPrint"
+import { downloadCsv } from "@/lib/csv-export"
+import { useBatchPdfExport } from "@/hooks/use-batch-pdf-export"
+import { PdfExportHost } from "@/components/seizure/pdf-export-host"
 
 export default function SeizureReportPage() {
   const navigate = useNavigate()
@@ -43,6 +48,34 @@ export default function SeizureReportPage() {
     )
   }, [rows, search])
 
+  const pdf = useBatchPdfExport<SeizureReportRecord>(`seizure-reports-${new Date().toISOString().slice(0, 10)}.pdf`)
+
+  const exportCsv = () => {
+    downloadCsv(`seizure-reports-${new Date().toISOString().slice(0, 10)}.csv`, [
+      "Seizure Report No",
+      "Case No",
+      "Report Date",
+      "Prepared By",
+      "Summary",
+      "Recovery / Assessment Notes",
+      "Status",
+      "Submitted At",
+      "Created At",
+      "Updated At",
+    ], filtered.map((r) => [
+      r.referenceNumber,
+      r.caseNo,
+      r.reportDate,
+      r.preparedBy,
+      r.summary,
+      r.recoveryAssessmentNotes,
+      r.status,
+      r.submittedAt,
+      r.createdAt,
+      r.updatedAt,
+    ]))
+  }
+
   return (
     <ModulePageLayout
       title="Seizure Report"
@@ -64,12 +97,19 @@ export default function SeizureReportPage() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
-            <Button asChild>
-              <Link to={ROUTES.SEIZURE_MGMT_SEIZURE_REPORT_CREATE}>
-                <Plus className="h-4 w-4 mr-2" />
-                Create Seizure Report
-              </Link>
-            </Button>
+            <div className="flex flex-wrap items-center gap-2 shrink-0 sm:ml-auto">
+              <Button asChild>
+                <Link to={ROUTES.SEIZURE_MGMT_SEIZURE_REPORT_CREATE}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Create Seizure Report
+                </Link>
+              </Button>
+              <ExportMenu
+                disabled={filtered.length === 0}
+                onExportCsv={exportCsv}
+                onExportPdf={() => pdf.start(filtered)}
+              />
+            </div>
           </div>
 
           <Table className="table-fixed w-full" containerClassName="overflow-x-hidden">
@@ -124,6 +164,11 @@ export default function SeizureReportPage() {
           </Table>
         </CardContent>
       </Card>
+      <PdfExportHost hostRef={pdf.hostRef}>
+        {pdf.items?.map((row) => (
+          <SeizureReportPrint key={row.id} row={row} embedded />
+        ))}
+      </PdfExportHost>
     </ModulePageLayout>
   )
 }
