@@ -17,6 +17,7 @@ interface DetentionMemoReportPrintProps {
   qrPayload?: string
   qrNumber?: string
   autoSavePdf?: boolean
+  embedded?: boolean
 }
 
 function getGoodsQrPayload(memoId: string, item: DetentionMemoGoodsLineApi): string {
@@ -33,6 +34,7 @@ export default function DetentionMemoReportPrint({
   qrPayload,
   qrNumber,
   autoSavePdf = false,
+  embedded = false,
 }: DetentionMemoReportPrintProps) {
   const goodsItems = row.goodsItems ?? []
   const hasGoods = goodsItems.length > 0
@@ -77,6 +79,7 @@ export default function DetentionMemoReportPrint({
       autoSavePdf={autoSavePdf}
       pdfFilename={pdfFilename}
       documentTitle={(row.caseNo || row.referenceNumber || "").trim()}
+      embedded={embedded}
     >
       <div className="print-page page-break-after">
         {letterhead}

@@ -22,12 +22,14 @@ export default function SeizureReportPrint({
   assessment,
   recovery,
   autoSavePdf = false,
+  embedded = false,
 }: {
   row: SeizureReportRecord
   memo?: DetentionMemoApiRecord | null
   assessment?: DetentionAssessmentRecord | null
   recovery?: RecoveryMemoRecord | null
   autoSavePdf?: boolean
+  embedded?: boolean
 }) {
   const qrPayload = `${window.location.origin}${getSeizureMgmtSeizureReportDetailPath(row.id)}?print=full`
   const sheetNo = row.referenceNumber || row.caseNo || "—"
@@ -59,6 +61,7 @@ export default function SeizureReportPrint({
       autoSavePdf={autoSavePdf}
       pdfFilename={pdfFilename}
       documentTitle={(row.caseNo || row.referenceNumber || "").trim()}
+      embedded={embedded}
     >
       <div className="print-page page-break-after">
         {letterhead}

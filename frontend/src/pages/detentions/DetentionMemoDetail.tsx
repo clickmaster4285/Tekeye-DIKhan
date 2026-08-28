@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react"
 import { useParams, Link, useSearchParams, useLocation } from "react-router-dom"
-import { ArrowLeft, FileText, Package, QrCode, Printer, FileOutput, Users, Paperclip } from "lucide-react"
+import { ArrowLeft, FileText, Package, QrCode, Users, Paperclip } from "lucide-react"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { PrintMenu } from "@/components/seizure/print-menu"
 import {
   Table,
   TableBody,
@@ -464,22 +465,14 @@ export default function DetentionMemoDetailPage() {
                 )}
               </p>
             </div>
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:ml-auto">
               <Badge variant={row.verificationStatus === "Verified" ? "default" : "secondary"} className="w-fit">
                 {row.verificationStatus}
               </Badge>
-              <Button variant="outline" asChild size="sm" className="w-full sm:w-auto">
-                <Link to={`${listPath}/${encodeURIComponent(row.id)}?print=full`}>
-                  <Printer className="h-4 w-4 mr-2" />
-                  Print Report
-                </Link>
-              </Button>
-              <Button variant="default" asChild size="sm" className="w-full sm:w-auto">
-                <Link to={`${listPath}/${encodeURIComponent(row.id)}?print=full&savepdf=1`}>
-                  <FileOutput className="h-4 w-4 mr-2" />
-                  Save as PDF
-                </Link>
-              </Button>
+              <PrintMenu
+                printHref={`${listPath}/${encodeURIComponent(row.id)}?print=full`}
+                pdfHref={`${listPath}/${encodeURIComponent(row.id)}?print=full&savepdf=1`}
+              />
             </div>
           </CardHeader>
           <CardContent className="space-y-4 sm:space-y-6 px-4 sm:px-6">

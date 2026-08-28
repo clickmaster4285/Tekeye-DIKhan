@@ -34,7 +34,7 @@ function logoUrl(): string {
   return `${window.location.origin}${CUSTOMS_LOGO_SRC}`
 }
 
-export const OFFICIAL_REPORT_PRINT_CSS = `
+export const OFFICIAL_REPORT_CHROME_CSS = `
   :root { color-scheme: light; }
   body { margin: 0; background: white !important; color: #111827 !important; }
   aside, nav, header:not(.ns-letterhead), .sidebar, .main-nav, .breadcrumbs, [role="navigation"] {
@@ -51,6 +51,9 @@ export const OFFICIAL_REPORT_PRINT_CSS = `
     width: 100% !important;
     max-width: 100% !important;
   }
+`
+
+export const OFFICIAL_REPORT_LAYOUT_CSS = `
   .print-pages { width: 100%; overflow: visible; }
   .print-page {
     width: min(210mm, 100%);
@@ -341,6 +344,9 @@ export const OFFICIAL_REPORT_PRINT_CSS = `
   }
 `
 
+export const OFFICIAL_REPORT_PRINT_CSS = `${OFFICIAL_REPORT_CHROME_CSS}
+${OFFICIAL_REPORT_LAYOUT_CSS}`
+
 export function OfficialLetterhead({
   title,
   subtitle,
@@ -468,11 +474,13 @@ export function OfficialReportPrintFrame({
   autoSavePdf = false,
   pdfFilename,
   documentTitle,
+  embedded = false,
   children,
 }: {
   autoSavePdf?: boolean
   pdfFilename: string
   documentTitle: string
+  embedded?: boolean
   children: ReactNode
 }) {
   const pagesRef = useRef<HTMLDivElement>(null)
@@ -498,12 +506,13 @@ export function OfficialReportPrintFrame({
   }
 
   useEffect(() => {
+    if (embedded) return
     const previousTitle = document.title
     document.title = documentTitle.trim() || previousTitle
     return () => {
       document.title = previousTitle
     }
-  }, [documentTitle])
+  }, [documentTitle, embedded])
 
   useEffect(() => {
     if (!autoSavePdf) return
@@ -522,7 +531,8 @@ export function OfficialReportPrintFrame({
 
   return (
     <div className="bg-white text-black" data-report-root>
-      <style>{OFFICIAL_REPORT_PRINT_CSS}</style>
+      <style>{embedded ? OFFICIAL_REPORT_LAYOUT_CSS : OFFICIAL_REPORT_PRINT_CSS}</style>
+      {!embedded && (
       <div className="print-action relative z-[60]">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -543,6 +553,7 @@ export function OfficialReportPrintFrame({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      )}
       <div ref={pagesRef} className="print-pages">
         {children}
       </div>

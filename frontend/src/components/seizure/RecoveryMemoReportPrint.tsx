@@ -16,10 +16,12 @@ export default function RecoveryMemoReportPrint({
   row,
   memo,
   autoSavePdf = false,
+  embedded = false,
 }: {
   row: RecoveryMemoRecord
   memo?: DetentionMemoApiRecord | null
   autoSavePdf?: boolean
+  embedded?: boolean
 }) {
   const qrPayload = `${window.location.origin}${getSeizureMgmtRecoveryMemoDetailPath(row.id)}?print=full`
   const sheetNo = row.referenceNumber || row.caseNo || "—"
@@ -51,6 +53,7 @@ export default function RecoveryMemoReportPrint({
       autoSavePdf={autoSavePdf}
       pdfFilename={pdfFilename}
       documentTitle={(row.caseNo || row.referenceNumber || "").trim()}
+      embedded={embedded}
     >
       <div className="print-page page-break-after">
         {letterhead}

@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useState } from "react"
-import { AlertTriangle, Download, Eye, Search } from "lucide-react"
+import { AlertTriangle, Eye, Search } from "lucide-react"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { TableActionGroup, TableActionIcon } from "@/components/seizure/table-action-icon"
 import { Card, CardContent } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { ExportMenu } from "@/components/seizure/export-menu"
+import DetentionMemoReportPrint from "@/components/detention/DetentionMemoReportPrint"
+import { downloadCsv, joinList } from "@/lib/csv-export"
+import { useBatchPdfExport } from "@/hooks/use-batch-pdf-export"
+import { PdfExportHost } from "@/components/seizure/pdf-export-host"
 import {
   Table,
   TableBody,
@@ -68,32 +72,128 @@ export default function DetentionReportingPage() {
     return { total: rows.length, overdue, withAssessment }
   }, [rows, assessedMemoIds])
 
+  const pdf = useBatchPdfExport<DetentionMemoApiRecord>(`detention-report-${new Date().toISOString().slice(0, 10)}.pdf`)
+
   const exportCsv = () => {
-    const header = ["Case No", "Detention Date", "Place", "Verification", "Days", "Assessment", "60-Day Status"]
-    const lines = filtered.map((r) => {
+    const headers = [
+      "Sheet Sr. No",
+      "Record ID",
+      "Case No",
+      "Detention Memo No",
+      "FIR Number",
+      "Date/Time of Occurrence",
+      "Place of Occurrence",
+      "Date/Time of Detention",
+      "Place of Detention",
+      "Detention Type",
+      "Directorate",
+      "Reason for Detention",
+      "Location of Detention",
+      "GD Number",
+      "GD Number 2",
+      "Where Deposited",
+      "Search / Chassis Number",
+      "Receipt Officer",
+      "Settlement Status",
+      "Verification Status",
+      "Disposition Status",
+      "Brief Facts",
+      "Forwarding Officer Remarks",
+      "Purpose of Detention",
+      "Owner Name",
+      "Owner CNIC",
+      "Owner Contact",
+      "Driver Name",
+      "Driver CNIC",
+      "Driver Contact",
+      "Seizing Officer Notes",
+      "Examining Officer Notes",
+      "Detention Notes",
+      "Days Since Detention",
+      "Assessment",
+      "60-Day Status",
+      "Goods Line No",
+      "Goods QR",
+      "Description of Goods",
+      "PCT Code",
+      "Quantity",
+      "Unit",
+      "Condition",
+      "Assessable Value (PKR)",
+      "Perishable",
+      "ID / Chassis No",
+      "Item Notes",
+      "Goods Image URLs",
+      "Created By",
+      "Updated By",
+      "Created At",
+      "Updated At",
+    ]
+    const rows: unknown[][] = []
+    filtered.forEach((r, index) => {
       const days = daysSinceDetention(r.dateTimeDetention)
       const hasAssessment = assessedMemoIds.has(r.id)
       const windowStatus =
         days === null ? "" : days > DETENTION_WINDOW_DAYS ? "Overdue" : "Within window"
-      return [
-        r.caseNo,
-        r.dateTimeDetention,
-        r.placeOfDetention,
-        r.verificationStatus ?? "",
-        days ?? "",
-        hasAssessment ? "Yes" : "No",
-        windowStatus,
-      ]
-        .map((c) => `"${String(c).replace(/"/g, '""')}"`)
-        .join(",")
+      const goods = r.goodsItems?.length ? r.goodsItems : [null]
+      goods.forEach((item, itemIndex) => {
+        rows.push([
+          index + 1,
+          r.id,
+          r.caseNo,
+          r.referenceNumber,
+          r.firNumber,
+          r.dateTimeOccurrence,
+          r.placeOfOccurrence,
+          r.dateTimeDetention,
+          r.placeOfDetention,
+          r.detentionType,
+          r.directorate,
+          r.reasonForDetention,
+          r.locationOfDetention,
+          r.gdNumber,
+          r.gdNumber2,
+          r.whereDeposited,
+          r.searchChassisNumber,
+          r.receiptOfficer,
+          r.settlementStatus,
+          r.verificationStatus,
+          r.dispositionStatus,
+          r.briefFacts,
+          r.forwardingOfficerRemarks,
+          r.purposeOfDetention,
+          r.owner?.name,
+          r.owner?.cnic,
+          r.owner?.contact,
+          r.driver?.name,
+          r.driver?.cnic,
+          r.driver?.contact,
+          r.seizingOfficerNotes,
+          r.examiningOfficerNotes,
+          r.detentionNotes,
+          days ?? "",
+          hasAssessment ? "Yes" : "No",
+          windowStatus,
+          item ? itemIndex + 1 : "",
+          item?.qrCodeNumber,
+          item?.description,
+          item?.pctCode,
+          item?.quantity,
+          item?.unit,
+          item?.condition,
+          item?.assessableValuePkr,
+          item ? (item.perishable ? "Yes" : "No") : "",
+          item?.identificationRef,
+          item?.itemNotes,
+          joinList(item?.images),
+          r.createdBy,
+          r.updatedBy,
+          r.createdAt,
+          r.updatedAt,
+        ])
+      })
     })
-    const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `detention-report-${new Date().toISOString().slice(0, 10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadCsv(`detention-report-${new Date().toISOString().slice(0, 10)}.csv`, headers, rows)
   }
 
   return (
@@ -139,10 +239,13 @@ export default function DetentionReportingPage() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
-            <Button variant="outline" onClick={exportCsv} disabled={filtered.length === 0}>
-              <Download className="h-4 w-4 mr-2" />
-              Export CSV
-            </Button>
+            <div className="shrink-0 sm:ml-auto">
+              <ExportMenu
+                disabled={filtered.length === 0}
+                onExportCsv={exportCsv}
+                onExportPdf={() => pdf.start(filtered)}
+              />
+            </div>
           </div>
 
           <Table className="table-fixed w-full" containerClassName="overflow-x-hidden">
@@ -211,6 +314,11 @@ export default function DetentionReportingPage() {
           </Table>
         </CardContent>
       </Card>
+      <PdfExportHost hostRef={pdf.hostRef}>
+        {pdf.items?.map((row) => (
+          <DetentionMemoReportPrint key={row.id} row={row} embedded />
+        ))}
+      </PdfExportHost>
     </ModulePageLayout>
   )
 }

@@ -272,7 +272,8 @@ export default function NoteSheetDetailPage() {
         { label: row.noteSheetNo || row.referenceNumber || "Detail" },
       ]}
     >
-      <div className="mb-4 flex flex-wrap gap-2 items-center">
+      <div className="mb-4 flex flex-wrap gap-2 items-center justify-between">
+        <div className="flex flex-wrap gap-2 items-center">
         <Button variant="ghost" size="sm" asChild>
           <Link to={ROUTES.SEIZURE_MGMT_NOTE_SHEET}>
             <ArrowLeft className="h-4 w-4 mr-2" />
@@ -289,6 +290,19 @@ export default function NoteSheetDetailPage() {
             </Link>
           </Button>
         )}
+        {canDelete && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            disabled={acting}
+            onClick={() => void handleDelete()}
+          >
+            <Trash2 className="h-4 w-4 mr-2" />
+            Delete
+          </Button>
+        )}
+        </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm">
@@ -312,18 +326,6 @@ export default function NoteSheetDetailPage() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        {canDelete && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-destructive hover:text-destructive"
-            disabled={acting}
-            onClick={() => void handleDelete()}
-          >
-            <Trash2 className="h-4 w-4 mr-2" />
-            Delete
-          </Button>
-        )}
       </div>
 
       {row.status === "Submitted" && canApprove && (
