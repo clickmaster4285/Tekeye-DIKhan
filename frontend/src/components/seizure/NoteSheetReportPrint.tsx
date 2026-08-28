@@ -121,9 +121,11 @@ function NoteSheetFooter({
 export default function NoteSheetReportPrint({
   row,
   autoSavePdf = false,
+  embedded = false,
 }: {
   row: NoteSheetRecord
   autoSavePdf?: boolean
+  embedded?: boolean
 }) {
   const pagesRef = useRef<HTMLDivElement>(null)
   const [savingPdf, setSavingPdf] = useState(false)
@@ -161,12 +163,13 @@ export default function NoteSheetReportPrint({
   }
 
   useEffect(() => {
+    if (embedded) return
     const previousTitle = document.title
     document.title = (row.caseNo || row.noteSheetNo || "").trim() || previousTitle
     return () => {
       document.title = previousTitle
     }
-  }, [row.caseNo, row.noteSheetNo])
+  }, [row.caseNo, row.noteSheetNo, embedded])
 
   useEffect(() => {
     if (!autoSavePdf) return
@@ -497,16 +500,18 @@ export default function NoteSheetReportPrint({
         }
       `}</style>
 
-      <div className="print-action relative z-[60]">
-        <Button onClick={handlePrint} variant="outline" className="gap-2">
-          <Printer className="h-4 w-4" />
-          Print
-        </Button>
-        <Button onClick={() => void handleSaveAsPdf()} variant="default" className="gap-2" disabled={savingPdf}>
-          <FileDown className="h-4 w-4" />
-          {savingPdf ? "Saving PDF…" : "Save as PDF"}
-        </Button>
-      </div>
+      {!embedded && (
+        <div className="print-action relative z-[60]">
+          <Button onClick={handlePrint} variant="outline" className="gap-2">
+            <Printer className="h-4 w-4" />
+            Print
+          </Button>
+          <Button onClick={() => void handleSaveAsPdf()} variant="default" className="gap-2" disabled={savingPdf}>
+            <FileDown className="h-4 w-4" />
+            {savingPdf ? "Saving PDF…" : "Save as PDF"}
+          </Button>
+        </div>
+      )}
 
       <div ref={pagesRef} className="print-pages">
         <div className="print-page page-break-after">

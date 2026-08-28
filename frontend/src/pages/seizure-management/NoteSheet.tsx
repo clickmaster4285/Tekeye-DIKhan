@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { Download, Eye, FilePlus, Pencil, Plus, Printer, Search, Trash2 } from "lucide-react"
+import { Download, Eye, FileDown, FilePlus, Loader2, Pencil, Plus, Printer, Search, Trash2 } from "lucide-react"
 import { TableActionGroup, TableActionIcon } from "@/components/seizure/table-action-icon"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent } from "@/components/ui/card"
@@ -33,6 +33,8 @@ import {
 import { getStoredUser } from "@/lib/auth"
 import { toast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
+import { saveElementAsPdf } from "@/lib/save-report-pdf"
+import NoteSheetReportPrint from "@/components/seizure/NoteSheetReportPrint"
 
 type PeriodPreset = "all" | "today" | "week" | "month" | "custom"
 
@@ -309,6 +311,8 @@ export default function NoteSheetPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [pdfRows, setPdfRows] = useState<NoteSheetRecord[] | null>(null)
+  const pdfHostRef = useRef<HTMLDivElement>(null)
   const currentUser = getStoredUser()
 
   const today = toYmd(new Date())
@@ -426,6 +430,40 @@ export default function NoteSheetPage() {
     URL.revokeObjectURL(url)
   }
 
+  const pdfExporting = Boolean(pdfRows?.length)
+
+  const exportPdf = () => {
+    if (filtered.length === 0 || pdfExporting) return
+    setPdfRows(filtered)
+  }
+
+  useEffect(() => {
+    if (!pdfRows?.length) return
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          if (!pdfHostRef.current || cancelled) return
+          await saveElementAsPdf(pdfHostRef.current, `note-sheets-${activeRange.from || "all"}.pdf`)
+        } catch (error) {
+          if (!cancelled) {
+            toast({
+              title: "Could not export PDF",
+              description: error instanceof Error ? error.message : "Please try again.",
+              variant: "destructive",
+            })
+          }
+        } finally {
+          if (!cancelled) setPdfRows(null)
+        }
+      })()
+    }, 500)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [pdfRows, activeRange.from])
+
   const resetFilters = () => {
     setPeriod("all")
     setStatusFilter("all")
@@ -496,7 +534,7 @@ export default function NoteSheetPage() {
         </div>
 
         <CardContent className="p-4 sm:p-5 space-y-4">
-          <div className="flex flex-col xl:flex-row gap-3 xl:items-center xl:justify-between">
+          <div className="flex flex-col xl:flex-row gap-3 xl:items-start xl:justify-between">
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm text-[#697282]">
                 {formatRangeLabel(activeRange.from, activeRange.to)}
@@ -535,7 +573,7 @@ export default function NoteSheetPage() {
                 </Button>
               ) : null}
             </div>
-            <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+            <div className="flex flex-col sm:flex-row gap-2 sm:items-start">
               <div className="relative w-full sm:w-72">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
@@ -545,10 +583,32 @@ export default function NoteSheetPage() {
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
-              <Button variant="outline" size="sm" onClick={exportCsv} disabled={filtered.length === 0}>
-                <Download className="h-4 w-4 mr-2" />
-                Export CSV
-              </Button>
+              <div className="flex flex-col gap-2 w-full sm:w-[11rem] shrink-0">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full justify-start"
+                  onClick={exportCsv}
+                  disabled={filtered.length === 0 || pdfExporting}
+                >
+                  <Download className="h-4 w-4 mr-2" />
+                  Export CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full justify-start"
+                  onClick={exportPdf}
+                  disabled={filtered.length === 0 || pdfExporting}
+                >
+                  {pdfExporting ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <FileDown className="h-4 w-4 mr-2" />
+                  )}
+                  {pdfExporting ? "Exporting PDF…" : "Export PDF"}
+                </Button>
+              </div>
             </div>
           </div>
 
@@ -655,6 +715,15 @@ export default function NoteSheetPage() {
           </Table>
         </CardContent>
       </Card>
+      <div
+        ref={pdfHostRef}
+        aria-hidden
+        className="pointer-events-none fixed left-[-10000px] top-0 w-[210mm] bg-white"
+      >
+        {pdfRows?.map((row) => (
+          <NoteSheetReportPrint key={row.id} row={row} embedded />
+        ))}
+      </div>
     </ModulePageLayout>
   )
 }
