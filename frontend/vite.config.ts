@@ -44,7 +44,7 @@ export default defineConfig(({ mode }) => {
       VitePWA({
         registerType: "autoUpdate",
         includeAssets: [
-          "pakistan-customs-logo.png",
+          "custom-logo.jpeg",
           "icon.svg",
           "models/blazeface/model.json",
           "models/blazeface/group1-shard1of1.bin",
@@ -64,15 +64,15 @@ export default defineConfig(({ mode }) => {
           dir: "ltr",
           icons: [
             {
-              src: "pakistan-customs-logo.png",
+              src: "custom-logo.jpeg",
               sizes: "512x512",
-              type: "image/png",
+              type: "image/jpeg",
               purpose: "any",
             },
             {
-              src: "pakistan-customs-logo.png",
+              src: "custom-logo.jpeg",
               sizes: "192x192",
-              type: "image/png",
+              type: "image/jpeg",
               purpose: "any",
             },
           ],

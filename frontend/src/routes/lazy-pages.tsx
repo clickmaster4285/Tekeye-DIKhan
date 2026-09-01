@@ -160,6 +160,8 @@ export const PAGE_LOADERS = {
   PersonJourneyDetail: () =>
     import("@/pages/operations/PersonJourneyDetail").then((m) => ({ default: m.default })),
   GpsTracking: () => import("@/pages/operations/GpsTracking").then((m) => ({ default: m.default })),
+  VideoRecovery: () =>
+    import("@/pages/video-recovery/VideoRecovery").then((m) => ({ default: m.default })),
   AnprSettings: () => import("@/pages/cameras/AnprSettings").then((m) => ({ default: m.default })),
   AnprVehicleTracking: () =>
     import("@/pages/cameras/VehicleTracking").then((m) => ({ default: m.default })),

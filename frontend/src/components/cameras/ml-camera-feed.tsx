@@ -33,7 +33,7 @@ type MlCameraFeedProps = {
   onScanStart?: () => void
 }
 
-const TEKEYE_LOGO_SRC = "/pakistan-customs-logo.png"
+const TEKEYE_LOGO_SRC = "/custom-logo.jpeg"
 
 function StreamBrandMarks() {
   return (
@@ -53,7 +53,7 @@ function StreamBrandMarks() {
         aria-hidden
       >
         <span className="text-xl font-extrabold uppercase tracking-[0.16em] text-white sm:text-2xl">
-          TekEye
+          CIIS
         </span>
       </div>
     </>

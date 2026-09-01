@@ -78,6 +78,7 @@ INSTALLED_APPS = [
     "recognition.apps.RecognitionConfig",
     "ops_central.apps.OpsCentralConfig",
     "gps_tracking.apps.GpsTrackingConfig",
+    "video_recovery.apps.VideoRecoveryConfig",
 ]
 
 # -----------------------------
@@ -255,6 +256,10 @@ ML_VIDEO_SEARCH_MAX_BYTES = int(
     os.getenv("ML_VIDEO_SEARCH_MAX_BYTES", str(8 * 1024 * 1024 * 1024))
 )  # 8GB — typical 1-hour CCTV export
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173").rstrip("/")
+
+# Video recovery — GPU acceleration (PyTorch CUDA + FFmpeg NVENC)
+VIDEO_RECOVERY_USE_GPU = os.getenv("VIDEO_RECOVERY_USE_GPU", "True").lower() in ("true", "1", "yes")
+VIDEO_RECOVERY_GPU_BATCH_SIZE = int(os.getenv("VIDEO_RECOVERY_GPU_BATCH_SIZE", "32"))
 
 # Background detection worker (saves ML readings without browser open)
 DETECTION_WORKER_ENABLED = os.getenv("DETECTION_WORKER_ENABLED", "True").lower() in ("true", "1", "yes")

@@ -11,6 +11,7 @@ SIDEBAR_MODULES: list[dict[str, str]] = [
     {"key": "Auction Management", "label": "Auction Management"},
     {"key": "AI Monitoring & Analytics", "label": "AI Monitoring & Analytics"},
     {"key": "System Configuration", "label": "System Configuration"},
+    {"key": "Video Recovery", "label": "Video Recovery"},
 ]
 
 SIDEBAR_MODULE_KEYS = frozenset(m["key"] for m in SIDEBAR_MODULES)

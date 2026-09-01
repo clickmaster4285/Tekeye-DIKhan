@@ -68,8 +68,8 @@ export default function LoginPage() {
         <div className="relative z-10 flex items-center gap-3">
           <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white shadow-lg ring-1 ring-white/30">
             <img
-              src="/pakistan-customs-logo.png"
-              alt="Pakistan Customs"
+              src="/custom-logo.jpeg"
+              alt="Customs logo"
               width={56}
               height={56}
               className="h-full w-full object-contain p-1"
@@ -77,7 +77,7 @@ export default function LoginPage() {
             />
           </div>
           <div>
-            <span className="text-xl font-bold tracking-tight">PAKISTAN CUSTOMS</span>
+            <span className="text-xl font-bold tracking-tight">Customs Integrated Intelligence Systems</span>
             <p className="text-xs font-medium text-white/70 uppercase tracking-widest mt-0.5">
               Government of Pakistan
             </p>
@@ -90,7 +90,7 @@ export default function LoginPage() {
               World&apos;s Leading AI Analytic System
             </p>
             <h1 className="text-4xl xl:text-5xl font-bold leading-[1.1] tracking-tight">
-             TekEye Secure Access Portal
+             Customs Integrated Intelligence Systems
             </h1>
             <div className="mt-4 h-1 w-20 rounded-full bg-[#3b82f6]" />
           </div>
@@ -118,8 +118,8 @@ export default function LoginPage() {
           <div className="mb-10 flex items-center gap-3 lg:hidden">
             <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white shadow-lg ring-1 ring-border/60">
               <img
-                src="/pakistan-customs-logo.png"
-                alt="Pakistan Customs"
+                src="/custom-logo.jpeg"
+                alt="Customs logo"
                 width={48}
                 height={48}
                 className="h-full w-full object-contain p-0.5"
@@ -127,7 +127,7 @@ export default function LoginPage() {
               />
             </div>
             <div className="min-w-0">
-              <span className="text-lg font-bold text-foreground">Pakistan Customs</span>
+              <span className="text-lg font-bold text-foreground">Customs Integrated Intelligence Systems</span>
               <p className="text-xs font-medium text-[#3b82f6] uppercase tracking-wider">
                 World&apos;s Leading AI Analytic System
               </p>

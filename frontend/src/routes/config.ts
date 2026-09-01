@@ -87,6 +87,7 @@ export const ROUTES = {
   PERSON_JOURNEY: "/person-journey",
   PERSON_JOURNEY_DETAIL: "/person-journey/:uuid",
   GPS_TRACKING: "/gps-tracking",
+  VIDEO_RECOVERY: "/video-recovery",
   ANPR_SETTINGS: "/anpr-settings",
   ANPR_VEHICLE_TRACKING: "/anpr-vehicle-tracking",
   VEHICLE_JOURNEY: "/vehicle-journey",
@@ -673,6 +674,10 @@ const ALL_NAV_ITEMS: (NavItem | NavGroup)[] = [
       { label: "Logs", href: ROUTES.LOGS },
     ],
   },
+  {
+    label: "Video Recovery",
+    children: [{ label: "Video Recovery", href: ROUTES.VIDEO_RECOVERY }],
+  },
 ]
 
 /** Sidebar navigation sections: each has a title and list of groups or items */
@@ -681,6 +686,7 @@ export const NAV_SECTIONS: { title: string; items: (NavItem | NavGroup)[] }[] = 
   { title: "Management System", items: ALL_NAV_ITEMS.slice(1, 8) },
   { title: "Reports and Monitoring", items: ALL_NAV_ITEMS.slice(8, 9) },
   { title: "System", items: ALL_NAV_ITEMS.slice(9, 10) },
+  { title: "Video Recovery", items: ALL_NAV_ITEMS.slice(10, 11) },
 ]
 
 export type NavSection = { title: string; items: (NavItem | NavGroup)[] }
