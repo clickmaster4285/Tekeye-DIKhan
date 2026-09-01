@@ -68,6 +68,7 @@ Thumbs.db
 
 # ML service — keep source; ignore weights / training artifacts / secrets
 ml_services/runs/
+ml_services/tmp/
 ml_services/.env
 
 # FFmpeg binaries

@@ -5,6 +5,7 @@ from .views import (
   MLHealthAPIView,
   MLReloadFacesAPIView,
   MLValidateHumanFaceAPIView,
+  MLVideoSearchAPIView,
 )
 
 urlpatterns = [
@@ -12,4 +13,5 @@ urlpatterns = [
   path("ml/detect/", MLDetectImageAPIView.as_view(), name="ml-detect"),
   path("ml/validate/human-face/", MLValidateHumanFaceAPIView.as_view(), name="ml-validate-face"),
   path("ml/reload-faces/", MLReloadFacesAPIView.as_view(), name="ml-reload-faces"),
+  path("ml/search/video/", MLVideoSearchAPIView.as_view(), name="ml-search-video"),
 ]

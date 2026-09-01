@@ -578,11 +578,13 @@ class CameraStreamListView(APIView):
                     "ml_stream_key": cam.stream_key,
                     "ml_live_stream_url": ml_live_mjpeg_public_url(
                         cam.stream_key,
+                        rtsp_url=cam.effective_stream_url(),
                         purpose=cam.purpose,
                         purposes=cam.purpose_list(),
                     ),
                     "raw_stream_url": ml_live_mjpeg_raw_public_url(
                         cam.stream_key,
+                        rtsp_url=cam.effective_stream_url(),
                         purpose=cam.purpose,
                         purposes=cam.purpose_list(),
                     ),

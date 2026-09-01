@@ -24,9 +24,11 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { ChevronDown, Search, Calendar, Zap, User, Truck, Activity, Package, Thermometer, Film, Bookmark, Download, Wrench } from "lucide-react"
+import { Link } from "react-router-dom"
+import { ChevronDown, Search, Calendar, Zap, User, Truck, Activity, Package, Thermometer, Film, Bookmark, Download, Wrench, ScanSearch } from "lucide-react"
 import { CameraSelectItems } from "@/components/cameras/camera-select-items"
 import { useCameras } from "@/hooks/use-cameras"
+import { ROUTES } from "@/routes/config"
 
 const LOCATIONS = ["Peshawar", "Yarik", "DI Khan", "SWH Ratta Kulachi", "Kohat", "Mardan", "Nowshera","Chamkani"]
 const RECORDING_TYPES = ["Continuous", "Motion", "Event", "Manual"]
@@ -144,6 +146,15 @@ export default function PlaybackSearchPage() {
       description="Required = Yes means mandatory field. Field Type defines input widget. Developer Notes = implementation context."
       breadcrumbs={[{ label: "AI Analytics" }, { label: "Playback & Search" }]}
     >
+      <Link
+        to={ROUTES.VIDEO_IMAGE_SEARCH}
+        className="mb-4 flex items-center gap-3 rounded-lg border border-[#A9D1EF] bg-[#F0F8FF] px-4 py-3 text-sm text-[#0F3A5F] hover:bg-[#E8F3FC]"
+      >
+        <ScanSearch className="h-5 w-5 shrink-0" />
+        <span>
+          <strong>Find in Video:</strong> upload a photo and a recording — the model marks the time and cuts a 2–5 second clip.
+        </span>
+      </Link>
       <div className="flex gap-4 flex-col lg:flex-row">
         <ScrollArea className="lg:w-96 shrink-0 border border-border rounded-lg bg-card max-h-[calc(100vh-12rem)]">
           <div className="p-3 space-y-2">

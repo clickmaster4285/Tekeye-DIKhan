@@ -140,6 +140,7 @@ export const DASHBOARD_ROUTES: { index?: true; path?: string; page: string }[] =
   { path: toChildPath(ROUTES.ANALYTICS_CAMERA_MANAGEMENT), page: "AnalyticsCameraManagement" },
   { path: toChildPath(ROUTES.OBJECT_DETECTION), page: "ObjectDetection" },
   { path: toChildPath(ROUTES.OBJECT_TRACKING), page: "ObjectTracking" },
+  { path: toChildPath(ROUTES.VIDEO_IMAGE_SEARCH), page: "VideoImageSearch" },
   { path: "object-tracking/:uuid", page: "ObjectTrackingDetail" },
   { path: toChildPath(ROUTES.OPS_CENTRAL), page: "OpsCentral" },
   { path: toChildPath(ROUTES.PERSON_JOURNEY), page: "PersonJourney" },

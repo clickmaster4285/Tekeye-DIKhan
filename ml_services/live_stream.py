@@ -102,6 +102,22 @@ def _boot_camera_ips() -> list[str]:
     return [ip.strip() for ip in raw.split(",") if ip.strip()]
 
 
+_CAM_KEY_RE = re.compile(r"^cam-\d+$", re.IGNORECASE)
+_IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+
+def _key_may_be_rtsp_host(key: str) -> bool:
+    """True only when the stream key looks like an IP / hostname, not cam-{id}."""
+    text = (key or "").strip()
+    if not text or _CAM_KEY_RE.match(text):
+        return False
+    if _IPV4_RE.match(text):
+        return True
+    if "." in text and not text.startswith("cam-"):
+        return True
+    return text in _boot_camera_ips()
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
@@ -1047,6 +1063,9 @@ class LiveStreamManager:
         if registered:
             return registered
         if not key:
+            return None
+        # Never treat Django stream keys (cam-11) as RTSP hostnames.
+        if not _key_may_be_rtsp_host(key):
             return None
         cfg = _rtsp_config()
         return build_rtsp_url(key, cfg["user"], cfg["password"], cfg["port"], cfg["path"])
