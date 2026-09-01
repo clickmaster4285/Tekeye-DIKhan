@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 
-const CUSTOMS_LOGO_SRC = "/pakistan-customs-logo.png"
+const CUSTOMS_LOGO_SRC = "/custom-logo.jpeg"
 
 export function getQrCodeUrl(data: string, size = 120) {
   return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(data)}`
@@ -421,7 +421,7 @@ export function OfficialFooter({
       <div className="ns-footer-row ns-footer-muted">
         <span>Generated {generatedAt}</span>
         <span>Record created {createdAt}</span>
-        <span>Pakistan Customs · TekEye</span>
+        <span>Pakistan Customs · CIIS</span>
       </div>
     </footer>
   )

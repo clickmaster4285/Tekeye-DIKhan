@@ -186,7 +186,7 @@ export function WalkInStep4QRCodeGeneration({
           }}
         >
           <div style={{ textAlign: "center", marginBottom: "2px" }}>
-            <h1 style={{ fontSize: "17px", fontWeight: 900, marginBottom: "1px", letterSpacing: "1.05px" }}>TEKEYE</h1>
+            <h1 style={{ fontSize: "17px", fontWeight: 900, marginBottom: "1px", letterSpacing: "1.05px" }}>CIIS</h1>
             <h1 style={{ fontSize: "17px", fontWeight: 900, marginBottom: "1px", letterSpacing: "1.05px" }}>PAKISTAN CUSTOMS</h1>
             <div style={{ fontSize: "11px", fontWeight: "bold" }}>VISITOR PASS</div>
           </div>
@@ -252,7 +252,7 @@ export function WalkInStep4QRCodeGeneration({
           <div style={{ borderTop: "1px dashed black", margin: "1.5px 0" }} />
 
           <div style={{ textAlign: "center", fontSize: "10px", marginTop: "1.5px", lineHeight: 1.25 }}>Thank you for visiting PAKISTAN CUSTOMS</div>
-          <div style={{ borderTop: "1.5px solid black", marginTop: "1.5px", paddingTop: "0.3mm", fontSize: "9px", textAlign: "center" }}>Powered by TEKEYE - PAKISTAN CUSTOMS</div>
+          <div style={{ borderTop: "1.5px solid black", marginTop: "1.5px", paddingTop: "0.3mm", fontSize: "9px", textAlign: "center" }}>Powered by CIIS - PAKISTAN CUSTOMS</div>
         </div>
       </div>
 

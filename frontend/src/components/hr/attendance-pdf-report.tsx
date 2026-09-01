@@ -213,7 +213,7 @@ const GOLD = "#b8860b"
 const MUTED = "#5b6b7c"
 const LINE = "#d8dee6"
 const SOFT = "#f4f7fb"
-const TEKEYE_LOGO_SRC = "/pakistan-customs-logo.png"
+const TEKEYE_LOGO_SRC = "/custom-logo.jpeg"
 
 function absoluteAssetUrl(path: string): string {
   if (typeof window === "undefined") return path
@@ -302,7 +302,7 @@ export function AttendancePdfReport({
                 >
                   <img
                     src={logoSrc}
-                    alt="TekEye"
+                    alt="CIIS"
                     crossOrigin="anonymous"
                     style={{
                       width: "100%",
@@ -324,7 +324,7 @@ export function AttendancePdfReport({
                       fontWeight: 700,
                     }}
                   >
-                    TekEye
+                    CIIS
                   </p>
                   <h1
                     style={{

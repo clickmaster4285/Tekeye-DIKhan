@@ -120,7 +120,7 @@ export function PrintQROnSave({
           <!DOCTYPE html>
           <html>
             <head>
-              <title>TEKEYE - QR Code</title>
+              <title>CIIS - QR Code</title>
               <style>
                 * {
                   margin: 0;
@@ -274,7 +274,7 @@ export function PrintQROnSave({
             </head>
             <body>
               <div class="header">
-                <h1>TEKEYE</h1>
+                <h1>CIIS</h1>
                 <h1>PAKISTAN CUSTOMS</h1>
                 <div class="subtitle">VISITOR PASS</div>
               </div>
@@ -325,7 +325,7 @@ export function PrintQROnSave({
 
               <div class="footer">
                 <div>Thank you for visiting PAKISTAN CUSTOMS</div>
-                <div class="footer-powered">Powered by TEKEYE - PAKISTAN CUSTOMS</div>
+                <div class="footer-powered">Powered by CIIS - PAKISTAN CUSTOMS</div>
               </div>
             </body>
           </html>
