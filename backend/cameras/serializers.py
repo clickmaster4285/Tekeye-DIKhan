@@ -159,6 +159,7 @@ class CameraSerializer(serializers.ModelSerializer):
 
         return ml_live_mjpeg_public_url(
             obj.stream_key,
+            rtsp_url=obj.effective_stream_url(),
             purpose=obj.purpose,
             purposes=obj.purpose_list(),
         )
@@ -170,6 +171,7 @@ class CameraSerializer(serializers.ModelSerializer):
 
         return ml_live_mjpeg_raw_public_url(
             obj.stream_key,
+            rtsp_url=obj.effective_stream_url(),
             purpose=obj.purpose,
             purposes=obj.purpose_list(),
         )

@@ -190,6 +190,7 @@ def ml_live_mjpeg_url(stream_key: str, rtsp_url: str | None = None) -> str:
 def ml_live_mjpeg_public_url(
     stream_key: str,
     *,
+    rtsp_url: str | None = None,
     purpose: str = "",
     purposes: list[str] | None = None,
 ) -> str:
@@ -199,6 +200,9 @@ def ml_live_mjpeg_public_url(
         return ""
     base = f"/ml/live/cam/{key}/mjpeg"
     params: dict[str, str] = {}
+    url = (rtsp_url or "").strip()
+    if url:
+        params["rtsp_url"] = url
     purpose_list = [str(p).strip() for p in (purposes or []) if str(p).strip()]
     if purpose_list:
         params["purposes"] = ",".join(purpose_list)
@@ -213,6 +217,7 @@ def ml_live_mjpeg_public_url(
 def ml_live_mjpeg_raw_public_url(
     stream_key: str,
     *,
+    rtsp_url: str | None = None,
     purpose: str = "",
     purposes: list[str] | None = None,
 ) -> str:
@@ -221,6 +226,9 @@ def ml_live_mjpeg_raw_public_url(
         return ""
     base = f"/ml/live/cam/{key}/mjpeg/raw"
     params: dict[str, str] = {}
+    url = (rtsp_url or "").strip()
+    if url:
+        params["rtsp_url"] = url
     purpose_list = [str(p).strip() for p in (purposes or []) if str(p).strip()]
     if purpose_list:
         params["purposes"] = ",".join(purpose_list)
@@ -331,4 +339,68 @@ def ml_validate_human_face(file_bytes: bytes, filename: str = "face.jpg") -> dic
     if res.status_code != 200:
         detail = res.text[:300]
         raise MLServiceError(f"Face validation failed: {detail}", res.status_code)
+    return res.json()
+
+
+def _video_search_timeout() -> int:
+    return int(getattr(settings, "ML_VIDEO_SEARCH_TIMEOUT", 3600))
+
+
+def _ml_is_local() -> bool:
+    url = _base_url().lower()
+    return "127.0.0.1" in url or "localhost" in url or "://[::1]" in url
+
+
+def ml_start_video_search(
+    *,
+    image_path: str,
+    video_path: str,
+    face_threshold: float = 0.45,
+    reid_threshold: float = 0.88,
+    sample_fps: float = 0.0,
+    clip_seconds: float = 4.0,
+) -> dict[str, Any]:
+    params = {
+        "face_threshold": str(face_threshold),
+        "reid_threshold": str(reid_threshold),
+        "sample_fps": str(sample_fps),
+        "clip_seconds": str(clip_seconds),
+    }
+    form: dict[str, str] = {}
+    files: dict[str, Any] = {
+        "image": ("query.jpg", open(image_path, "rb"), "application/octet-stream"),
+    }
+    handles: list[Any] = [files["image"][1]]
+    if _ml_is_local():
+        form["video_path"] = video_path
+    else:
+        video_handle = open(video_path, "rb")
+        handles.append(video_handle)
+        files["video"] = ("source.mp4", video_handle, "application/octet-stream")
+    try:
+        res = _request(
+            "POST",
+            "/search/video",
+            files=files,
+            data=form or None,
+            params=params,
+            timeout=_video_search_timeout(),
+        )
+    finally:
+        for handle in handles:
+            try:
+                handle.close()
+            except Exception:
+                pass
+    if res.status_code != 200:
+        detail = res.text[:400]
+        raise MLServiceError(f"Video search failed: {detail}", res.status_code)
+    return res.json()
+
+
+def ml_poll_video_search(job_id: str) -> dict[str, Any]:
+    res = _request("GET", f"/search/video/{job_id.strip()}", timeout=30)
+    if res.status_code != 200:
+        detail = res.text[:400]
+        raise MLServiceError(f"Video search status failed: {detail}", res.status_code)
     return res.json()

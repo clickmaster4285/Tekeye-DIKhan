@@ -196,10 +196,11 @@ MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 # Note: These are for Django — nginx has a separate client_max_body_size limit.
 # Default Django limits are 2.5MB for file and 2.5MB for form data.
 # We increase both to 100MB to handle large image uploads that will be compressed.
+# Large CCTV recordings (up to 1 hour) are streamed to disk, not held in RAM.
 FILE_UPLOAD_MAX_MEMORY_SIZE = int(
-    os.getenv("FILE_UPLOAD_MAX_MEMORY_SIZE", str(100 * 1024 * 1024)))  # 100MB
+    os.getenv("FILE_UPLOAD_MAX_MEMORY_SIZE", str(8 * 1024 * 1024)))  # 8MB
 DATA_UPLOAD_MAX_MEMORY_SIZE = int(
-    os.getenv("DATA_UPLOAD_MAX_MEMORY_SIZE", str(100 * 1024 * 1024)))  # 100MB
+    os.getenv("DATA_UPLOAD_MAX_MEMORY_SIZE", str(8 * 1024 * 1024 * 1024)))  # 8GB total POST
 
 # Images are automatically compressed on the backend before storage
 # This reduces stored file sizes significantly (typically 70-85% reduction)
@@ -249,6 +250,10 @@ ML_SERVICE_PUBLIC_URL = os.getenv(
     os.getenv("ML_SERVICE_URL", "http://127.0.0.1:8100"),
 ).strip().rstrip("/")
 ML_SERVICE_TIMEOUT = int(os.getenv("ML_SERVICE_TIMEOUT", "60"))
+ML_VIDEO_SEARCH_TIMEOUT = int(os.getenv("ML_VIDEO_SEARCH_TIMEOUT", "3600"))
+ML_VIDEO_SEARCH_MAX_BYTES = int(
+    os.getenv("ML_VIDEO_SEARCH_MAX_BYTES", str(8 * 1024 * 1024 * 1024))
+)  # 8GB — typical 1-hour CCTV export
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173").rstrip("/")
 
 # Background detection worker (saves ML readings without browser open)

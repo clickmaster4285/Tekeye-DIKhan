@@ -14,7 +14,7 @@ import os
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -504,6 +504,68 @@ def journey_stop_all():
     before = mgr.status()
     mgr.stop_all()
     return {"stopped": before.get("running_pipelines", 0), "cameras": before.get("cameras") or []}
+
+
+@app.post("/search/video")
+async def search_video(
+    image: UploadFile = File(...),
+    video: UploadFile | None = File(default=None),
+    video_path: str = Form(default=""),
+    face_threshold: float = 0.45,
+    reid_threshold: float = 0.88,
+    sample_fps: float = 0.0,
+    clip_seconds: float = 4.0,
+):
+    """Find the uploaded image in a camera recording (up to 1 hour). Returns a job id."""
+    from video_search_jobs import copy_upload, new_upload_dir, start_search_job
+
+    allowed_local = os.getenv("ML_ALLOW_LOCAL_VIDEO_PATHS", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    local_video = (video_path or "").strip()
+    upload_dir = new_upload_dir()
+    image_path = upload_dir / "query.jpg"
+    copy_upload(image.file, image_path)
+
+    cleanup_video = True
+    stored_video = ""
+    if local_video:
+        if not allowed_local:
+            raise HTTPException(status_code=400, detail="Local video paths are disabled.")
+        normalized = os.path.normpath(local_video).replace("\\", "/")
+        if "video_search" not in normalized.lower() or not os.path.isfile(local_video):
+            raise HTTPException(status_code=400, detail="Invalid local video path.")
+        stored_video = local_video
+        cleanup_video = False
+    elif video is not None and video.filename:
+        stored_path = upload_dir / "source.mp4"
+        copy_upload(video.file, stored_path)
+        stored_video = str(stored_path)
+    else:
+        raise HTTPException(status_code=400, detail="video file is required.")
+
+    job_id = start_search_job(
+        str(image_path),
+        stored_video,
+        face_threshold=face_threshold,
+        reid_threshold=reid_threshold,
+        sample_fps=sample_fps,
+        clip_seconds=clip_seconds,
+        cleanup_video=cleanup_video,
+    )
+    return {"job_id": job_id, "status": "queued", "progress": 1, "message": "Queued"}
+
+
+@app.get("/search/video/{job_id}")
+def search_video_status(job_id: str):
+    from video_search_jobs import get_search_job
+
+    row = get_search_job(job_id.strip())
+    if not row:
+        raise HTTPException(status_code=404, detail="Search job not found.")
+    return row
 
 
 if __name__ == "__main__":

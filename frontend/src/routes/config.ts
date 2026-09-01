@@ -80,6 +80,7 @@ export const ROUTES = {
   ANALYTICS_CAMERA_MANAGEMENT_VIEW: "/analytics/camera-management/:id",
   OBJECT_DETECTION: "/object-detection",
   OBJECT_TRACKING: "/object-tracking",
+  VIDEO_IMAGE_SEARCH: "/find-in-video",
   OBJECT_TRACKING_DETAIL: "/object-tracking/:uuid",
   /** Super Admin only — remote location servers + live detection streams */
   OPS_CENTRAL: "/ops-central",
@@ -593,6 +594,7 @@ const ALL_NAV_ITEMS: (NavItem | NavGroup)[] = [
           { label: "Cameras", href: ROUTES.CAMERA_MANAGEMENT },
           { label: "Object Detection", href: ROUTES.OBJECT_DETECTION },
           { label: "Object Tracking", href: ROUTES.OBJECT_TRACKING },
+          { label: "Find in Video", href: ROUTES.VIDEO_IMAGE_SEARCH },
           { label: "Person Journey", href: ROUTES.PERSON_JOURNEY },
           { label: "GPS Tracking", href: ROUTES.GPS_TRACKING },
           { label: "ANPR Settings", href: ROUTES.ANPR_SETTINGS },
@@ -612,6 +614,7 @@ const ALL_NAV_ITEMS: (NavItem | NavGroup)[] = [
           { label: "Live View", href: ROUTES.LIVE_CAMERA_GRID },
           { label: "LPR/ANPR", href: ROUTES.JCP_TOLL_PLAZA_ENTRY },
           { label: "Playback & Search", href: ROUTES.PLAYBACK_SEARCH },
+          { label: "Find in Video", href: ROUTES.VIDEO_IMAGE_SEARCH },
           { label: "Thermal Imaging", href: ROUTES.THERMAL_IMAGING },
         ],
       },
