@@ -102,6 +102,31 @@ HR_API_ROLES = frozenset(
     {GLOBAL_ADMIN_ROLE, "HR", "IT_ADMIN"} | SITE_FULL_ACCESS_ROLES
 )
 
+# PWA: these roles may see every employee’s location, attendance, and mobile logs.
+STAFF_OVERVIEW_ROLES = frozenset(
+    {
+        GLOBAL_ADMIN_ROLE,
+        IT_SUPERADMIN_ROLE,
+        LOCATION_ADMIN_ROLE,
+        "HR",
+        "IT_ADMIN",
+        "OPERATION_MANAGER",
+        "COLLECTOR",
+        "DEPUTY_COLLECTOR",
+        "ASSISTANT_COLLECTOR",
+    }
+)
+
+
+def can_view_all_staff(user) -> bool:
+    """True when the user may view other employees’ GPS, attendance, and logs."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(user, "role", None) in STAFF_OVERVIEW_ROLES:
+        return True
+    modules = getattr(user, "allowed_modules", None) or []
+    return HR_MODULE_KEY in modules
+
 
 def has_hr_api_access(user) -> bool:
     """True when the user may call staff / attendance / leave / recognition APIs."""

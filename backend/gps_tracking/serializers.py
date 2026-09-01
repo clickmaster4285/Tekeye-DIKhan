@@ -22,16 +22,16 @@ def _age_seconds(*values) -> float | None:
 def gps_status(row: OfficerGpsLatest | None) -> str:
     if not row or not row.on_duty:
         return "offline"
-    # Presence (app open / heartbeat) must not be confused with the last GPS fix.
-    presence_age = _age_seconds(row.updated_at, row.duty_started_at, row.recorded_at)
     gps_age = _age_seconds(row.recorded_at) if not (row.latitude == 0 and row.longitude == 0) else None
     if gps_age is not None and gps_age <= LIVE_SECONDS:
         return "live"
-    if presence_age is not None and presence_age <= LIVE_SECONDS:
-        return "live"
-    if presence_age is None or presence_age > OFFLINE_AFTER_SECONDS:
-        return "offline"
-    return "stale"
+    if gps_age is not None and gps_age <= OFFLINE_AFTER_SECONDS:
+        return "stale"
+    presence_age = _age_seconds(row.updated_at, row.duty_started_at)
+    # App open / heartbeat without a usable GPS fix is not "live" on the map.
+    if presence_age is not None and presence_age <= OFFLINE_AFTER_SECONDS:
+        return "stale"
+    return "offline"
 
 
 def officer_display_name(user) -> str:
@@ -63,8 +63,21 @@ def _employee_id(user) -> str:
     return f"CM-{user.pk:04d}"
 
 
+def _has_gps_fix(row: OfficerGpsLatest | None) -> bool:
+    if not row:
+        return False
+    return not (row.latitude == 0 and row.longitude == 0)
+
+
+def _coords(row: OfficerGpsLatest | None) -> tuple[float | None, float | None]:
+    if not _has_gps_fix(row):
+        return None, None
+    return row.latitude, row.longitude
+
+
 def latest_to_dict(row: OfficerGpsLatest) -> dict:
     user = row.user
+    lat, lng = _coords(row)
     return {
         "userId": user.pk,
         "username": user.username,
@@ -72,13 +85,14 @@ def latest_to_dict(row: OfficerGpsLatest) -> dict:
         "role": getattr(user, "role", "") or "",
         "employeeId": _employee_id(user),
         "location": row.location or getattr(user, "location", "") or "",
-        "latitude": row.latitude,
-        "longitude": row.longitude,
+        "latitude": lat,
+        "longitude": lng,
+        "hasFix": _has_gps_fix(row),
         "accuracy": row.accuracy_m,
         "speedKmh": row.speed_kmh,
         "headingDeg": row.heading_deg,
         "altitudeM": row.altitude_m,
-        "recordedAt": row.recorded_at.isoformat() if row.recorded_at else None,
+        "recordedAt": row.recorded_at.isoformat() if row.recorded_at and _has_gps_fix(row) else None,
         "onDuty": bool(row.on_duty),
         "dutyStartedAt": row.duty_started_at.isoformat() if row.duty_started_at else None,
         "batteryPct": row.battery_pct,
@@ -87,6 +101,7 @@ def latest_to_dict(row: OfficerGpsLatest) -> dict:
 
 
 def me_payload(user, row: OfficerGpsLatest | None) -> dict:
+    lat, lng = _coords(row)
     data = {
         "userId": user.pk,
         "username": user.username,
@@ -96,13 +111,14 @@ def me_payload(user, row: OfficerGpsLatest | None) -> dict:
         "location": getattr(user, "location", "") or "",
         "onDuty": bool(row and row.on_duty),
         "status": gps_status(row),
-        "latitude": row.latitude if row else None,
-        "longitude": row.longitude if row else None,
+        "hasFix": _has_gps_fix(row),
+        "latitude": lat,
+        "longitude": lng,
         "accuracy": row.accuracy_m if row else None,
         "speedKmh": row.speed_kmh if row else None,
         "headingDeg": row.heading_deg if row else None,
         "altitudeM": row.altitude_m if row else None,
-        "recordedAt": row.recorded_at.isoformat() if row and row.recorded_at else None,
+        "recordedAt": row.recorded_at.isoformat() if row and row.recorded_at and _has_gps_fix(row) else None,
         "dutyStartedAt": row.duty_started_at.isoformat() if row and row.duty_started_at else None,
         "batteryPct": row.battery_pct if row else None,
     }

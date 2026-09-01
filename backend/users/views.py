@@ -29,6 +29,8 @@ from .models import (
 from .permissions import IsAdminOrHR
 from .permissions import (
     apply_location_filter,
+    can_view_all_staff,
+    get_location_scope,
     is_global_admin,
     GLOBAL_ADMIN_ROLE,
     LOCATION_ADMIN_ROLE,
@@ -422,12 +424,27 @@ class StaffViewSet(viewsets.ModelViewSet):
 # -----------------------------
 class AttendanceViewSet(viewsets.ModelViewSet):
     queryset = Attendance.objects.all().order_by("-date", "-check_in")
-    permission_classes = [IsAdminOrHR]
+    permission_classes = [IsAuthenticated]
     serializer_class = AttendanceSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ["user", "staff", "date", "user__role", "status", "source"]
     search_fields = ["user__username", "user__staff_profile__full_name", "staff__full_name"]
     ordering_fields = ["date", "check_in", "check_out"]
+
+    def get_permissions(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [IsAuthenticated()]
+        return [IsAdminOrHR()]
+
+    def get_queryset(self):
+        qs = Attendance.objects.all().select_related("user", "staff").order_by("-date", "-check_in")
+        user = self.request.user
+        if can_view_all_staff(user):
+            loc = get_location_scope(user)
+            if loc:
+                qs = qs.filter(Q(user__location=loc) | Q(staff__user__location=loc))
+            return qs
+        return qs.filter(Q(user=user) | Q(staff__user=user))
 
     def perform_create(self, serializer):
         # Default check_in to now when marking attendance

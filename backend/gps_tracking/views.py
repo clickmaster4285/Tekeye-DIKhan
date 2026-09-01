@@ -8,12 +8,12 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from users.permissions import get_effective_location, get_location_scope
+from users.permissions import can_view_all_staff, get_effective_location, get_location_scope
 
 from .models import OfficerGpsHistory, OfficerGpsLatest
 from .serializers import GpsDutySerializer, GpsPingSerializer, latest_to_dict, me_payload
 
-MAX_ACCURACY_M = 80
+MAX_ACCURACY_M = 500
 HISTORY_KEEP_DAYS = 14
 MAX_HISTORY_POINTS = 400
 
@@ -62,28 +62,16 @@ class GpsDutyAPIView(APIView):
 
 
 class GpsHeartbeatAPIView(APIView):
-    """Keep the officer live while the PWA is open, even if GPS is briefly paused."""
+    """Refresh presence for an officer who is already on duty. Never starts duty."""
 
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        now = timezone.now()
-        row, _created = OfficerGpsLatest.objects.get_or_create(
-            user=request.user,
-            defaults={
-                "latitude": 0,
-                "longitude": 0,
-                "recorded_at": now,
-                "on_duty": True,
-                "duty_started_at": now,
-                "location": _user_location(request.user),
-            },
-        )
-        row.on_duty = True
-        if not row.duty_started_at:
-            row.duty_started_at = now
+        row = OfficerGpsLatest.objects.filter(user=request.user).first()
+        if not row:
+            return Response(me_payload(request.user, None))
         row.location = _user_location(request.user) or row.location
-        row.save(update_fields=["on_duty", "duty_started_at", "location", "updated_at"])
+        row.save(update_fields=["location", "updated_at"])
         return Response(me_payload(request.user, row))
 
 
@@ -182,14 +170,24 @@ class GpsLiveAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        qs = OfficerGpsLatest.objects.select_related("user").filter(on_duty=True)
-        raw_loc = (request.query_params.get("location") or "").strip()
-        if raw_loc.lower() in ("", "all"):
-            loc = get_location_scope(request.user)
+        qs = OfficerGpsLatest.objects.select_related("user")
+        if not can_view_all_staff(request.user):
+            qs = qs.filter(user=request.user)
         else:
-            loc = get_effective_location(request.user, raw_loc)
-        if loc:
-            qs = qs.filter(location=loc)
+            include_off = (request.query_params.get("include_off_duty") or "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            if not include_off:
+                qs = qs.filter(on_duty=True)
+            raw_loc = (request.query_params.get("location") or "").strip()
+            if raw_loc.lower() in ("", "all"):
+                loc = get_location_scope(request.user)
+            else:
+                loc = get_effective_location(request.user, raw_loc)
+            if loc:
+                qs = qs.filter(location=loc)
         officers = [latest_to_dict(row) for row in qs]
         return Response({"officers": officers, "count": len(officers)})
 
@@ -198,6 +196,8 @@ class GpsHistoryAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, user_id: int):
+        if not can_view_all_staff(request.user) and request.user.pk != user_id:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         scope = get_location_scope(request.user)
         qs = OfficerGpsHistory.objects.filter(user_id=user_id)
         if scope:
@@ -210,9 +210,10 @@ class GpsHistoryAPIView(APIView):
         since = timezone.now() - timedelta(hours=hours)
         points = list(
             qs.filter(recorded_at__gte=since)
-            .order_by("recorded_at")
+            .order_by("-recorded_at")
             .values("latitude", "longitude", "accuracy_m", "recorded_at")[:MAX_HISTORY_POINTS]
         )
+        points.reverse()
         payload = [
             {
                 "latitude": p["latitude"],
