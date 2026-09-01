@@ -33,6 +33,9 @@ backend/.env.*
 frontend/.env
 frontend/.env.*
 !frontend/.env.example
+frontend-pwa/.env
+frontend-pwa/.env.*
+!frontend-pwa/.env.example
 
 # ----------------------
 # React / Node

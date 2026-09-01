@@ -15,6 +15,7 @@ except ImportError:
 SKIP_LOG_PATHS = (
     "/api/activity-logs/report/",
     "/api/activity-logs/report",
+    "/api/mobile-sessions/",
     "/favicon.ico",
     "/media/",
 )
@@ -53,7 +54,7 @@ def get_geo(ip):
     return None, None
 
 
-def create_activity_log(user, request, action):
+def create_activity_log(user, request, action, source="web"):
     ip = get_ip(request)
     device, os_str, browser = get_device_info(request)
     country, city = get_geo(ip)
@@ -66,6 +67,7 @@ def create_activity_log(user, request, action):
         os=os_str,
         browser=browser,
         action=action[:255],
+        source=source or "web",
     )
 
 
