@@ -62,7 +62,11 @@ def _safe_media_next(path: str) -> str | None:
 
 def _login_redirect(request) -> HttpResponseRedirect:
     next_path = _safe_media_next(request.get_full_path() or "") or "/media/"
-    return HttpResponseRedirect("/login?next=" + quote(next_path, safe="/"))
+    from django.conf import settings
+
+    frontend = getattr(settings, "FRONTEND_ORIGIN", "").rstrip("/") or ""
+    login_base = f"{frontend}/login" if frontend else "/login"
+    return HttpResponseRedirect(login_base + "?next=" + quote(next_path, safe="/"))
 
 
 def _unauthorized(request) -> HttpResponse:

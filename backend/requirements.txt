@@ -29,9 +29,9 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.9
 
-# Optional ML deployment / GPU inference
-# onnx>=1.14.0
-# onnxruntime-gpu>=1.15.0
+# Optional GPU acceleration for video recovery (PyTorch CUDA + NVENC)
+# Install CUDA build: pip install torch --index-url https://download.pytorch.org/whl/cu118
+torch>=2.0.0
 
 # InsightFace attendance (webcam + CCTV)
 insightface>=0.7.3
