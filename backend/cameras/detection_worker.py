@@ -184,6 +184,9 @@ def run_worker_forever() -> None:
         finally:
             release_db()
 
+        from config.worker_throttle import maybe_pause_for_cpu
+
+        maybe_pause_for_cpu(logger, label="detection-worker")
         _stop_event.wait(interval)
 
     logger.info("[detection-worker] Stopped")

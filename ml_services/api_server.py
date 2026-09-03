@@ -218,7 +218,7 @@ async def detect_plates(
     save: bool = True,
     camera_key: str = "",
 ):
-    """License plate YOLO + EasyOCR. Saves accepted plates under media/licence plates/."""
+    """License plate YOLO + PaddleOCR PP-OCRv5. Saves accepted plates under media/licence plates/."""
     from plate_recognizer import get_plate_engine
 
     data = await image.read()
@@ -231,7 +231,7 @@ async def detect_plates(
     if not engine.available:
         raise HTTPException(
             status_code=503,
-            detail="Plate model/OCR unavailable. Install easyocr and ensure plate weights exist.",
+            detail="Plate model/OCR unavailable. Install paddleocr (+ paddlepaddle-gpu) and ensure plate weights exist.",
         )
     detections = engine.detect_and_read(
         frame,

@@ -36,24 +36,50 @@ def encode_rtsp_url(url: str) -> str:
     )
 
 
+def _main_stream_only() -> bool:
+    """When true, never fall back to NVR substream (keeps 4K main stream only)."""
+    try:
+        from django.conf import settings
+
+        val = getattr(settings, "RTSP_MAIN_STREAM_ONLY", None)
+        if val is not None:
+            return bool(val)
+    except Exception:
+        pass
+    return os.getenv("RTSP_MAIN_STREAM_ONLY", "true").strip().lower() in ("1", "true", "yes")
+
+
 def _substream_url(url: str) -> str | None:
-    """Hikvision main=101 → sub=102."""
-    if "/channels/101" in url:
-        return url.replace("/channels/101", "/channels/102")
-    if "/Channels/101" in url:
-        return url.replace("/Channels/101", "/Channels/102")
+    """Map a main-stream RTSP URL to the matching substream (lower resolution)."""
+    m = re.search(r"/Streaming/Channels/(\d+)", url, re.I)
+    if m:
+        stream_id = int(m.group(1))
+        if stream_id % 100 == 1:
+            sub_id = stream_id + 1
+            return re.sub(
+                r"/Streaming/Channels/\d+",
+                f"/Streaming/Channels/{sub_id}",
+                url,
+                count=1,
+                flags=re.I,
+            )
+    if "/channels/101" in url.lower():
+        return re.sub(r"/channels/101", "/channels/102", url, count=1, flags=re.I)
+    if "subtype=0" in url.lower():
+        return re.sub(r"subtype=0", "subtype=1", url, count=1, flags=re.I)
     return None
 
 
 def open_rtsp_capture(rtsp_url: str, timeout_ms: int = 8000):
     """
-    Open an RTSP stream with TCP/UDP and main/substream fallbacks.
-    Serialized so concurrent camera boots don't hammer the NVR.
+    Open the NVR main RTSP stream (4K). Substream fallback is disabled by default
+    so attendance/CCTV always use the same resolution as the NVR recording.
     """
     candidates = [rtsp_url]
-    sub = _substream_url(rtsp_url)
-    if sub:
-        candidates.append(sub)
+    if not _main_stream_only():
+        sub = _substream_url(rtsp_url)
+        if sub:
+            candidates.append(sub)
 
     transports = ("tcp", "udp")
     last_error = "Cannot open RTSP stream"
@@ -81,7 +107,14 @@ def open_rtsp_capture(rtsp_url: str, timeout_ms: int = 8000):
                         ok, frame = cap.read()
                         if ok and frame is not None:
                             stream_note = "sub" if candidate != rtsp_url else "main"
-                            logger.info("RTSP connected via %s/%s", transport, stream_note)
+                            h, w = frame.shape[:2]
+                            logger.info(
+                                "RTSP connected via %s/%s (%sx%s)",
+                                transport,
+                                stream_note,
+                                w,
+                                h,
+                            )
                             return cap, f"{transport}/{stream_note}"
                         time.sleep(0.15)
 

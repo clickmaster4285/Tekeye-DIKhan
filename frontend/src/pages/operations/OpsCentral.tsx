@@ -179,6 +179,15 @@ export default function OpsCentralPage() {
     [loadServers]
   )
 
+  useEffect(() => {
+    if (!isOpsAdmin || !selectedId) return
+    const onCameraUpdated = () => {
+      void connectSaved(Number(selectedId))
+    }
+    window.addEventListener("camera-integration-updated", onCameraUpdated)
+    return () => window.removeEventListener("camera-integration-updated", onCameraUpdated)
+  }, [isOpsAdmin, selectedId, connectSaved])
+
   const onQuickConnect = async () => {
     if (!qcName.trim() || !qcMl.trim()) {
       setError("Server name and ML server URL are required.")

@@ -130,18 +130,21 @@ def _try_osnet_embedding(person_crop: np.ndarray) -> list[float]:
         try:
             import torchreid  # type: ignore
 
+            from inference_engine import resolve_ml_device
+
+            resolved = resolve_ml_device()
+            device = "cpu" if resolved == "cpu" else "cuda"
             model = torchreid.models.build_model(
                 name="osnet_x1_0",
                 num_classes=1,
                 pretrained=False,
-                use_gpu=torch.cuda.is_available(),
+                use_gpu=device != "cpu",
             )
             state = torch.load(str(weights), map_location="cpu")
             if isinstance(state, dict) and "state_dict" in state:
                 state = state["state_dict"]
             model.load_state_dict(state, strict=False)
             model.eval()
-            device = "cuda" if torch.cuda.is_available() else "cpu"
             model = model.to(device)
             _osnet_model = model
             _osnet_device = device

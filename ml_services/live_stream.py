@@ -3,10 +3,7 @@ Live RTSP streams with purpose-gated multi-model YOLO inference + optional plate
 Only models relevant to each camera's purpose run on that feed.
 
 Pipeline (decoupled — capture / infer / render never block each other):
-  4K Camera ──► NVR records original 4K (unchanged)
-         │
-         ▼
-  FFmpeg NVDEC + scale to 1080p
+  NVR main stream (4K) ──► FFmpeg NVDEC (native, no downscale)
          ▼
   Latest Frame Buffer
          ├─► Partitioned Inference Workers → Result Buffer
@@ -208,11 +205,44 @@ def _use_nvdec(ffmpeg_path: str) -> bool:
 def _rtsp_scale_size() -> tuple[int, int]:
     """
     Live AI/view capture size after FFmpeg scale (NVR keeps original 4K recording).
-    Default 1920x1080. Set either dim to 0 to disable scaling.
+    Default 0x0 = native 3840x2160 main-stream passthrough.
     """
-    w = max(0, _env_int("ML_RTSP_SCALE_WIDTH", 1920))
-    h = max(0, _env_int("ML_RTSP_SCALE_HEIGHT", 1080))
+    w = max(0, _env_int("ML_RTSP_SCALE_WIDTH", 0))
+    h = max(0, _env_int("ML_RTSP_SCALE_HEIGHT", 0))
     return w, h
+
+
+def _ffmpeg_threads() -> str:
+    return os.getenv("ML_FFMPEG_THREADS", "1").strip() or "1"
+
+
+def _ffmpeg_socket_timeout_us() -> str:
+    return os.getenv("ML_FFMPEG_STIMEOUT_US", "10000000").strip() or "10000000"
+
+
+def _ffmpeg_timeout_cli_flag() -> str:
+    """CLI flag for socket I/O timeout (microseconds). Use 'timeout' — '-stimeout' is not accepted by many ffmpeg builds."""
+    raw = os.getenv("ML_FFMPEG_TIMEOUT_FLAG", "timeout").strip().lstrip("-") or "timeout"
+    return raw
+
+
+def _mjpeg_quality(*, keep_native: bool) -> str:
+    if keep_native:
+        return os.getenv("ML_MJPEG_QUALITY_NATIVE", "2").strip() or "2"
+    return os.getenv("ML_MJPEG_QUALITY", "8").strip() or "8"
+
+
+def _rtsp_stream_input_flags() -> list[str]:
+    flags = [
+        "-rtsp_transport",
+        "tcp",
+        f"-{_ffmpeg_timeout_cli_flag()}",
+        _ffmpeg_socket_timeout_us(),
+    ]
+    reorder = os.getenv("ML_FFMPEG_REORDER_QUEUE_SIZE", "").strip()
+    if reorder:
+        flags += ["-reorder_queue_size", reorder]
+    return flags
 
 
 def _rtsp_scale_filter(use_cuda_scale: bool) -> str | None:
@@ -409,6 +439,8 @@ class FfmpegCameraStream:
             "-hide_banner",
             "-loglevel",
             "error",
+            "-threads",
+            _ffmpeg_threads(),
         ]
         if self._use_nvdec:
             cmd += [
@@ -430,8 +462,7 @@ class FfmpegCameraStream:
             "nobuffer+discardcorrupt+genpts",
             "-flags",
             "low_delay",
-            "-rtsp_transport",
-            "tcp",
+            *_rtsp_stream_input_flags(),
             "-i",
             self.rtsp_url,
             "-an",
@@ -443,11 +474,14 @@ class FfmpegCameraStream:
         if vf:
             cmd += ["-vf", vf]
 
+        mux_qsize = os.getenv("ML_FFMPEG_MAX_MUXING_QUEUE_SIZE", "1024").strip() or "1024"
         cmd += [
+            "-max_muxing_queue_size",
+            mux_qsize,
             "-f",
             "mjpeg",
             "-q:v",
-            "2" if self.keep_native else "5",
+            _mjpeg_quality(keep_native=self.keep_native),
             "-",
         ]
         return cmd
@@ -970,9 +1004,9 @@ class LiveStreamManager:
         self._plate_frame_counters: dict[str, int] = {}
         self._plate_counter_lock = threading.Lock()
         self._last_plate_dets: dict[str, list[dict[str, Any]]] = {}
-        # Cap live preview for smooth browser streaming through the Vite proxy.
-        self._max_width = 960
-        self._max_height = 540
+        # 0 = native 4K passthrough for browser preview (override via ML_LIVE_MAX_WIDTH/HEIGHT).
+        self._max_width = 0
+        self._max_height = 0
         self._stream_fps = max(5, min(_env_int("ML_LIVE_STREAM_FPS", 12), 30))
         self._frame_interval = 1.0 / self._stream_fps
         self._detections: dict[str, list[dict[str, Any]]] = {}
@@ -1362,6 +1396,7 @@ class LiveStreamManager:
                         "detections": det_count,
                         "purpose": (self._purposes.get(key) or [""])[0] if self._purposes.get(key) else "",
                         "purposes": list(self._purposes.get(key) or []),
+                        "rtsp_url": (self._registry.get(key) or "").strip(),
                     }
                 )
         return {
@@ -1485,7 +1520,10 @@ class LiveStreamManager:
         return small, w / float(dw), h / float(dh)
 
     def _want_native_frame(self, camera_key: str) -> bool:
-        """Keep the original 4K RTSP frame only for ANPR cameras."""
+        """Keep native camera resolution (4K) when RTSP scaling is disabled."""
+        w, h = _rtsp_scale_size()
+        if w <= 0 and h <= 0:
+            return True
         if self._plate_on_all:
             return True
         return "anpr" in self._purposes_for(camera_key)
@@ -1698,7 +1736,7 @@ class LiveStreamManager:
             with self._plate_counter_lock:
                 counter = self._plate_frame_counters.get(camera_key, 0) + 1
                 self._plate_frame_counters[camera_key] = counter
-            # Plate YOLO every N infer cycles; EasyOCR is track+cooldown gated inside PlateEngine.
+            # Plate YOLO every N infer cycles; PaddleOCR PP-OCRv5 runs inside PlateEngine.
             if counter % self._plate_ocr_every == 0:
                 try:
                     plate_dets = self._plate_engine.detect_and_read(

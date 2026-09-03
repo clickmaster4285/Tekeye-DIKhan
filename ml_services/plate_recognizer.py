@@ -1,11 +1,8 @@
 """
-License plate detection (YOLO) + OCR (EasyOCR).
+License plate detection (YOLO) + OCR (PaddleOCR PP-OCRv5 GPU).
 
-Logic mirrors the standalone License Plate/ project:
-  detect → crop → track-gate OCR → validate → save snapshots.
-
-OCR is NOT run on every frame: IoU tracks gate EasyOCR to new plates
-and cooldown re-reads (ML_PLATE_OCR_COOLDOWN), which typically cuts OCR 90%+.
+Logic:
+  detect → crop → preprocess variants → PP-OCRv5 → validate → save snapshots.
 """
 from __future__ import annotations
 
@@ -26,6 +23,20 @@ DEFAULT_WEIGHTS = (
     BASE_DIR / "runs" / "train" / "stage3_finetune3" / "weights" / "best_number_plate_detection.pt"
 )
 OCR_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
+DEFAULT_OCR_VERSION = "PP-OCRv5"
+DEFAULT_DET_MODEL = "PP-OCRv5_server_det"
+DEFAULT_REC_MODEL = "en_PP-OCRv5_mobile_rec"
+CSV_FIELDS = [
+    "timestamp",
+    "camera_key",
+    "plate_number",
+    "det_conf",
+    "ocr_conf",
+    "plate_image",
+    "frame_image",
+]
+# A visit stays open until the plate is unseen on that camera for this long.
+DEFAULT_VISIT_TIMEOUT_SEC = 600.0
 
 _engine: "PlateEngine | None" = None
 _engine_lock = threading.Lock()
@@ -43,6 +54,117 @@ def _env_int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+def _paddle_device(ml_device: str) -> str:
+    """Map ML_DEVICE (0 / cuda:0 / cpu) to PaddleOCR device (gpu:0 / cpu)."""
+    raw = (ml_device or "0").strip().lower()
+    if raw in {"cpu", "-1"}:
+        return "cpu"
+    if raw.startswith("gpu"):
+        if ":" in raw:
+            return raw
+        idx = raw.replace("gpu", "").strip() or "0"
+        return f"gpu:{idx}"
+    if raw.startswith("cuda"):
+        idx = raw.split(":")[-1] if ":" in raw else raw.replace("cuda", "").strip() or "0"
+        return f"gpu:{idx}"
+    if raw.isdigit():
+        return f"gpu:{raw}"
+    return "gpu:0"
+
+
+def _page_to_dict(page: Any) -> dict[str, Any]:
+    """Normalize a PaddleOCR 3.x predict() page into a dict with rec_* keys."""
+    if isinstance(page, dict):
+        if "rec_texts" in page:
+            return page
+        nested = page.get("res")
+        if isinstance(nested, dict):
+            return nested
+        return page
+    json_data = getattr(page, "json", None)
+    if callable(json_data):
+        try:
+            json_data = json_data()
+        except Exception:
+            json_data = None
+    if isinstance(json_data, dict):
+        return _page_to_dict(json_data)
+    texts = getattr(page, "rec_texts", None)
+    if texts is not None:
+        return {
+            "rec_texts": list(texts),
+            "rec_scores": list(getattr(page, "rec_scores", []) or []),
+            "rec_polys": list(
+                getattr(page, "rec_polys", None) or getattr(page, "dt_polys", None) or []
+            ),
+        }
+    try:
+        return {
+            "rec_texts": list(page["rec_texts"]),
+            "rec_scores": list(page["rec_scores"] if "rec_scores" in page else []),
+            "rec_polys": list(page["rec_polys"] if "rec_polys" in page else page.get("dt_polys") or []),
+        }
+    except Exception:
+        return {}
+
+
+def _as_poly_points(poly: Any) -> list[list[float]]:
+    arr = np.asarray(poly)
+    if arr.size == 0:
+        return []
+    if arr.ndim == 2 and arr.shape[1] >= 2:
+        return arr[:, :2].astype(float).tolist()
+    if arr.ndim == 1 and arr.size >= 8:
+        return arr.reshape(-1, 2)[:, :2].astype(float).tolist()
+    return []
+
+
+def _patch_paddlex_opencv_extra() -> None:
+    """paddlex[ocr-core] pins opencv-contrib-python; this stack already has opencv-python."""
+    import sys
+
+    orig = None
+    try:
+        from paddlex.utils import deps as paddlex_deps
+
+        orig = paddlex_deps.is_dep_available
+
+        def _is_dep_available(dep, /, check_version=False):
+            if dep == "opencv-contrib-python":
+                return True
+            return orig(dep, check_version=check_version)
+
+        paddlex_deps.is_dep_available = _is_dep_available
+        cache_clear = getattr(paddlex_deps.is_extra_available, "cache_clear", None)
+        if callable(cache_clear):
+            cache_clear()
+    except Exception:
+        pass
+    for name, mod in list(sys.modules.items()):
+        if not name.startswith("paddlex") or getattr(mod, "__dict__", None) is None:
+            continue
+        if "cv2" not in mod.__dict__ and "is_dep_available" in mod.__dict__:
+            mod.cv2 = cv2
+
+
+def paddle_results_to_items(raw: Any) -> list[tuple[list, str, float]]:
+    """Convert PaddleOCR predict() output to [(bbox, text, conf), ...] tuples."""
+    pages = raw if isinstance(raw, (list, tuple)) else [raw]
+    items: list[tuple[list, str, float]] = []
+    for page in pages:
+        data = _page_to_dict(page)
+        texts = list(data.get("rec_texts") or [])
+        scores = list(data.get("rec_scores") or [])
+        polys = list(data.get("rec_polys") or data.get("dt_polys") or [])
+        for i, text in enumerate(texts):
+            conf = float(scores[i]) if i < len(scores) else 0.0
+            bbox = _as_poly_points(polys[i]) if i < len(polys) else []
+            if not bbox:
+                bbox = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+            items.append((bbox, str(text), conf))
+    return items
 
 
 def resolve_media_root() -> Path:
@@ -182,63 +304,111 @@ def looks_like_datetime_ocr(text: str) -> bool:
     return False
 
 
-def canonicalize_plate(text: str) -> str:
-    """Extract PK-style plate (BSD987) from OCR that often includes city text."""
-    key = _strip_region_noise(plate_key(text))
-    if not key:
-        return ""
-    candidates: list[str] = []
-    candidates.extend(re.findall(r"[A-Z]{2,3}\d{3}", key))
-    candidates.extend(re.findall(r"[A-Z]{2,3}\d{4}", key))
-    if not candidates:
-        m = re.search(r"([A-Z]{2,4})(\d{3,4})", key)
-        if m:
-            candidates.append(m.group(1) + m.group(2))
-    if candidates:
-        def rank(c: str) -> tuple[int, int, int]:
-            letters = re.match(r"[A-Z]+", c)
-            digits = re.search(r"\d+", c)
-            la = letters.group(0) if letters else ""
-            da = digits.group(0) if digits else ""
-            style = 0 if len(la) == 3 and len(da) == 3 else 1
-            return (style, 0 if len(da) == 3 else 1, len(c))
+def bbox_in_osd_band(
+    bbox: tuple[int, ...] | list[float],
+    frame_h: int,
+    frame_w: int,
+    *,
+    top_frac: float = 0.22,
+    left_frac: float = 0.55,
+    right_frac: float = 0.55,
+    bottom_frac: float = 0.0,
+) -> bool:
+    """True when a box sits in the CCTV date/time overlay band (must not be saved as a plate)."""
+    if frame_h <= 0 or frame_w <= 0 or len(bbox) < 4:
+        return False
+    x1, y1, x2, y2 = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+    cx = (x1 + x2) / 2.0
+    cy = (y1 + y2) / 2.0
+    y_top = frame_h * max(0.0, min(top_frac, 0.5))
+    y_bottom = frame_h * (1.0 - max(0.0, min(bottom_frac, 0.5)))
+    x_left = frame_w * max(0.0, min(left_frac, 1.0))
+    x_right = frame_w * (1.0 - max(0.0, min(right_frac, 1.0)))
+    if cy <= y_top or y2 <= y_top:
+        return True
+    if bottom_frac > 0 and (cy >= y_bottom or y1 >= y_bottom):
+        return True
+    if cy <= y_top * 1.35 and (cx <= x_left or cx >= x_right):
+        return True
+    return False
 
-        return sorted(set(candidates), key=rank)[0]
-    m = re.match(r"^([A-Z]{2,3})(\d{3,4})", key)
-    if m:
-        return m.group(1) + m.group(2)
-    return ""
+
+def canonicalize_plate(text: str) -> str:
+    """Normalize plate text: A-Z0-9 only, strip common city/region OCR noise."""
+    return _strip_region_noise(plate_key(text))
 
 
 def format_plate_display(text: str) -> str:
-    canon = canonicalize_plate(text) or plate_key(text)
-    m = re.match(r"^([A-Z]+)(\d+)$", canon)
+    key = canonicalize_plate(text) or plate_key(text)
+    m = re.match(r"^([A-Z]+)(\d+)$", key)
+    if m:
+        return f"{m.group(1)} {m.group(2)}"
+    m = re.match(r"^(\d+)([A-Z]+)$", key)
     if m:
         return f"{m.group(1)} {m.group(2)}"
     return clean_plate_text(text)
 
 
-def is_valid_plate(text: str, min_len: int = 5) -> bool:
+def is_valid_plate(text: str, min_len: int = 5, *, camera_key: str = "") -> bool:
     if looks_like_datetime_ocr(text):
         return False
-    canon = canonicalize_plate(text)
-    key = canon or plate_key(text)
+    if looks_like_camera_overlay(text, camera_key=camera_key):
+        return False
+    key = canonicalize_plate(text) or plate_key(text)
     if len(key) < min_len:
         return False
     if key in {"UNKNOWN", "PLATE", "LICENSEPLATE"}:
         return False
-    if not canon:
+    if not re.search(r"[A-Z0-9]", key):
         return False
-    if not re.search(r"[A-Z]", key) or not re.search(r"\d", key):
-        return False
-    letters = re.sub(r"\d", "", canon)
-    digits = re.sub(r"\D", "", canon)
-    if len(letters) < 2 or len(digits) < 3:
-        return False
-    # Reject weekday/month letter runs that slipped past canonicalize
+    letters = re.sub(r"\d", "", key)
     if letters in _OSD_DATE_TOKENS:
         return False
     return True
+
+
+_CAMERA_OVERLAY_RE = re.compile(r"^CAM(ERA)?\d{0,4}$")
+
+
+def looks_like_camera_overlay(text: str, *, camera_key: str = "") -> bool:
+    """True when OCR is a camera name overlay (CAM 002 / CAM-2), not a plate."""
+    key = canonicalize_plate(text) or plate_key(text)
+    if not key:
+        return False
+    if _CAMERA_OVERLAY_RE.match(key):
+        return True
+    cam = plate_key(camera_key)
+    if cam and key == cam:
+        return True
+    return False
+
+
+def bbox_is_plausible_plate(
+    bbox: tuple[int, ...] | list[float],
+    frame_h: int,
+    frame_w: int,
+    *,
+    max_width_frac: float = 0.28,
+    max_height_frac: float = 0.20,
+    max_area_frac: float = 0.05,
+    min_aspect: float = 1.2,
+    max_aspect: float = 6.5,
+) -> bool:
+    """False for scene-sized or non-plate-shaped boxes (e.g. CAM-002 overlay region)."""
+    if frame_h <= 0 or frame_w <= 0 or len(bbox) < 4:
+        return False
+    x1, y1, x2, y2 = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+    bw, bh = x2 - x1, y2 - y1
+    if bw <= 1 or bh <= 1:
+        return False
+    if bw / frame_w > max_width_frac:
+        return False
+    if bh / frame_h > max_height_frac:
+        return False
+    if (bw * bh) / (frame_w * frame_h) > max_area_frac:
+        return False
+    aspect = bw / bh
+    return min_aspect <= aspect <= max_aspect
 
 
 def _bbox_iou(a: list[float] | tuple[int, ...], b: list[float] | tuple[int, ...]) -> float:
@@ -274,7 +444,7 @@ def _expand_bbox(
 
 
 def plate_near_vehicle(
-    plate_bbox: list[float] | tuple[int, ...],
+    plate_box: list[float] | tuple[int, ...],
     vehicle_boxes: list[list[float]] | None,
     *,
     frame_w: int,
@@ -285,110 +455,56 @@ def plate_near_vehicle(
     """True if the plate overlaps (or sits inside) an expanded vehicle box."""
     if not vehicle_boxes:
         return False
-    expanded_plate = _expand_bbox(plate_bbox, frame_w, frame_h, expand)
-    px1, py1, px2, py2 = expanded_plate
+    px1, py1, px2, py2 = map(float, plate_box[:4])
     pcx, pcy = (px1 + px2) / 2.0, (py1 + py2) / 2.0
+    plate_area = max(1.0, (px2 - px1) * (py2 - py1))
     for vb in vehicle_boxes:
-        if _bbox_iou(expanded_plate, vb) >= min_iou:
-            return True
-        vx1, vy1, vx2, vy2 = map(float, vb[:4])
+        expanded = _expand_bbox(vb, frame_w, frame_h, expand)
+        ex1, ey1, ex2, ey2 = expanded
         # Plate center inside vehicle (common for front/rear plates)
-        if vx1 <= pcx <= vx2 and vy1 <= pcy <= vy2:
+        if ex1 <= pcx <= ex2 and ey1 <= pcy <= ey2:
             return True
         # Plate mostly contained in vehicle
-        if vx1 - (vx2 - vx1) * 0.1 <= px1 and px2 <= vx2 + (vx2 - vx1) * 0.1:
-            if vy1 - (vy2 - vy1) * 0.1 <= py1 and py2 <= vy2 + (vy2 - vy1) * 0.15:
-                return True
+        ix1, iy1 = max(px1, ex1), max(py1, ey1)
+        ix2, iy2 = min(px2, ex2), min(py2, ey2)
+        inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+        if inter / plate_area >= 0.5:
+            return True
+        if _bbox_iou(plate_box, expanded) >= min_iou:
+            return True
     return False
 
 
-def _edit_distance(a: str, b: str) -> int:
-    if a == b:
-        return 0
-    if not a or not b:
-        return max(len(a), len(b))
-    if abs(len(a) - len(b)) > 2:
-        return 99
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, 1):
-        cur = [i]
-        for j, cb in enumerate(b, 1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
-        prev = cur
-    return prev[-1]
+FUZZY_MATCH_MIN_OCR = 0.50
 
 
-def plates_are_same_vehicle(a: str, b: str) -> bool:
+def plates_are_same_vehicle(
+    a: str,
+    b: str,
+    conf_a: float = 1.0,
+    conf_b: float = 1.0,
+) -> bool:
+    """Exact plate match, or one-character OCR slip when both reads are trusted."""
     ca = canonicalize_plate(a) or plate_key(a)
     cb = canonicalize_plate(b) or plate_key(b)
     if not ca or not cb:
         return False
     if ca == cb:
         return True
-    la, da = re.sub(r"\d", "", ca), re.sub(r"\D", "", ca)
-    lb, db = re.sub(r"\d", "", cb), re.sub(r"\D", "", cb)
-    digits_ok = da == db or (
-        abs(len(da) - len(db)) == 1 and (da in db or db in da)
-    ) or (len(da) == len(db) and _edit_distance(da, db) <= 1)
-    if not digits_ok:
+    try:
+        if float(conf_a) < FUZZY_MATCH_MIN_OCR or float(conf_b) < FUZZY_MATCH_MIN_OCR:
+            return False
+    except (TypeError, ValueError):
         return False
-    if la == lb:
-        return True
-    if min(len(la), len(lb)) >= 2 and (
-        la.endswith(lb) or lb.endswith(la) or la.startswith(lb) or lb.startswith(la)
-    ):
-        return True
-    return _edit_distance(la, lb) <= 1
+    if len(ca) != len(cb):
+        return False
+    differences = sum(x != y for x, y in zip(ca, cb))
+    return differences <= 1
 
 
 def reading_score(text: str, conf: float) -> float:
-    canon = canonicalize_plate(text)
-    key = canon or plate_key(text)
-    # Prefer classic XXX999 and penalize long junk strings
-    bonus = 0.25 if re.fullmatch(r"[A-Z]{3}\d{3}", key or "") else 0.0
-    penalty = max(0, len(plate_key(text)) - 7) * 0.08
-    return conf + min(len(key), 12) * 0.035 + bonus - penalty
-
-
-def scale_for_plate_detect(
-    frame: np.ndarray,
-    max_w: int,
-    max_h: int,
-) -> tuple[np.ndarray, float, float]:
-    """Return (detect_frame, sx, sy) mapping detect pixels → original pixels."""
-    if frame is None or frame.size == 0:
-        return frame, 1.0, 1.0
-    h, w = frame.shape[:2]
-    if max_w <= 0 and max_h <= 0:
-        return frame, 1.0, 1.0
-    if max_w <= 0:
-        max_w = w
-    if max_h <= 0:
-        max_h = h
-    if w <= max_w and h <= max_h:
-        return frame, 1.0, 1.0
-    scale = min(max_w / float(w), max_h / float(h))
-    dw = max(2, int(w * scale) // 2 * 2)
-    dh = max(2, int(h * scale) // 2 * 2)
-    small = cv2.resize(frame, (dw, dh), interpolation=cv2.INTER_AREA)
-    return small, w / float(dw), h / float(dh)
-
-
-def map_box_to_original(
-    box: tuple[int, int, int, int] | list[int],
-    sx: float,
-    sy: float,
-    orig_w: int,
-    orig_h: int,
-) -> tuple[int, int, int, int]:
-    x1, y1, x2, y2 = (int(box[0]), int(box[1]), int(box[2]), int(box[3]))
-    ox1 = max(0, min(orig_w, int(round(x1 * sx))))
-    oy1 = max(0, min(orig_h, int(round(y1 * sy))))
-    ox2 = max(0, min(orig_w, int(round(x2 * sx))))
-    oy2 = max(0, min(orig_h, int(round(y2 * sy))))
-    if ox2 <= ox1 or oy2 <= oy1:
-        return x1, y1, x2, y2
-    return ox1, oy1, ox2, oy2
+    key = canonicalize_plate(text) or plate_key(text)
+    return conf + min(len(key), 12) * 0.035
 
 
 def upscale(crop: np.ndarray, min_height: int = 120) -> np.ndarray:
@@ -464,166 +580,37 @@ def draw_plate_box(frame: np.ndarray, box: tuple[int, int, int, int], text: str,
     cv2.putText(frame, label, (x1 + 4, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
 
 
-def _bbox_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
-    inter = iw * ih
-    if inter <= 0:
-        return 0.0
-    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
-    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
-    union = area_a + area_b - inter
-    return float(inter / union) if union > 0 else 0.0
-
-
-class _PlateTrackState:
-    __slots__ = (
-        "track_id",
-        "bbox",
-        "last_seen",
-        "last_ocr_at",
-        "plate_text",
-        "ocr_conf",
-        "ocr_done",
-    )
-
-    def __init__(self, track_id: int, bbox: tuple[int, int, int, int], now: float):
-        self.track_id = track_id
-        self.bbox = bbox
-        self.last_seen = now
-        self.last_ocr_at = 0.0
-        self.plate_text = ""
-        self.ocr_conf = 0.0
-        self.ocr_done = False  # True after a valid accepted OCR read
-
-
-class PlateOcrTracker:
-    """
-    IoU plate tracks + OCR gating:
-      - OCR when track is new / not yet successfully read
-      - Re-OCR only after cooldown (default 2s)
-    Cuts EasyOCR calls dramatically vs every detection.
-    """
-
-    def __init__(
-        self,
-        *,
-        iou_match: float = 0.3,
-        ttl_sec: float = 3.0,
-        ocr_cooldown: float = 2.0,
-        ocr_retry: float = 0.25,
-    ):
-        self.iou_match = max(0.05, float(iou_match))
-        self.ttl_sec = max(0.5, float(ttl_sec))
-        self.ocr_cooldown = max(0.5, float(ocr_cooldown))
-        self.ocr_retry = max(0.0, float(ocr_retry))
-        self._lock = threading.Lock()
-        self._tracks: dict[str, dict[int, _PlateTrackState]] = {}
-        self._next_id: dict[str, int] = {}
-
-    def clear_camera(self, camera_key: str) -> None:
-        key = (camera_key or "").strip() or "_default"
-        with self._lock:
-            self._tracks.pop(key, None)
-            self._next_id.pop(key, None)
-
-    def _prune_locked(self, cam: str, now: float) -> None:
-        tracks = self._tracks.get(cam)
-        if not tracks:
-            return
-        stale = [tid for tid, t in tracks.items() if (now - t.last_seen) > self.ttl_sec]
-        for tid in stale:
-            tracks.pop(tid, None)
-
-    def assign(self, camera_key: str, bbox: tuple[int, int, int, int], now: float) -> _PlateTrackState:
-        cam = (camera_key or "").strip() or "_default"
-        with self._lock:
-            if cam not in self._tracks:
-                self._tracks[cam] = {}
-                self._next_id[cam] = 1
-            self._prune_locked(cam, now)
-            tracks = self._tracks[cam]
-            best_id = None
-            best_iou = self.iou_match
-            for tid, state in tracks.items():
-                iou = _bbox_iou(bbox, state.bbox)
-                if iou >= best_iou:
-                    best_iou = iou
-                    best_id = tid
-            if best_id is not None:
-                state = tracks[best_id]
-                state.bbox = bbox
-                state.last_seen = now
-                return state
-            tid = self._next_id[cam]
-            self._next_id[cam] = tid + 1
-            state = _PlateTrackState(tid, bbox, now)
-            tracks[tid] = state
-            return state
-
-    def should_ocr(self, track: _PlateTrackState, now: float) -> bool:
-        """OCR new tracks; retry until success; re-OCR after cooldown once done."""
-        if not track.ocr_done:
-            if track.last_ocr_at <= 0:
-                return True
-            return (now - track.last_ocr_at) >= self.ocr_retry
-        return (now - track.last_ocr_at) >= self.ocr_cooldown
-
-    def mark_ocr(
-        self,
-        track: _PlateTrackState,
-        *,
-        plate_text: str,
-        ocr_conf: float,
-        accepted: bool,
-        now: float,
-    ) -> None:
-        track.last_ocr_at = now
-        if plate_text and (accepted or ocr_conf >= track.ocr_conf):
-            track.plate_text = plate_text
-            track.ocr_conf = float(ocr_conf)
-        if accepted and plate_text:
-            track.ocr_done = True
-
-
 class PlateEngine:
-    """YOLO plate detector + EasyOCR reader with media snapshot saving."""
+    """YOLO plate detector + PaddleOCR PP-OCRv5 reader with media snapshot saving."""
 
     def __init__(self):
         self.weights = resolve_plate_weights()
         self.detector = None
         self.reader = None
         self.available = False
+        self.ocr_backend = "PP-OCRv5"
+        self.ocr_device = "cpu"
         self._infer_lock = threading.Lock()
+        self._ocr_lock = threading.Lock()
         self._save_lock = threading.Lock()
-        self._last_saved: dict[str, float] = {}
-        self._best_saved: dict[str, float] = {}  # raw track slot → best score
-        self._raw_was_valid: dict[str, bool] = {}
-        self.conf = _env_float("ML_PLATE_CONF", 0.45)
-        self.min_ocr_conf = _env_float(
-            "ML_PLATE_RECO_CONF",
-            _env_float("ML_PLATE_MIN_OCR_CONF", 0.45),
-        )
-        self.min_det_conf = _env_float("ML_PLATE_MIN_DET_CONF", 0.45)
-        self.min_plate_len = _env_int("ML_PLATE_MIN_LEN", 5)
-        # Only used when upgrading a track from UNKNOWN → accepted text
+        # Open visits: camera+plate → last seen, best score, and the CSV/image row to overwrite.
+        self._visits: dict[str, dict[str, Any]] = {}
+        self.conf = _env_float("ML_PLATE_CONF", 0.25)
+        self.min_ocr_conf = _env_float("ML_PLATE_MIN_OCR_CONF", 0.25)
+        self.min_det_conf = _env_float("ML_PLATE_MIN_DET_CONF", 0.20)
+        self.min_plate_len = _env_int("ML_PLATE_MIN_LEN", 4)
+        # Kept for compatibility; visit close uses visit_timeout, not this interval.
         self.save_interval = _env_float("ML_PLATE_SAVE_INTERVAL", 3600.0)
-        # Detect on a ~1080p copy; crop/OCR always from the original (4K) frame.
-        self.detect_width = max(0, _env_int("ML_PLATE_DETECT_WIDTH", 1920))
-        self.detect_height = max(0, _env_int("ML_PLATE_DETECT_HEIGHT", 1080))
+        self.visit_timeout = max(60.0, _env_float("ML_PLATE_VISIT_TIMEOUT", DEFAULT_VISIT_TIMEOUT_SEC))
+        # 4K cameras need larger imgsz — 640 misses small plates
         self.imgsz = max(640, _env_int("ML_PLATE_IMGSZ", 1280))
-        self.device = "cpu"
         try:
             from inference_engine import resolve_ml_device
 
             resolved = resolve_ml_device()
             self.device = "cpu" if resolved == "cpu" else str(resolved)
         except Exception:
-            raw = os.getenv("ML_DEVICE", "0").strip() or "0"
-            self.device = "cpu" if raw.lower() == "cpu" else raw
+            self.device = os.getenv("ML_DEVICE", "0").strip() or "0"
         self.require_vehicle = os.getenv("ML_PLATE_REQUIRE_VEHICLE", "true").strip().lower() in (
             "1",
             "true",
@@ -631,18 +618,13 @@ class PlateEngine:
         )
         self.vehicle_iou = _env_float("ML_PLATE_VEHICLE_IOU", 0.02)
         self.vehicle_expand = _env_float("ML_PLATE_VEHICLE_EXPAND", 0.35)
-        # Track-based OCR: new track → OCR once; re-OCR only after cooldown
-        self._ocr_tracker = PlateOcrTracker(
-            iou_match=_env_float("ML_PLATE_TRACK_IOU", 0.3),
-            ttl_sec=_env_float("ML_PLATE_TRACK_TTL", 3.0),
-            ocr_cooldown=_env_float("ML_PLATE_OCR_COOLDOWN", 2.0),
-            ocr_retry=_env_float("ML_PLATE_OCR_RETRY", 0.25),
-        )
+        self.osd_filter = os.getenv("ML_OSD_FILTER", "true").strip().lower() in ("1", "true", "yes")
+        self.osd_top = _env_float("ML_OSD_TOP", 0.22)
+        self.osd_left = _env_float("ML_OSD_LEFT", 0.55)
+        self.osd_right = _env_float("ML_OSD_RIGHT", 0.55)
+        self.osd_bottom = _env_float("ML_OSD_BOTTOM", 0.0)
         self._media_dir = resolve_plate_media_dir()
         self._load()
-
-    def clear_camera_tracks(self, camera_key: str) -> None:
-        self._ocr_tracker.clear_camera(camera_key)
 
     def _load(self) -> None:
         if self.weights is None:
@@ -658,58 +640,233 @@ class PlateEngine:
             return
 
         try:
-            import easyocr
+            import torch  # noqa: F401 — Windows: load CUDA DLLs before paddlepaddle-gpu
 
-            use_gpu = self.device.lower() != "cpu"
-            try:
-                self.reader = easyocr.Reader(["en"], gpu=use_gpu, verbose=False)
-                print(f"[plate] EasyOCR ready (gpu={use_gpu})")
-            except Exception as gpu_exc:
-                if not use_gpu:
-                    raise
-                print(f"[plate] EasyOCR GPU failed ({gpu_exc}) — retrying CPU")
-                self.device = "cpu"
-                self.reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-                print("[plate] EasyOCR ready (gpu=False)")
+            os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+            _patch_paddlex_opencv_extra()
+            from paddleocr import PaddleOCR
+
+            _patch_paddlex_opencv_extra()
+
+            paddle_device = _paddle_device(self.device)
+            ocr_version = os.getenv("ML_PADDLE_OCR_VERSION", DEFAULT_OCR_VERSION).strip() or DEFAULT_OCR_VERSION
+            det_model = os.getenv("ML_PADDLE_DET_MODEL", DEFAULT_DET_MODEL).strip() or DEFAULT_DET_MODEL
+            rec_model = os.getenv("ML_PADDLE_REC_MODEL", DEFAULT_REC_MODEL).strip() or DEFAULT_REC_MODEL
+            self.ocr_backend = ocr_version
+            self.ocr_device = paddle_device
+            kwargs: dict[str, Any] = {
+                "device": paddle_device,
+                "use_doc_orientation_classify": False,
+                "use_doc_unwarping": False,
+                "use_textline_orientation": False,
+                "text_detection_model_name": det_model,
+                "text_recognition_model_name": rec_model,
+            }
+            self.reader = PaddleOCR(**kwargs)
+            print(
+                f"[plate] PaddleOCR {ocr_version} ready "
+                f"(device={paddle_device}, det={det_model}, rec={rec_model})"
+            )
         except Exception as exc:
-            print(f"[plate] Failed to load EasyOCR: {exc}")
+            print(f"[plate] Failed to load PaddleOCR PP-OCRv5: {exc}")
             return
 
         self.available = True
         print(f"[plate] Media dir: {self._media_dir}")
+        if self.osd_filter:
+            print(f"[plate] OSD band skip enabled (top={self.osd_top:.0%}) — clock overlay will not be saved")
+        n = self._restore_visits_from_csv()
+        print(f"[plate] Visit window {self.visit_timeout:.0f}s — restored {n} open visit(s)")
+
+    def clear_camera_tracks(self, camera_key: str) -> None:
+        """Drop open plate visits when a camera stream is stopped or reconnected."""
+        cam = (camera_key or "").strip().lower()
+        if not cam:
+            return
+        stale = [
+            slot
+            for slot, visit in self._visits.items()
+            if str(visit.get("camera_key") or "").strip().lower() == cam
+        ]
+        for slot in stale:
+            self._visits.pop(slot, None)
 
     def ocr_plate(self, crop: np.ndarray) -> tuple[str, float]:
         if self.reader is None or crop is None or crop.size == 0:
             return "", 0.0
         best_text, best_conf, best_score = "", 0.0, -1.0
-        for variant in preprocess_variants(crop):
-            results = self.reader.readtext(
-                variant,
-                detail=1,
-                paragraph=False,
-                allowlist=OCR_ALLOWLIST,
-                width_ths=0.5,
-                height_ths=0.5,
-            )
+        variants = preprocess_variants(crop)
+        if not variants:
+            return "", 0.0
+        # Original BGR crop first; extra preprocessed variants only if needed.
+        ordered = [variants[-1], *variants[:-1]] if len(variants) > 1 else variants
+        for variant in ordered:
+            try:
+                with self._ocr_lock:
+                    raw = self.reader.predict(variant)
+            except Exception as exc:
+                print(f"[plate] PaddleOCR predict failed: {exc}")
+                continue
+            results = paddle_results_to_items(raw)
             candidates = [merge_ocr_segments(results)]
             for item in results:
                 if len(item) == 3:
                     cleaned = clean_plate_text(item[1])
                     if cleaned:
                         candidates.append((cleaned, float(item[2])))
+            improved = False
             for text, conf in candidates:
                 if not text:
                     continue
-                if looks_like_datetime_ocr(text):
+                if not is_valid_plate(text, min_len=self.min_plate_len):
                     continue
-                canon = canonicalize_plate(text)
-                if not canon:
-                    continue
-                display = format_plate_display(canon)
+                display = format_plate_display(text)
                 score = reading_score(text, conf)
                 if score > best_score:
                     best_text, best_conf, best_score = display, conf, score
+                    improved = True
+            if improved and is_valid_plate(best_text, min_len=self.min_plate_len):
+                break
         return best_text, best_conf
+
+    @staticmethod
+    def _visit_score(det_conf: float, ocr_conf: float) -> float:
+        return float(ocr_conf) * float(det_conf) + float(ocr_conf) * 0.5
+
+    def _captures_csv(self) -> Path:
+        return resolve_plate_media_dir() / "captures.csv"
+
+    def _abs_media(self, rel: str) -> Path:
+        path = (rel or "").strip().replace("\\", "/").lstrip("/")
+        if path.startswith("licence plates/"):
+            return resolve_media_root() / path
+        return resolve_plate_media_dir() / path
+
+    def _match_visit_slot(self, camera_key: str, plate_key: str, ocr_conf: float = 1.0) -> str | None:
+        cam = (camera_key or "").strip()
+        for slot, visit in self._visits.items():
+            if str(visit.get("camera_key") or "").strip().lower() != cam.lower():
+                continue
+            if plates_are_same_vehicle(
+                plate_key,
+                str(visit.get("plate_key") or ""),
+                ocr_conf,
+                float(visit.get("ocr_conf") or 0),
+            ):
+                return slot
+        return None
+
+    def _close_stale_visits(self, now: float) -> None:
+        stale = [
+            slot
+            for slot, visit in self._visits.items()
+            if now - float(visit.get("last_seen") or 0) > self.visit_timeout
+        ]
+        for slot in stale:
+            self._visits.pop(slot, None)
+
+    def _restore_visits_from_csv(self) -> int:
+        """Re-open visits that are still inside the timeout so an ML restart does not re-save."""
+        path = self._captures_csv()
+        if not path.is_file():
+            return 0
+        now = time.time()
+        parsed: list[dict[str, Any]] = []
+        try:
+            with path.open("r", encoding="utf-8", newline="") as f:
+                for row in csv.DictReader(f):
+                    plate = str(row.get("plate_number") or "").strip()
+                    key = canonicalize_plate(plate) or plate_key(plate)
+                    if not key:
+                        continue
+                    ts_raw = str(row.get("timestamp") or "").strip()
+                    try:
+                        epoch = datetime.fromisoformat(ts_raw.replace("Z", "")).timestamp()
+                    except ValueError:
+                        continue
+                    try:
+                        det_conf = float(row.get("det_conf") or 0)
+                    except (TypeError, ValueError):
+                        det_conf = 0.0
+                    try:
+                        ocr_conf = float(row.get("ocr_conf") or 0)
+                    except (TypeError, ValueError):
+                        ocr_conf = 0.0
+                    parsed.append(
+                        {
+                            "epoch": epoch,
+                            "camera_key": str(row.get("camera_key") or ""),
+                            "plate_key": key,
+                            "plate_text": format_plate_display(key),
+                            "det_conf": det_conf,
+                            "ocr_conf": ocr_conf,
+                            "score": self._visit_score(det_conf, ocr_conf),
+                            "plate_rel": str(row.get("plate_image") or "").replace("\\", "/"),
+                            "frame_rel": str(row.get("frame_image") or "").replace("\\", "/"),
+                        }
+                    )
+        except OSError as exc:
+            print(f"[plate] Could not restore visits from CSV: {exc}")
+            return 0
+
+        parsed.sort(key=lambda r: float(r["epoch"]), reverse=True)
+        restored = 0
+        for row in parsed:
+            if now - float(row["epoch"]) > self.visit_timeout:
+                continue
+            if self._match_visit_slot(row["camera_key"], row["plate_key"], float(row.get("ocr_conf") or 0)):
+                continue
+            slot = f"{row['camera_key']}:{row['plate_key']}"
+            self._visits[slot] = {
+                "camera_key": row["camera_key"],
+                "plate_key": row["plate_key"],
+                "plate_text": row["plate_text"],
+                "score": row["score"],
+                "last_seen": float(row["epoch"]),
+                "det_conf": row["det_conf"],
+                "ocr_conf": row["ocr_conf"],
+                "plate_rel": row["plate_rel"],
+                "frame_rel": row["frame_rel"],
+            }
+            restored += 1
+        return restored
+
+    def _write_csv_rows(self, rows: list[dict[str, Any]]) -> None:
+        path = self._captures_csv()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({field: row.get(field, "") for field in CSV_FIELDS})
+
+    def _upsert_csv_row(self, record: dict[str, Any], *, match_plate_rel: str = "") -> None:
+        path = self._captures_csv()
+        rows: list[dict[str, Any]] = []
+        if path.is_file():
+            with path.open("r", encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f))
+        target = (match_plate_rel or "").replace("\\", "/")
+        updated = False
+        if target:
+            for row in rows:
+                if str(row.get("plate_image") or "").replace("\\", "/") == target:
+                    row.update(record)
+                    updated = True
+                    break
+        if not updated:
+            rows.append(record)
+        self._write_csv_rows(rows)
+
+    def _visit_payload(self, visit: dict[str, Any]) -> dict[str, str]:
+        plate_rel = str(visit.get("plate_rel") or "")
+        frame_rel = str(visit.get("frame_rel") or "")
+        return {
+            "plate_image": plate_rel,
+            "frame_image": frame_rel,
+            "plate_image_abs": str(self._abs_media(plate_rel)) if plate_rel else "",
+            "frame_image_abs": str(self._abs_media(frame_rel)) if frame_rel else "",
+        }
 
     def save_snapshot(
         self,
@@ -721,104 +878,108 @@ class PlateEngine:
         *,
         camera_key: str = "",
         force: bool = False,
-        track_id: int = 0,
-        bbox: tuple[int, int, int, int] | None = None,
     ) -> dict[str, str] | None:
-        """Save a 4K-source plate crop. OCR/format/OSD never block the JPEG."""
-        valid = is_valid_plate(plate_text, min_len=self.min_plate_len)
-        if valid:
-            key = canonicalize_plate(plate_text) or plate_key(plate_text)
-            plate_text = format_plate_display(key) if key else "UNKNOWN"
-            if not key:
-                valid = False
-                key = "UNKNOWN"
-                plate_text = "UNKNOWN"
-        else:
-            key = "UNKNOWN"
-            plate_text = "UNKNOWN"
-
-        if track_id:
-            slot = f"{camera_key}:raw:{int(track_id)}"
-        elif bbox is not None:
-            cx = int((bbox[0] + bbox[2]) / 2) // 80
-            cy = int((bbox[1] + bbox[3]) / 2) // 80
-            slot = f"{camera_key}:raw:{cx}_{cy}"
-        else:
-            slot = f"{camera_key}:raw:{key}"
-
-        score = float(ocr_conf) * float(det_conf) + float(ocr_conf) * 0.5
+        """One CSV/image row per visit: overwrite if OCR improves, new row only after the vehicle left."""
+        if not is_valid_plate(plate_text, min_len=self.min_plate_len):
+            return None
+        key = canonicalize_plate(plate_text) or plate_key(plate_text)
+        if not key:
+            return None
+        plate_text = format_plate_display(key)
+        score = self._visit_score(det_conf, ocr_conf)
         now = time.time()
+        stamp = datetime.now().isoformat(timespec="seconds")
+
         with self._save_lock:
-            if not force:
-                last = self._last_saved.get(slot, 0.0)
-                prev_best = self._best_saved.get(slot, 0.0)
-                prev_valid = self._raw_was_valid.get(slot, False)
-                if last > 0:
-                    # One raw crop per track. Allow a second write only to
-                    # upgrade UNKNOWN → accepted plate text (or a clearly better read).
-                    if prev_valid and (not valid or score <= prev_best * 1.05):
-                        return None
-                    if not prev_valid and not valid:
-                        return None
-            self._last_saved[slot] = now
-            self._best_saved[slot] = max(self._best_saved.get(slot, 0.0), score)
-            self._raw_was_valid[slot] = bool(valid or self._raw_was_valid.get(slot, False))
+            # Deleted CSV = clean slate (do not keep stale in-memory visits).
+            if not self._captures_csv().is_file():
+                self._visits.clear()
+            self._close_stale_visits(now)
+            slot = self._match_visit_slot(camera_key, key, ocr_conf)
+            visit = self._visits.get(slot) if slot else None
 
-        media = resolve_plate_media_dir()
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        safe = key
-        cam_prefix = plate_key(camera_key)[:24] if camera_key else "cam"
-        plate_name = f"{stamp}_{cam_prefix}_{safe}.jpg"
-        frame_name = f"{stamp}_{cam_prefix}_{safe}.jpg"
-        plate_path = media / "plates" / plate_name
-        frame_path = media / "frames" / frame_name
+            if visit is not None:
+                visit["last_seen"] = now
+                if not force and score <= float(visit.get("score") or 0):
+                    return self._visit_payload(visit)
 
-        annotated = frame.copy()
-        # Prefer drawing using crop location if present in detections later;
-        # for now draw nothing extra if box unknown — frame already annotated by caller.
-        cv2.imwrite(str(plate_path), crop)
-        cv2.imwrite(str(frame_path), annotated)
+                plate_rel = str(visit.get("plate_rel") or "")
+                frame_rel = str(visit.get("frame_rel") or "")
+                plate_path = self._abs_media(plate_rel) if plate_rel else None
+                frame_path = self._abs_media(frame_rel) if frame_rel else None
+                if plate_path is None or frame_path is None:
+                    if slot:
+                        self._visits.pop(slot, None)
+                else:
+                    plate_path.parent.mkdir(parents=True, exist_ok=True)
+                    frame_path.parent.mkdir(parents=True, exist_ok=True)
+                    cv2.imwrite(str(plate_path), crop)
+                    cv2.imwrite(str(frame_path), frame)
+                    visit["score"] = max(float(visit.get("score") or 0), score)
+                    visit["plate_text"] = plate_text
+                    visit["det_conf"] = det_conf
+                    visit["ocr_conf"] = ocr_conf
+                    self._upsert_csv_row(
+                        {
+                            "timestamp": stamp,
+                            "camera_key": camera_key,
+                            "plate_number": plate_text,
+                            "det_conf": round(det_conf, 4),
+                            "ocr_conf": round(ocr_conf, 4),
+                            "plate_image": plate_rel,
+                            "frame_image": frame_rel,
+                        },
+                        match_plate_rel=plate_rel,
+                    )
+                    return self._visit_payload(visit)
 
-        log_path = media / "captures.csv"
-        write_header = not log_path.exists()
-        with self._save_lock:
-            with log_path.open("a", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(
-                    f,
-                    fieldnames=[
-                        "timestamp",
-                        "camera_key",
-                        "plate_number",
-                        "det_conf",
-                        "ocr_conf",
-                        "plate_image",
-                        "frame_image",
-                    ],
-                )
-                if write_header:
-                    writer.writeheader()
-                writer.writerow(
-                    {
-                        "timestamp": datetime.now().isoformat(timespec="seconds"),
-                        "camera_key": camera_key,
-                        "plate_number": plate_text,
-                        "det_conf": round(det_conf, 4),
-                        "ocr_conf": round(ocr_conf, 4),
-                        "plate_image": f"licence plates/plates/{plate_name}",
-                        "frame_image": f"licence plates/frames/{frame_name}",
-                    }
-                )
+            media = resolve_plate_media_dir()
+            file_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            cam_prefix = plate_key(camera_key)[:24] if camera_key else "cam"
+            plate_name = f"{file_stamp}_{cam_prefix}_{key}.jpg"
+            frame_name = f"{file_stamp}_{cam_prefix}_{key}.jpg"
+            plate_rel = f"licence plates/plates/{plate_name}"
+            frame_rel = f"licence plates/frames/{frame_name}"
+            plate_path = media / "plates" / plate_name
+            frame_path = media / "frames" / frame_name
+            plate_path.parent.mkdir(parents=True, exist_ok=True)
+            frame_path.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(plate_path), crop)
+            cv2.imwrite(str(frame_path), frame)
+
+            record = {
+                "timestamp": stamp,
+                "camera_key": camera_key,
+                "plate_number": plate_text,
+                "det_conf": round(det_conf, 4),
+                "ocr_conf": round(ocr_conf, 4),
+                "plate_image": plate_rel,
+                "frame_image": frame_rel,
+            }
+            self._upsert_csv_row(record)
             numbers_path = media / "numbers.txt"
             with numbers_path.open("a", encoding="utf-8") as f:
                 prefix = f"[{camera_key}] " if camera_key else ""
-                f.write(f"{datetime.now().isoformat(timespec='seconds')}  {prefix}{plate_text}\n")
+                f.write(f"{stamp}  {prefix}{plate_text}\n")
 
-        return {
-            "plate_image": f"licence plates/plates/{plate_name}",
-            "frame_image": f"licence plates/frames/{frame_name}",
-            "plate_image_abs": str(plate_path),
-            "frame_image_abs": str(frame_path),
-        }
+            new_slot = f"{camera_key}:{key}"
+            self._visits[new_slot] = {
+                "camera_key": camera_key,
+                "plate_key": key,
+                "plate_text": plate_text,
+                "score": score,
+                "last_seen": now,
+                "det_conf": det_conf,
+                "ocr_conf": ocr_conf,
+                "plate_rel": plate_rel,
+                "frame_rel": frame_rel,
+            }
+            return {
+                "plate_image": plate_rel,
+                "frame_image": frame_rel,
+                "plate_image_abs": str(plate_path),
+                "frame_image_abs": str(frame_path),
+            }
 
     def detect_and_read(
         self,
@@ -830,26 +991,18 @@ class PlateEngine:
         force_save: bool = False,
         vehicle_boxes: list[list[float]] | None = None,
     ) -> list[dict[str, Any]]:
-        """
-        Plate YOLO on a scaled copy (~1080p), crop from original 4K, save every
-        qualifying detection (per track), then OCR for ABC 123 / UNKNOWN labels.
-        Vehicle / OCR success / Pakistan format / OSD never block the crop.
-        """
+        """Run plate YOLO + OCR on a BGR frame. Optionally save accepted plates to media."""
         if not self.available or self.detector is None or frame is None or frame.size == 0:
             return []
 
-        orig_h, orig_w = frame.shape[:2]
-        detect_frame, sx, sy = scale_for_plate_detect(
-            frame, self.detect_width, self.detect_height
-        )
-        det_h, det_w = detect_frame.shape[:2]
+        height, width = frame.shape[:2]
         det_conf_thresh = conf if conf is not None else self.conf
         detections: list[dict[str, Any]] = []
-        now = time.time()
+        need_vehicle = self.require_vehicle
 
         with self._infer_lock:
             results = self.detector.predict(
-                detect_frame,
+                frame,
                 conf=det_conf_thresh,
                 imgsz=self.imgsz,
                 device=self.device,
@@ -860,92 +1013,88 @@ class PlateEngine:
             if result.boxes is None:
                 continue
             for box in result.boxes:
-                dx1, dy1, dx2, dy2 = map(int, box.xyxy[0].tolist())
-                dx1, dy1 = max(0, dx1), max(0, dy1)
-                dx2, dy2 = min(det_w, dx2), min(det_h, dy2)
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(width, x2), min(height, y2)
                 det_conf = float(box.conf[0])
-                if dx2 <= dx1 or dy2 <= dy1:
-                    continue
-                x1, y1, x2, y2 = map_box_to_original(
-                    (dx1, dy1, dx2, dy2), sx, sy, orig_w, orig_h
-                )
                 if x2 <= x1 or y2 <= y1:
+                    continue
+                bbox = (x1, y1, x2, y2)
+                if not bbox_is_plausible_plate(bbox, height, width):
+                    continue
+                if self.osd_filter and bbox_in_osd_band(
+                    bbox,
+                    height,
+                    width,
+                    top_frac=self.osd_top,
+                    left_frac=self.osd_left,
+                    right_frac=self.osd_right,
+                    bottom_frac=self.osd_bottom,
+                ):
                     continue
                 crop = frame[y1:y2, x1:x2]
                 if crop.size == 0:
                     continue
 
-                bbox = (x1, y1, x2, y2)
-                track = self._ocr_tracker.assign(camera_key, bbox, now)
-                near_vehicle = plate_near_vehicle(
-                    bbox,
-                    vehicle_boxes,
-                    frame_w=orig_w,
-                    frame_h=orig_h,
-                    min_iou=self.vehicle_iou,
-                    expand=self.vehicle_expand,
-                )
-
-                # OCR labels the crop; it is not a save gate.
-                run_ocr = self._ocr_tracker.should_ocr(track, now)
-                plate_text = track.plate_text
-                ocr_conf = track.ocr_conf
-                ocr_ran = False
-                if run_ocr:
-                    plate_text, ocr_conf = self.ocr_plate(crop)
-                    ocr_ran = True
-                    if looks_like_datetime_ocr(plate_text):
-                        # Keep the JPEG; never store OSD/clock text as a plate number.
-                        plate_text, ocr_conf = "", 0.0
-
-                accepted = is_valid_plate(plate_text, self.min_plate_len) and ocr_conf >= self.min_ocr_conf
-
-                if ocr_ran:
-                    self._ocr_tracker.mark_ocr(
-                        track,
-                        plate_text=plate_text,
-                        ocr_conf=ocr_conf,
-                        accepted=accepted,
-                        now=now,
+                near_vehicle = True
+                if need_vehicle:
+                    near_vehicle = plate_near_vehicle(
+                        bbox,
+                        vehicle_boxes,
+                        frame_w=width,
+                        frame_h=height,
+                        min_iou=self.vehicle_iou,
+                        expand=self.vehicle_expand,
                     )
-                    plate_text = track.plate_text or plate_text
-                    ocr_conf = track.ocr_conf if track.ocr_conf else ocr_conf
-                    accepted = is_valid_plate(plate_text, self.min_plate_len) and ocr_conf >= self.min_ocr_conf
+                if need_vehicle and not near_vehicle:
+                    continue
 
-                save_text = plate_text if accepted else "UNKNOWN"
-                overlay_text = save_text
+                plate_text, ocr_conf = self.ocr_plate(crop)
+                if looks_like_datetime_ocr(plate_text) or looks_like_camera_overlay(
+                    plate_text, camera_key=camera_key
+                ):
+                    continue
+                if not is_valid_plate(plate_text, self.min_plate_len, camera_key=camera_key):
+                    continue
+
+                accepted = (
+                    ocr_conf >= self.min_ocr_conf
+                    and det_conf >= self.min_det_conf
+                    and near_vehicle
+                )
+                if not accepted:
+                    continue
 
                 saved: dict[str, str] | None = None
-                if save:
+                # Only persist accepted reads — no OSD / non-vehicle bypass
+                should_save = save and accepted
+                if should_save:
                     annotated = frame.copy()
-                    draw_plate_box(annotated, bbox, overlay_text, accepted)
+                    label = plate_text if plate_text else "PLATE"
+                    draw_plate_box(annotated, bbox, label, accepted)
                     saved = self.save_snapshot(
                         annotated,
                         crop,
-                        save_text,
+                        plate_text or "UNKNOWN",
                         det_conf,
                         ocr_conf,
                         camera_key=camera_key,
                         force=force_save,
-                        track_id=track.track_id,
-                        bbox=bbox,
                     )
 
                 det: dict[str, Any] = {
                     "class_id": 0,
                     "class_name": "license_plate",
-                    "label": overlay_text,
-                    "plate_number": overlay_text,
+                    "label": plate_text if plate_text else "license_plate",
+                    "plate_number": plate_text,
                     "confidence": round(det_conf, 4),
-                    "ocr_confidence": round(float(ocr_conf), 4),
+                    "ocr_confidence": round(ocr_conf, 4),
                     "bbox": [x1, y1, x2, y2],
                     "alert": False,
                     "priority": "high",
                     "model": "plate",
                     "accepted": accepted,
                     "near_vehicle": near_vehicle,
-                    "track_id": track.track_id,
-                    "ocr_ran": ocr_ran,
                 }
                 if saved:
                     det["plate_image"] = saved["plate_image"]

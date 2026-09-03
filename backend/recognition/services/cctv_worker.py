@@ -30,6 +30,10 @@ def _match_cooldown() -> int:
     return max(30, int(getattr(settings, "ATTENDANCE_CAMERA_MARK_COOLDOWN_SECONDS", 120)))
 
 
+def _cctv_infer_max_width() -> int:
+    return max(0, int(getattr(settings, "ATTENDANCE_VIDEO_WIDTH", 3840)))
+
+
 def _cctv_threshold() -> float:
     return float(getattr(settings, "ATTENDANCE_CCTV_SIMILARITY_THRESHOLD", 0.38))
 
@@ -305,6 +309,9 @@ class CCTVWorkerManager:
                 if now - last_infer_at < self._scan_interval:
                     continue
                 last_infer_at = now
+                from config.worker_throttle import maybe_pause_for_cpu
+
+                maybe_pause_for_cpu(logger, label=f"cctv-{state.camera_id}")
                 if now - gallery_refresh_at > 30:
                     gallery = self._shared_gallery()
                     gallery_refresh_at = now
@@ -328,12 +335,12 @@ class CCTVWorkerManager:
                 gallery_warned = False
 
                 h, w = frame.shape[:2]
-                max_w = 1920
-                if w > max_w:
+                max_w = _cctv_infer_max_width()
+                if max_w <= 0 or w <= max_w:
+                    frame_infer = frame
+                else:
                     scale = max_w / w
                     frame_infer = cv2.resize(frame, (max_w, int(h * scale)))
-                else:
-                    frame_infer = frame
 
                 faces = engine.detect_faces(frame_infer)
                 state.frames_processed += 1

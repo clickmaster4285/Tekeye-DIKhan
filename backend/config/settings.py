@@ -266,6 +266,18 @@ DETECTION_WORKER_ENABLED = os.getenv("DETECTION_WORKER_ENABLED", "True").lower()
 DETECTION_WORKER_AUTO_START = os.getenv("DETECTION_WORKER_AUTO_START", "True").lower() in ("true", "1", "yes")
 DETECTION_WORKER_INTERVAL_SEC = float(os.getenv("DETECTION_WORKER_INTERVAL_SEC", "2"))
 DETECTION_WORKER_CAMERA_REFRESH_SEC = int(os.getenv("DETECTION_WORKER_CAMERA_REFRESH_SEC", "60"))
+DETECTION_CLIP_REQUEUE_LIMIT = int(os.getenv("DETECTION_CLIP_REQUEUE_LIMIT", "50"))
+DETECTION_CLIP_MAX_WORKERS = int(os.getenv("DETECTION_CLIP_MAX_WORKERS", "1"))
+DETECTION_CLIP_MAX_QUEUE = int(os.getenv("DETECTION_CLIP_MAX_QUEUE", "50"))
+
+# Background worker throttling (sleep, CPU circuit breaker, ffmpeg spawn spacing)
+WORKER_MIN_CYCLE_SLEEP_MS = int(os.getenv("WORKER_MIN_CYCLE_SLEEP_MS", "100"))
+WORKER_CPU_PAUSE_THRESHOLD = float(os.getenv("WORKER_CPU_PAUSE_THRESHOLD", "80"))
+WORKER_CPU_PAUSE_SEC = float(os.getenv("WORKER_CPU_PAUSE_SEC", "30"))
+FFMPEG_SNAPSHOT_MIN_INTERVAL_SEC = float(os.getenv("FFMPEG_SNAPSHOT_MIN_INTERVAL_SEC", "2"))
+FFMPEG_SNAPSHOT_TIMEOUT_SEC = int(os.getenv("FFMPEG_SNAPSHOT_TIMEOUT_SEC", "12"))
+FFMPEG_STIMEOUT_US = os.getenv("FFMPEG_STIMEOUT_US", "10000000")
+FFMPEG_THREADS = os.getenv("FFMPEG_THREADS", "1")
 
 # JPEG snapshot saved with each new detection event (DETECTION_CLIP_SECONDS is unused; kept for .env compat)
 DETECTION_CLIP_ENABLED = os.getenv("DETECTION_CLIP_ENABLED", "true").strip().lower() in ("true", "1", "yes")
@@ -295,7 +307,7 @@ ATTENDANCE_CCTV_AUTOSTART = os.getenv("ATTENDANCE_CCTV_AUTOSTART", "True").lower
     "yes",
 )
 ATTENDANCE_INSIGHTFACE_MODEL = os.getenv("ATTENDANCE_INSIGHTFACE_MODEL", "buffalo_l")
-# Comma-separated ONNX providers override, e.g. "CPUExecutionProvider" or "DmlExecutionProvider,CPUExecutionProvider"
+# Comma-separated ONNX providers override, e.g. "CUDAExecutionProvider,TensorrtExecutionProvider,CPUExecutionProvider"
 ATTENDANCE_ONNX_PROVIDERS = os.getenv("ATTENDANCE_ONNX_PROVIDERS", "")
 # Visitor Identity gallery — separate from staff attendance. Never punches attendance.
 VISITOR_MIN_ENROLLMENT_IMAGES = int(os.getenv("VISITOR_MIN_ENROLLMENT_IMAGES", "3"))
@@ -367,6 +379,13 @@ JOURNEY_SNAPSHOT_NATIVE = os.getenv("JOURNEY_SNAPSHOT_NATIVE", "True").lower() i
     "1",
     "yes",
 )
+JOURNEY_SNAPSHOT_MAX_WORKERS = int(os.getenv("JOURNEY_SNAPSHOT_MAX_WORKERS", "1"))
+JOURNEY_SNAPSHOT_MAX_QUEUE = int(os.getenv("JOURNEY_SNAPSHOT_MAX_QUEUE", "40"))
+JOURNEY_SNAPSHOT_TASK_TIMEOUT_SEC = float(os.getenv("JOURNEY_SNAPSHOT_TASK_TIMEOUT_SEC", "30"))
 
 # CCTV stream FPS for ffmpeg proxy (RTSP URLs are built dynamically from NVR DB records)
 CAMERA_STREAM_FPS = int(os.getenv("ML_LIVE_STREAM_FPS", "25"))
+# 0 = native 4K from NVR main stream in Django camera preview MJPEG
+CAMERA_PREVIEW_MAX_WIDTH = int(os.getenv("CAMERA_PREVIEW_MAX_WIDTH", "0"))
+# Never fall back to NVR substream for attendance/CCTV OpenCV readers
+RTSP_MAIN_STREAM_ONLY = os.getenv("RTSP_MAIN_STREAM_ONLY", "True").lower() in ("true", "1", "yes")

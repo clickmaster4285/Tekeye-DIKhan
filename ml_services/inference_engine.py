@@ -158,16 +158,30 @@ _custom_class_ids_cache: list[int] | None = None
 _custom_class_names_cache: dict[int, str] | None = None
 
 
+def prefer_gpu() -> bool:
+    """True unless ML_PREFER_GPU is explicitly disabled."""
+    return os.getenv("ML_PREFER_GPU", "true").strip().lower() in ("1", "true", "yes")
+
+
+def allow_cpu_fallback() -> bool:
+    """When false, services stay on GPU or fail instead of silently falling back to CPU."""
+    return os.getenv("ML_GPU_CPU_FALLBACK", "true").strip().lower() in ("1", "true", "yes")
+
+
 def resolve_ml_device() -> str | int:
     """Resolve ML_DEVICE to a CUDA index or 'cpu', verifying torch CUDA availability."""
-    raw = os.getenv("ML_DEVICE", "0").strip().lower()
+    raw = os.getenv("ML_DEVICE", "0" if prefer_gpu() else "cpu").strip().lower()
     if raw == "cpu":
         return "cpu"
     try:
         import torch
 
         if not torch.cuda.is_available():
-            print("[ml] ML_DEVICE requests GPU but torch.cuda.is_available() is False — using CPU")
+            msg = "[ml] ML_DEVICE requests GPU but torch.cuda.is_available() is False"
+            if prefer_gpu() and not allow_cpu_fallback():
+                print(f"{msg} — CPU fallback disabled (ML_GPU_CPU_FALLBACK=false)")
+            else:
+                print(f"{msg} — using CPU")
             return "cpu"
         if raw in ("", "cuda", "gpu", "auto"):
             return 0

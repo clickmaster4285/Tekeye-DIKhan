@@ -131,7 +131,7 @@ class Camera(models.Model):
         blank=True,
         help_text="AI purposes enabled on this camera (multiple models allowed).",
     )
-    resolution = models.CharField(max_length=32, blank=True, default="1920x1080")
+    resolution = models.CharField(max_length=32, blank=True, default="3840x2160")
     frame_rate = models.CharField(max_length=8, blank=True, default="25")
     status = models.CharField(max_length=16, choices=CameraStatus.choices, default=CameraStatus.ONLINE)
     passage_role = models.CharField(

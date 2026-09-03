@@ -588,6 +588,7 @@ class CameraStreamListView(APIView):
                         purpose=cam.purpose,
                         purposes=cam.purpose_list(),
                     ),
+                    "rtsp_url": cam.effective_stream_url(),
                 }
             )
 
