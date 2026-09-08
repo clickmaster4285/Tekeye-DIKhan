@@ -1693,7 +1693,8 @@ class LiveStreamManager:
         with self._predict_lock:
             if use_half:
                 try:
-                    return model.predict(frame, quantize=True, **kwargs)
+                    # Ultralytics expects quantize='fp16' (not True)
+                    return model.predict(frame, quantize="fp16", **kwargs)
                 except TypeError:
                     return model.predict(frame, half=True, **kwargs)
             return model.predict(frame, **kwargs)
