@@ -43,6 +43,24 @@ class RemoteServer(models.Model):
     )
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True, default="")
+    site = models.ForeignKey(
+        "cameras.Site",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ml_servers",
+        help_text="Optional site this ML node primarily serves (e.g. D.I. Khan).",
+    )
+    gpu = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="GPU label e.g. P4000",
+    )
+    max_cameras = models.PositiveIntegerField(
+        default=25,
+        help_text="Soft capacity limit for distribution UI and auto-balance.",
+    )
     cached_cameras = models.JSONField(blank=True, default=list)
     cameras_fetched_at = models.DateTimeField(blank=True, null=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
@@ -69,21 +87,22 @@ class RemoteServer(models.Model):
         return (self.base_url or "").rstrip("/")
 
     def resolved_ml_base_url(self) -> str:
+        from .utils import ensure_ml_url
+
         explicit = (self.ml_base_url or "").strip().rstrip("/")
         if explicit:
-            return explicit
+            return ensure_ml_url(explicit)
         base = self.normalized_base_url()
         if not base:
             return ""
-        from urllib.parse import urlparse, urlunparse
-
-        parsed = urlparse(base)
-        if parsed.port == 8000 and parsed.hostname:
-            return urlunparse((parsed.scheme, f"{parsed.hostname}:8100", "", "", "", ""))
-        return base
+        return ensure_ml_url(base)
 
     def is_ml_mode(self) -> bool:
         return (self.connection_mode or ConnectionMode.ML) == ConnectionMode.ML
+
+    @property
+    def assigned_camera_count(self) -> int:
+        return self.assigned_cameras.filter(is_active=True).count()
 
 
 class AllCitiesCameraPreference(models.Model):

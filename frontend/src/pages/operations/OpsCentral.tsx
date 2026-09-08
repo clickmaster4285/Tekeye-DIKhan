@@ -1,9 +1,10 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Navigate } from "react-router-dom"
+import { Navigate, useNavigate } from "react-router-dom"
 import {
   Cable,
+  LayoutGrid,
   Loader2,
   Plus,
   RefreshCw,
@@ -113,6 +114,7 @@ function OpsStreamTile({
 }
 
 export default function OpsCentralPage() {
+  const navigate = useNavigate()
   const user = getStoredUser()
   const isOpsAdmin = normalizeRole(user?.role) === "IT_SUPERADMIN"
 
@@ -310,10 +312,24 @@ export default function OpsCentralPage() {
       description="Connect to each ML server (port 8100). Only cameras registered on that ML node are shown."
       breadcrumbs={[{ label: "Central Ops" }]}
       actions={
-        <Button variant="outline" size="sm" onClick={() => setShowAdd((v) => !v)}>
-          <Plus className="mr-1.5 h-4 w-4" />
-          {showAdd ? "Cancel" : "Add ML server"}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => navigate(ROUTES.OPS_ML_SERVERS)}>
+            <Server className="mr-1.5 h-4 w-4" />
+            ML Servers
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => navigate(ROUTES.OPS_CAMERA_DISTRIBUTION)}>
+            <LayoutGrid className="mr-1.5 h-4 w-4" />
+            Distribution
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => navigate(ROUTES.ALL_CITIES_CAMERAS)}>
+            <LayoutGrid className="mr-1.5 h-4 w-4" />
+            All Cities Cameras
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setShowAdd((v) => !v)}>
+            <Plus className="mr-1.5 h-4 w-4" />
+            {showAdd ? "Cancel" : "Add ML server"}
+          </Button>
+        </div>
       }
     >
       <div className="space-y-6">

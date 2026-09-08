@@ -295,7 +295,7 @@ def ml_live_mjpeg_attendance_url(
     return f"{base}?{urlencode(params)}"
 
 
-def ml_register_cameras_bulk(entries: list[dict[str, str]]) -> dict[str, Any]:
+def _build_register_payload(entries: list[dict[str, str]]) -> list[dict[str, Any]]:
     payload = []
     for item in entries:
         key = str(item.get("key") or "").strip()
@@ -312,6 +312,72 @@ def ml_register_cameras_bulk(entries: list[dict[str, str]]) -> dict[str, Any]:
         elif purpose:
             entry["purposes"] = [purpose]
         payload.append(entry)
+    return payload
+
+
+def _request_at(
+    base_url: str,
+    method: str,
+    path: str,
+    *,
+    timeout: float | tuple[float, float] | None = None,
+    **kwargs,
+) -> requests.Response:
+    root = (base_url or "").strip().rstrip("/")
+    if not root:
+        raise MLServiceError("ML base URL is empty.", 503)
+    url = f"{root}{path}"
+    req_timeout = _timeout() if timeout is None else timeout
+    try:
+        return requests.request(method, url, timeout=req_timeout, **kwargs)
+    except requests.RequestException as exc:
+        raise MLServiceError(f"ML service unreachable at {root} ({exc})", 503) from exc
+
+
+def ml_health_at(base_url: str) -> dict[str, Any]:
+    res = _request_at(base_url, "GET", "/health", timeout=5.0)
+    if res.status_code != 200:
+        raise MLServiceError(f"ML health check failed ({res.status_code})", res.status_code)
+    return res.json()
+
+
+def ml_register_cameras_bulk_at(
+    base_url: str,
+    entries: list[dict[str, str]],
+    *,
+    timeout: float | tuple[float, float] | None = None,
+) -> dict[str, Any]:
+    payload = _build_register_payload(entries)
+    if not payload:
+        return {"registered": 0, "total": 0}
+    res = _request_at(base_url, "POST", "/live/register/bulk", json=payload, timeout=timeout)
+    if res.status_code != 200:
+        raise MLServiceError(
+            f"Failed to register cameras with ML service at {base_url}.",
+            res.status_code,
+        )
+    return res.json()
+
+
+def ml_unregister_camera_at(
+    base_url: str,
+    stream_key: str,
+    *,
+    timeout: float | tuple[float, float] | None = None,
+) -> dict[str, Any]:
+    key = (stream_key or "").strip()
+    if not key:
+        return {"removed": False}
+    res = _request_at(
+        base_url, "DELETE", f"/live/cam/{key}/register", timeout=timeout
+    )
+    if res.status_code != 200:
+        raise MLServiceError(f"Failed to unregister camera {key} at {base_url}.", res.status_code)
+    return res.json()
+
+
+def ml_register_cameras_bulk(entries: list[dict[str, str]]) -> dict[str, Any]:
+    payload = _build_register_payload(entries)
     if not payload:
         return {"registered": 0, "total": 0}
     res = _request("POST", "/live/register/bulk", json=payload)

@@ -129,7 +129,7 @@ class NvrViewSet(viewsets.ModelViewSet):
 
 
 class CameraViewSet(viewsets.ModelViewSet):
-    queryset = Camera.objects.select_related("nvr", "nvr__site").all()
+    queryset = Camera.objects.select_related("nvr", "nvr__site", "ml_server").all()
     serializer_class = CameraSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]

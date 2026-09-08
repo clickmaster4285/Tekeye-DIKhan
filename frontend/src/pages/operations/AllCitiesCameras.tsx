@@ -127,10 +127,12 @@ function cameraLocationKey(camera: Pick<CityCamera, "location_code" | "location"
 }
 
 function isCameraOnline(camera: CityCamera): boolean {
-  if (typeof camera.connected === "boolean") return camera.connected
   const status = (camera.status || "").trim().toLowerCase()
-  if (["online", "active", "live", "running", "ok"].includes(status)) return true
+  // Explicit offline statuses win.
   if (["offline", "inactive", "down", "disconnected", "error"].includes(status)) return false
+  // Registered / live statuses win over a stale connected=false during RTSP reconnect.
+  if (["online", "active", "live", "running", "ok"].includes(status)) return true
+  if (typeof camera.connected === "boolean" && camera.connected) return true
   if (typeof camera.is_active === "boolean") return camera.is_active
   return Boolean((camera.ml_live_stream_url || "").trim())
 }

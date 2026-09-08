@@ -143,6 +143,14 @@ class Camera(models.Model):
     recording = models.BooleanField(default=True)
     storage_path = models.CharField(max_length=255, blank=True, default="")
     is_active = models.BooleanField(default=True)
+    ml_server = models.ForeignKey(
+        "ops_central.RemoteServer",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="assigned_cameras",
+        help_text="ML node that should run this camera (set by IT Super Admin).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

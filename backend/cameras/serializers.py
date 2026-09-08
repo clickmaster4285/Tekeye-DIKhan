@@ -99,6 +99,7 @@ class CameraSerializer(serializers.ModelSerializer):
     nvr_name = serializers.CharField(source="nvr.name", read_only=True)
     nvr_ip = serializers.CharField(source="nvr.ip_address", read_only=True)
     channel_label = serializers.SerializerMethodField()
+    ml_server_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Camera
@@ -127,6 +128,8 @@ class CameraSerializer(serializers.ModelSerializer):
             "ml_stream_key",
             "ml_live_stream_url",
             "raw_stream_url",
+            "ml_server",
+            "ml_server_name",
             "created_at",
             "updated_at",
         ]
@@ -141,6 +144,8 @@ class CameraSerializer(serializers.ModelSerializer):
             "ml_stream_key",
             "purpose_label",
             "purpose_labels",
+            "ml_server",
+            "ml_server_name",
         ]
 
     def get_channel_label(self, obj: Camera) -> str:
@@ -151,6 +156,11 @@ class CameraSerializer(serializers.ModelSerializer):
 
     def get_purpose_labels(self, obj: Camera) -> list[str]:
         return obj.purpose_labels()
+
+    def get_ml_server_name(self, obj: Camera) -> str:
+        if obj.ml_server_id and obj.ml_server:
+            return obj.ml_server.name
+        return ""
 
     def get_ml_live_stream_url(self, obj: Camera) -> str:
         if not obj.is_active or not obj.nvr_id:

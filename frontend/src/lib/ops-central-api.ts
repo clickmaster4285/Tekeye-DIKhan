@@ -9,9 +9,17 @@ export type RemoteServerRecord = {
   connection_mode: "ml" | "django"
   base_url: string
   ml_base_url: string
+  resolved_ml_base_url?: string
   auth_token_set: boolean
   is_active: boolean
   notes: string
+  site?: number | null
+  site_code?: string
+  site_name?: string
+  gpu?: string
+  max_cameras?: number
+  assigned_count?: number
+  available_slots?: number | null
   last_seen_at: string | null
   last_health: string
   last_error: string
@@ -29,6 +37,72 @@ export type RemoteServerWrite = {
   auth_token?: string
   is_active?: boolean
   notes?: string
+  site?: number | null
+  gpu?: string
+  max_cameras?: number
+}
+
+export type DistributionCamera = {
+  id: number
+  code: string
+  name: string
+  channel: number
+  nvr_id: number | null
+  nvr_name: string
+  site_id: number | null
+  site_code: string
+  site_name: string
+  ml_server_id: number | null
+  ml_server_name: string
+  status: string
+  is_active: boolean
+}
+
+export type DistributionServerColumn = {
+  id: number
+  name: string
+  ml_base_url: string
+  location_code: string
+  site_id: number | null
+  site_code: string
+  site_name: string
+  gpu: string
+  max_cameras: number
+  assigned_count: number
+  available_slots: number | null
+  status: string
+  last_health: string
+  last_error: string
+  last_seen_at: string | null
+  is_active: boolean
+  cameras: DistributionCamera[]
+}
+
+export type DistributionBoard = {
+  site_id: number | null
+  location_code: string
+  total_cameras: number
+  unassigned_count: number
+  ml_server_count: number
+  unassigned: DistributionCamera[]
+  servers: DistributionServerColumn[]
+  orphan_assigned: DistributionCamera[]
+}
+
+export type AutoDistributeResult = {
+  total_cameras: number
+  ml_server_count: number
+  strategy: string
+  recommended: Array<{
+    ml_server_id: number
+    ml_server_name: string
+    max_cameras: number
+    camera_count: number
+    camera_ids: number[]
+  }>
+  applied: boolean
+  moved: number
+  warnings?: string[]
 }
 
 export type OpsCamera = {
@@ -211,6 +285,9 @@ export async function createRemoteServer(payload: RemoteServerWrite): Promise<Re
     connection_mode: mode,
     is_active: payload.is_active !== false,
     notes: payload.notes || "",
+    gpu: payload.gpu || "",
+    max_cameras: payload.max_cameras ?? 25,
+    site: payload.site ?? null,
   }
   if (mode === "ml") {
     body.ml_base_url = normalizeMlUrl(payload.ml_base_url || payload.base_url || "")
@@ -232,10 +309,13 @@ export async function updateRemoteServer(
   id: number,
   payload: Partial<RemoteServerWrite>
 ): Promise<RemoteServerRecord> {
+  const body: Record<string, unknown> = { ...payload }
+  if (payload.ml_base_url) body.ml_base_url = normalizeMlUrl(payload.ml_base_url)
+  if (payload.base_url) body.base_url = normalizeServerUrl(payload.base_url)
   const res = await fetch(`${API}/ops/servers/${id}/`, {
     method: "PATCH",
     headers: getAuthHeaders(),
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(await parseError(res, "Failed to update server"))
   return res.json()
@@ -353,6 +433,73 @@ export async function quickConnect(payload: {
     server_id: data.server_id ?? null,
     server_name: data.server_name,
     connection_mode: data.connection_mode,
+  }
+}
+
+export async function fetchDistributionBoard(opts?: {
+  site_id?: number | null
+  location_code?: string
+}): Promise<DistributionBoard> {
+  const params = new URLSearchParams()
+  if (opts?.site_id != null) params.set("site_id", String(opts.site_id))
+  if (opts?.location_code) params.set("location_code", opts.location_code)
+  const qs = params.toString() ? `?${params.toString()}` : ""
+  const res = await fetch(`${API}/ops/distribution/${qs}`, { headers: getAuthHeaders() })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(formatApiError(data, "Failed to load distribution board"))
+  return {
+    site_id: data.site_id ?? null,
+    location_code: data.location_code || "",
+    total_cameras: data.total_cameras ?? 0,
+    unassigned_count: data.unassigned_count ?? 0,
+    ml_server_count: data.ml_server_count ?? 0,
+    unassigned: data.unassigned || [],
+    servers: data.servers || [],
+    orphan_assigned: data.orphan_assigned || [],
+  }
+}
+
+export async function assignCameraToMlServer(payload: {
+  camera_id: number
+  ml_server_id: number | null
+  enforce_capacity?: boolean
+}): Promise<{
+  camera: DistributionCamera
+  previous_ml_server_id: number | null
+  ml_server_id: number | null
+  routing?: { registered?: boolean; warnings?: string[]; ml_url?: string }
+}> {
+  const res = await fetch(`${API}/ops/distribution/assign/`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(formatApiError(data, "Failed to assign camera"))
+  return data
+}
+
+export async function autoDistributeCameras(payload: {
+  site_id?: number | null
+  location_code?: string
+  dry_run?: boolean
+  apply?: boolean
+}): Promise<AutoDistributeResult> {
+  const res = await fetch(`${API}/ops/distribution/auto/`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(formatApiError(data, "Auto-distribute failed"))
+  return {
+    total_cameras: data.total_cameras ?? 0,
+    ml_server_count: data.ml_server_count ?? 0,
+    strategy: data.strategy || "",
+    recommended: data.recommended || [],
+    applied: Boolean(data.applied),
+    moved: data.moved ?? 0,
+    warnings: Array.isArray(data.warnings) ? data.warnings : [],
   }
 }
 

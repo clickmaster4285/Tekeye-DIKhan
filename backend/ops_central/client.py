@@ -377,7 +377,7 @@ def fetch_ml_cameras(ml_base_url: str, *, server_name: str = "") -> dict[str, An
                 "ml_live_stream_url": "",
                 "raw_stream_url": "",
                 "rtsp_url": (c.get("rtsp_url") or "").strip(),
-                "status": "Online" if connected else "Offline",
+                "status": "Online",
                 "is_active": True,
                 "connected": connected,
                 "has_frame": bool(c.get("has_frame")),

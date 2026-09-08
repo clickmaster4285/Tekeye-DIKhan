@@ -525,18 +525,28 @@ class QuickConnectView(APIView):
 
             server_id = None
             if do_save:
+                defaults = {
+                    "connection_mode": ConnectionMode.ML,
+                    "base_url": ml_base,
+                    "ml_base_url": ml_base,
+                    "auth_token": "ml-only",
+                    "is_active": True,
+                    "created_by": request.user,
+                    "cached_cameras": cams.get("cameras") or [],
+                    "cameras_fetched_at": timezone.now(),
+                }
+                site_id = ser.validated_data.get("site")
+                if site_id is not None:
+                    defaults["site_id"] = site_id
+                gpu = (ser.validated_data.get("gpu") or "").strip()
+                if gpu:
+                    defaults["gpu"] = gpu
+                max_cameras = ser.validated_data.get("max_cameras")
+                if max_cameras:
+                    defaults["max_cameras"] = int(max_cameras)
                 server, _ = RemoteServer.objects.update_or_create(
                     name=name,
-                    defaults={
-                        "connection_mode": ConnectionMode.ML,
-                        "base_url": ml_base,
-                        "ml_base_url": ml_base,
-                        "auth_token": "ml-only",
-                        "is_active": True,
-                        "created_by": request.user,
-                        "cached_cameras": cams.get("cameras") or [],
-                        "cameras_fetched_at": timezone.now(),
-                    },
+                    defaults=defaults,
                 )
                 server_id = server.pk
                 cameras = _attach_proxy_urls(server_id, cams.get("cameras") or [])

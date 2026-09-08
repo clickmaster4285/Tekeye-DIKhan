@@ -240,7 +240,11 @@ export const Header = memo(function Header({ onMenuClick }: HeaderProps) {
               <div className="flex max-w-full flex-wrap items-center justify-center gap-1">
                 {connectedServers.slice(0, 6).map((s) => {
                   const health = (s.last_health || "").toLowerCase()
-                  const healthy = health === "ok" || health === "online"
+                  const healthy =
+                    health === "ok" ||
+                    health === "online" ||
+                    health === "healthy" ||
+                    health === "up"
                   return (
                     <span
                       key={s.id}
