@@ -143,6 +143,7 @@ export const DASHBOARD_ROUTES: { index?: true; path?: string; page: string }[] =
   { path: toChildPath(ROUTES.VIDEO_IMAGE_SEARCH), page: "VideoImageSearch" },
   { path: "object-tracking/:uuid", page: "ObjectTrackingDetail" },
   { path: toChildPath(ROUTES.OPS_CENTRAL), page: "OpsCentral" },
+  { path: toChildPath(ROUTES.ALL_CITIES_CAMERAS), page: "AllCitiesCameras" },
   { path: toChildPath(ROUTES.PERSON_JOURNEY), page: "PersonJourney" },
   { path: "person-journey/:uuid", page: "PersonJourneyDetail" },
   { path: toChildPath(ROUTES.GPS_TRACKING), page: "GpsTracking" },

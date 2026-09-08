@@ -74,6 +74,7 @@ export const PAGE_LOADERS = {
   AnalyticsDashboard: () => import("@/pages/operations/AnalyticsDashboard").then((m) => ({ default: m.default })),
   LiveCameraGrid: () => import("@/pages/operations/LiveCameraGrid").then((m) => ({ default: m.default })),
   OpsCentral: () => import("@/pages/operations/OpsCentral").then((m) => ({ default: m.default })),
+  AllCitiesCameras: () => import("@/pages/operations/AllCitiesCameras").then((m) => ({ default: m.default })),
   VehicleDetection: () => import("@/pages/operations/VehicleDetection").then((m) => ({ default: m.default })),
   AiModels: () => import("@/pages/operations/AiModels").then((m) => ({ default: m.default })),
   AiZones: () => import("@/pages/operations/AiZones").then((m) => ({ default: m.default })),

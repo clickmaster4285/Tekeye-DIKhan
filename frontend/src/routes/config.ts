@@ -84,6 +84,7 @@ export const ROUTES = {
   OBJECT_TRACKING_DETAIL: "/object-tracking/:uuid",
   /** Super Admin only — remote location servers + live detection streams */
   OPS_CENTRAL: "/ops-central",
+  ALL_CITIES_CAMERAS: "/all-cities-cameras",
   PERSON_JOURNEY: "/person-journey",
   PERSON_JOURNEY_DETAIL: "/person-journey/:uuid",
   GPS_TRACKING: "/gps-tracking",

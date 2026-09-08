@@ -14,7 +14,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from users.permissions import is_ops_viewer
+from users.permissions import apply_remote_server_scope, get_location_scope, is_ops_viewer
 
 from .cache import (
     parse_camera_id as _parse_camera_id,
@@ -31,7 +31,7 @@ from .client import (
     probe_ml_health,
     unregister_ml_camera_remote,
 )
-from .models import ConnectionMode, RemoteServer
+from .models import AllCitiesCameraPreference, ConnectionMode, RemoteServer
 from .permissions import IsITSuperAdminOnly, IsOpsViewer
 from .serializers import QuickConnectSerializer, RemoteServerSerializer
 from .utils import (
@@ -174,6 +174,10 @@ class RemoteServerViewSet(viewsets.ModelViewSet):
         if self.action in ("create", "update", "partial_update", "destroy", "remove_camera"):
             return [IsITSuperAdminOnly()]
         return [IsOpsViewer()]
+
+    def get_queryset(self):
+        queryset = RemoteServer.objects.all()
+        return apply_remote_server_scope(queryset, self.request.user)
 
     def list(self, request, *args, **kwargs):
         ensure_default_remote_server(request.user)
@@ -367,6 +371,30 @@ class RemoteServerViewSet(viewsets.ModelViewSet):
         )
 
 
+class AllCitiesCameraSelectionAPIView(APIView):
+    """Load and save the current user's all-city camera selection."""
+
+    permission_classes = [IsOpsViewer]
+
+    def get(self, request):
+        preference, _ = AllCitiesCameraPreference.objects.get_or_create(user=request.user)
+        keys = preference.selected_camera_keys if isinstance(preference.selected_camera_keys, list) else []
+        return Response({"selected_camera_keys": keys})
+
+    def put(self, request):
+        raw = request.data.get("selected_camera_keys", [])
+        if not isinstance(raw, list):
+            return Response(
+                {"detail": "selected_camera_keys must be a list of strings."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        keys = list(dict.fromkeys(str(key).strip() for key in raw if str(key).strip()))
+        preference, _ = AllCitiesCameraPreference.objects.get_or_create(user=request.user)
+        preference.selected_camera_keys = keys
+        preference.save(update_fields=["selected_camera_keys", "updated_at"])
+        return Response({"selected_camera_keys": keys})
+
+
 class AllCitiesStreamsAPIView(APIView):
     """Aggregate live cameras from every active connected Central Ops server."""
 
@@ -374,7 +402,9 @@ class AllCitiesStreamsAPIView(APIView):
 
     def get(self, request):
         refresh = str(request.query_params.get("refresh", "")).lower() in ("1", "true", "yes")
-        qs = RemoteServer.objects.filter(is_active=True).order_by("name")
+        qs = RemoteServer.objects.filter(is_active=True)
+        qs = apply_remote_server_scope(qs, request.user)
+        qs = qs.order_by("name")
         servers_out: list[dict] = []
         cameras_out: list[dict] = []
 
@@ -420,7 +450,7 @@ class AllCitiesStreamsAPIView(APIView):
                 entry["last_health"] = server.last_health or ""
                 entry["last_error"] = server.last_error or ""
 
-                if result.get("ok"):
+                if result.get("ok") and (result.get("cameras") or server.cached_cameras):
                     raw_cameras = list(result.get("cameras") or [])
                     server.cached_cameras = raw_cameras
                     server.cameras_fetched_at = timezone.now()

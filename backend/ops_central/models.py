@@ -84,3 +84,18 @@ class RemoteServer(models.Model):
 
     def is_ml_mode(self) -> bool:
         return (self.connection_mode or ConnectionMode.ML) == ConnectionMode.ML
+
+
+class AllCitiesCameraPreference(models.Model):
+    """Per-user saved camera selection for the all-cities wall."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="all_cities_camera_preference",
+    )
+    selected_camera_keys = models.JSONField(blank=True, default=list)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "ops_central_all_cities_camera_preference"

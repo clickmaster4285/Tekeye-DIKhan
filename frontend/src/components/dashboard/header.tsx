@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useState } from "react"
-import { useNavigate } from "react-router-dom"
-import { Search, Bell, HelpCircle, User, LogOut, Menu } from "lucide-react"
+import { useLocation, useNavigate } from "react-router-dom"
+import { Search, Bell, HelpCircle, User, LogOut, Menu, Wifi, WifiOff } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import {
   DropdownMenu,
@@ -10,20 +10,34 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Switch } from "@/components/ui/switch"
 import { clearAuth, getStoredUser, isAuthenticated, AUTH_USER_UPDATED_EVENT } from "@/lib/auth"
 import { stopOfficerGpsTracking } from "@/lib/officer-gps-session"
 import { queryClient } from "@/lib/query-client"
 import { clearLegacyVmsLocalStorage } from "@/lib/vms-list-api"
-import { getRoleDisplayLabel } from "@/lib/role-access"
+import { getRoleDisplayLabel, normalizeRole } from "@/lib/role-access"
 import { isGlobalAdmin } from "@/lib/location-access"
 import { locationLabel } from "@/lib/locations"
-import { ROUTES, getSeizureMgmtAssessmentDetailPath, getSeizureMgmtNoteSheetDetailPath, getSeizureMgmtRecoveryMemoDetailPath } from "@/routes/config"
+import {
+  canSeeAllCitiesCameras,
+  canViewAllCitiesCameras,
+  getCamerasWallLabel,
+  setAllCitiesCamerasPreference,
+} from "@/lib/all-cities-cameras"
+import { listRemoteServers, type RemoteServerRecord } from "@/lib/ops-central-api"
+import {
+  ROUTES,
+  getSeizureMgmtAssessmentDetailPath,
+  getSeizureMgmtNoteSheetDetailPath,
+  getSeizureMgmtRecoveryMemoDetailPath,
+} from "@/routes/config"
 import {
   fetchNoteSheetNotifications,
   markAllNoteSheetNotificationsRead,
   markNoteSheetNotificationRead,
   type NoteSheetNotificationItem,
 } from "@/lib/seizure-management-api"
+import { cn } from "@/lib/utils"
 
 interface HeaderProps {
   onMenuClick?: () => void
@@ -31,16 +45,66 @@ interface HeaderProps {
 
 export const Header = memo(function Header({ onMenuClick }: HeaderProps) {
   const navigate = useNavigate()
+  const location = useLocation()
   const [user, setUser] = useState(() => getStoredUser())
   useEffect(() => {
     const sync = () => setUser(getStoredUser())
     window.addEventListener(AUTH_USER_UPDATED_EVENT, sync)
     return () => window.removeEventListener(AUTH_USER_UPDATED_EVENT, sync)
   }, [])
+  const role = normalizeRole(user?.role)
+  const showAllCitiesToggle = canViewAllCitiesCameras(user?.role)
+  const camerasWallLabel = getCamerasWallLabel(user?.role, user?.location)
+  const showAllCityServerChips = canSeeAllCitiesCameras(user?.role, user?.location)
   const [searchInput, setSearchInput] = useState("")
   const [notifications, setNotifications] = useState<NoteSheetNotificationItem[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
   const [notifOpen, setNotifOpen] = useState(false)
+  const [connectedServers, setConnectedServers] = useState<RemoteServerRecord[]>([])
+
+  const allCitiesCameras = location.pathname === ROUTES.ALL_CITIES_CAMERAS
+
+  const handleAllCitiesCameras = useCallback(
+    (enabled: boolean) => {
+      setAllCitiesCamerasPreference(enabled)
+      if (enabled) {
+        navigate(ROUTES.ALL_CITIES_CAMERAS)
+      } else if (location.pathname === ROUTES.ALL_CITIES_CAMERAS) {
+        navigate(role === "IT_SUPERADMIN" ? ROUTES.OPS_CENTRAL : ROUTES.DASHBOARD)
+      }
+    },
+    [navigate, location.pathname, role],
+  )
+
+  useEffect(() => {
+    if (!showAllCitiesToggle || !isAuthenticated()) {
+      setConnectedServers([])
+      return
+    }
+    let cancelled = false
+    const load = () => {
+      listRemoteServers()
+        .then((rows) => {
+          if (!cancelled) setConnectedServers(rows.filter((s) => s.is_active))
+        })
+        .catch(() => {
+          if (!cancelled) setConnectedServers([])
+        })
+    }
+    load()
+    const id = window.setInterval(load, 60_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [showAllCitiesToggle])
+
+  useEffect(() => {
+    if (location.pathname === ROUTES.ALL_CITIES_CAMERAS) {
+      setAllCitiesCamerasPreference(true)
+    }
+  }, [location.pathname])
+
   const loadNotifications = useCallback(() => {
     if (!isAuthenticated()) return
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return
@@ -124,7 +188,7 @@ export const Header = memo(function Header({ onMenuClick }: HeaderProps) {
     .toUpperCase()
 
   return (
-    <header className="fixed left-0 right-0 top-0 z-20 flex h-16 min-w-0 shrink-0 items-center justify-between gap-2 border-b border-gray-100 bg-white px-2 sm:px-4 md:left-[333px] lg:px-8">
+    <header className="fixed left-0 right-0 top-0 z-20 grid h-16 min-w-0 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 border-b border-gray-100 bg-white px-2 sm:px-4 md:left-[333px] lg:px-8">
       <div className="flex min-w-0 items-center gap-2">
         <button
           type="button"
@@ -144,6 +208,68 @@ export const Header = memo(function Header({ onMenuClick }: HeaderProps) {
             className="text-[#4A5565] bg-transparent text-[15px] flex-1 min-w-0 py-1 border-0 outline-none placeholder:text-gray-400 ml-2"
           />
         </div>
+      </div>
+
+      <div className="flex max-w-[min(100%,28rem)] shrink-0 flex-col items-center justify-center gap-1 px-1 sm:px-2">
+        {showAllCitiesToggle && (
+          <>
+            <div className="flex items-center gap-2.5">
+              <Switch
+                id="all-cities-cameras"
+                checked={allCitiesCameras}
+                onCheckedChange={handleAllCitiesCameras}
+                aria-label={camerasWallLabel}
+                className="h-7 w-12 shrink-0 [&_[data-slot=switch-thumb]]:size-6 [&_[data-slot=switch-thumb]]:data-[state=checked]:translate-x-[1.35rem]"
+              />
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={() => handleAllCitiesCameras(!allCitiesCameras)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    handleAllCitiesCameras(!allCitiesCameras)
+                  }
+                }}
+                className="cursor-pointer select-none whitespace-nowrap text-sm font-semibold text-[#101727] sm:text-base"
+              >
+                {camerasWallLabel}
+              </span>
+            </div>
+            {showAllCityServerChips && connectedServers.length > 0 && (
+              <div className="flex max-w-full flex-wrap items-center justify-center gap-1">
+                {connectedServers.slice(0, 6).map((s) => {
+                  const health = (s.last_health || "").toLowerCase()
+                  const healthy = health === "ok" || health === "online"
+                  return (
+                    <span
+                      key={s.id}
+                      title={s.ml_base_url || s.base_url || s.name}
+                      className={cn(
+                        "inline-flex max-w-[7.5rem] items-center gap-0.5 truncate rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+                        healthy
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                          : "border-amber-200 bg-amber-50 text-amber-900",
+                      )}
+                    >
+                      {healthy ? (
+                        <Wifi className="h-2.5 w-2.5 shrink-0" />
+                      ) : (
+                        <WifiOff className="h-2.5 w-2.5 shrink-0" />
+                      )}
+                      <span className="truncate">{s.name}</span>
+                    </span>
+                  )
+                })}
+                {connectedServers.length > 6 && (
+                  <span className="text-[10px] text-muted-foreground">
+                    +{connectedServers.length - 6}
+                  </span>
+                )}
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       <div className="flex min-w-0 items-center justify-end gap-1 sm:gap-2">
