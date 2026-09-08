@@ -84,6 +84,8 @@ export const ROUTES = {
   OBJECT_TRACKING_DETAIL: "/object-tracking/:uuid",
   /** Super Admin only — remote location servers + live detection streams */
   OPS_CENTRAL: "/ops-central",
+  /** All connected Central Ops servers — live city camera wall */
+  ALL_CITIES_CAMERAS: "/all-cities-cameras",
   PERSON_JOURNEY: "/person-journey",
   PERSON_JOURNEY_DETAIL: "/person-journey/:uuid",
   GPS_TRACKING: "/gps-tracking",
@@ -615,6 +617,7 @@ const ALL_NAV_ITEMS: (NavItem | NavGroup)[] = [
           { label: "Live View", href: ROUTES.LIVE_CAMERA_GRID },
           { label: "LPR/ANPR", href: ROUTES.JCP_TOLL_PLAZA_ENTRY },
           { label: "Playback & Search", href: ROUTES.PLAYBACK_SEARCH },
+          { label: "Video Recovery", href: ROUTES.VIDEO_RECOVERY },
           { label: "Find in Video", href: ROUTES.VIDEO_IMAGE_SEARCH },
           { label: "Thermal Imaging", href: ROUTES.THERMAL_IMAGING },
         ],
@@ -674,10 +677,6 @@ const ALL_NAV_ITEMS: (NavItem | NavGroup)[] = [
       { label: "Logs", href: ROUTES.LOGS },
     ],
   },
-  {
-    label: "Video Recovery",
-    children: [{ label: "Video Recovery", href: ROUTES.VIDEO_RECOVERY }],
-  },
 ]
 
 /** Sidebar navigation sections: each has a title and list of groups or items */
@@ -686,7 +685,6 @@ export const NAV_SECTIONS: { title: string; items: (NavItem | NavGroup)[] }[] = 
   { title: "Management System", items: ALL_NAV_ITEMS.slice(1, 8) },
   { title: "Reports and Monitoring", items: ALL_NAV_ITEMS.slice(8, 9) },
   { title: "System", items: ALL_NAV_ITEMS.slice(9, 10) },
-  { title: "Video Recovery", items: ALL_NAV_ITEMS.slice(10, 11) },
 ]
 
 export type NavSection = { title: string; items: (NavItem | NavGroup)[] }
