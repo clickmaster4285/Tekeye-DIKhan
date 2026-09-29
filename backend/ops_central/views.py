@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 
 import requests
 from django.http import StreamingHttpResponse
@@ -14,8 +14,13 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from users.permissions import is_ops_viewer
+from users.permissions import apply_remote_server_scope, get_location_scope, is_ops_viewer
 
+from .cache import (
+    parse_camera_id as _parse_camera_id,
+    prune_server_camera_cache as _prune_server_camera_cache,
+    resolve_stream_key as _resolve_stream_key,
+)
 from .client import (
     delete_remote_camera,
     fetch_ml_cameras,
@@ -26,7 +31,7 @@ from .client import (
     probe_ml_health,
     unregister_ml_camera_remote,
 )
-from .models import ConnectionMode, RemoteServer
+from .models import AllCitiesCameraPreference, ConnectionMode, RemoteServer
 from .permissions import IsITSuperAdminOnly, IsOpsViewer
 from .serializers import QuickConnectSerializer, RemoteServerSerializer
 from .utils import (
@@ -60,6 +65,76 @@ def _ops_user_from_request(request):
     return None
 
 
+_OPS_CAMERAS_CACHE_TTL_SEC = 120
+
+
+def _cache_is_fresh(server: RemoteServer, *, refresh: bool) -> bool:
+    if refresh or not server.cached_cameras:
+        return False
+    fetched_at = server.cameras_fetched_at
+    if not fetched_at:
+        return False
+    age = (timezone.now() - fetched_at).total_seconds()
+    return age < _OPS_CAMERAS_CACHE_TTL_SEC
+
+
+def _resolve_stream_rtsp_url(server: RemoteServer, stream_key: str) -> str:
+    """Resolve RTSP URL for ops MJPEG proxy (server-side only — not sent to browser)."""
+    key = (stream_key or "").strip()
+    if not key:
+        return ""
+    for cam in server.cached_cameras or []:
+        if not isinstance(cam, dict):
+            continue
+        cam_key = (cam.get("ml_stream_key") or cam.get("code") or "").strip()
+        cam_id = cam.get("id")
+        alt = f"cam-{cam_id}" if cam_id else ""
+        if key not in (cam_key, alt):
+            continue
+        url = (cam.get("rtsp_url") or cam.get("stream_url") or "").strip()
+        if url:
+            return url
+    if _is_local_hub_server(server):
+        try:
+            from cameras.models import Camera
+
+            cam_id = int(key[4:]) if key.startswith("cam-") and key[4:].isdigit() else None
+            if cam_id:
+                camera = (
+                    Camera.objects.filter(pk=cam_id, is_active=True)
+                    .select_related("nvr", "nvr__site")
+                    .first()
+                )
+                if camera:
+                    return (camera.effective_stream_url() or "").strip()
+        except Exception:
+            pass
+    return ""
+
+
+def _ml_mjpeg_upstream_candidates(
+    *,
+    ml_base: str,
+    django_base: str,
+    stream_key: str,
+    kind: str,
+    rtsp_url: str = "",
+) -> list[str]:
+    path = (
+        f"/live/cam/{stream_key}/mjpeg/raw"
+        if kind == "raw"
+        else f"/live/cam/{stream_key}/mjpeg"
+    )
+    params: dict[str, str] = {}
+    if (rtsp_url or "").strip():
+        params["rtsp_url"] = rtsp_url.strip()
+    qs = f"?{urlencode(params)}" if params else ""
+    urls = [urljoin(ml_base.rstrip("/") + "/", path.lstrip("/")) + qs]
+    if django_base and django_base.rstrip("/") != ml_base.rstrip("/"):
+        urls.append(urljoin(django_base.rstrip("/") + "/", f"ml{path}") + qs)
+    return urls
+
+
 def _attach_proxy_urls(server_id: int | None, cameras: list[dict]) -> list[dict]:
     """Rewrite stream URLs to hub proxy endpoints."""
     out = []
@@ -90,76 +165,6 @@ def _is_local_hub_server(server: RemoteServer) -> bool:
     return any(host in ml or host in base for host in local_hosts)
 
 
-def _parse_camera_id(value) -> int | None:
-    if value is None or value == "":
-        return None
-    try:
-        parsed = int(value)
-        return parsed if parsed > 0 else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _resolve_stream_key(stream_key: str, camera_id, code: str) -> str:
-    key = (stream_key or "").strip()
-    if key:
-        return key
-    cid = _parse_camera_id(camera_id)
-    if cid:
-        return f"cam-{cid}"
-    code = (code or "").strip()
-    if code:
-        return code if code.startswith("cam-") else f"cam-{code}"
-    return ""
-
-
-def _camera_matches_entry(
-    cam: dict,
-    *,
-    stream_key: str,
-    camera_id: int | None,
-    code: str,
-) -> bool:
-    if stream_key and (cam.get("ml_stream_key") or cam.get("code") or "") == stream_key:
-        return True
-    if camera_id is not None and cam.get("id") == camera_id:
-        return True
-    if code and (cam.get("code") or "") == code:
-        return True
-    if stream_key.startswith("cam-"):
-        sid = stream_key[4:]
-        if sid.isdigit() and cam.get("id") == int(sid):
-            return True
-    return False
-
-
-def _prune_server_camera_cache(
-    server: RemoteServer,
-    *,
-    stream_key: str,
-    camera_id: int | None,
-    code: str,
-) -> list[dict]:
-    cached = list(server.cached_cameras or [])
-    if not cached:
-        return cached
-    pruned = [
-        cam
-        for cam in cached
-        if isinstance(cam, dict)
-        and not _camera_matches_entry(
-            cam,
-            stream_key=stream_key,
-            camera_id=camera_id,
-            code=code,
-        )
-    ]
-    if len(pruned) != len(cached):
-        server.cached_cameras = pruned
-        server.save(update_fields=["cached_cameras", "updated_at"])
-    return pruned
-
-
 class RemoteServerViewSet(viewsets.ModelViewSet):
     queryset = RemoteServer.objects.all()
     serializer_class = RemoteServerSerializer
@@ -169,6 +174,10 @@ class RemoteServerViewSet(viewsets.ModelViewSet):
         if self.action in ("create", "update", "partial_update", "destroy", "remove_camera"):
             return [IsITSuperAdminOnly()]
         return [IsOpsViewer()]
+
+    def get_queryset(self):
+        queryset = RemoteServer.objects.all()
+        return apply_remote_server_scope(queryset, self.request.user)
 
     def list(self, request, *args, **kwargs):
         ensure_default_remote_server(request.user)
@@ -362,6 +371,123 @@ class RemoteServerViewSet(viewsets.ModelViewSet):
         )
 
 
+class AllCitiesCameraSelectionAPIView(APIView):
+    """Load and save the current user's all-city camera selection."""
+
+    permission_classes = [IsOpsViewer]
+
+    def get(self, request):
+        preference, _ = AllCitiesCameraPreference.objects.get_or_create(user=request.user)
+        keys = preference.selected_camera_keys if isinstance(preference.selected_camera_keys, list) else []
+        return Response({"selected_camera_keys": keys})
+
+    def put(self, request):
+        raw = request.data.get("selected_camera_keys", [])
+        if not isinstance(raw, list):
+            return Response(
+                {"detail": "selected_camera_keys must be a list of strings."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        keys = list(dict.fromkeys(str(key).strip() for key in raw if str(key).strip()))
+        preference, _ = AllCitiesCameraPreference.objects.get_or_create(user=request.user)
+        preference.selected_camera_keys = keys
+        preference.save(update_fields=["selected_camera_keys", "updated_at"])
+        return Response({"selected_camera_keys": keys})
+
+
+class AllCitiesStreamsAPIView(APIView):
+    """Aggregate live cameras from every active connected Central Ops server."""
+
+    permission_classes = [IsOpsViewer]
+
+    def get(self, request):
+        refresh = str(request.query_params.get("refresh", "")).lower() in ("1", "true", "yes")
+        qs = RemoteServer.objects.filter(is_active=True)
+        qs = apply_remote_server_scope(qs, request.user)
+        qs = qs.order_by("name")
+        servers_out: list[dict] = []
+        cameras_out: list[dict] = []
+
+        for server in qs:
+            entry: dict = {
+                "id": server.pk,
+                "name": server.name,
+                "location_code": server.location_code or "",
+                "connection_mode": server.connection_mode,
+                "ml_base_url": server.resolved_ml_base_url(),
+                "last_health": server.last_health or "",
+                "last_error": server.last_error or "",
+                "ok": False,
+                "source": "",
+                "error": "",
+                "camera_count": 0,
+            }
+            raw_cameras: list = []
+
+            use_cache = _cache_is_fresh(server, refresh=refresh)
+            if use_cache:
+                raw_cameras = list(server.cached_cameras or [])
+                entry["ok"] = True
+                entry["source"] = "cache"
+            else:
+                if server.is_ml_mode():
+                    result = fetch_ml_cameras(
+                        server.resolved_ml_base_url(),
+                        server_name=server.name,
+                    )
+                else:
+                    token = (server.auth_token or "").strip()
+                    if not token or token in ("pending", "ml-only"):
+                        token = token_for_user(request.user) or ""
+                    result = fetch_remote_cameras(server.normalized_base_url(), token)
+
+                mark_server_health(
+                    server,
+                    ok=result.get("ok", False),
+                    error=result.get("error", ""),
+                )
+                server.refresh_from_db()
+                entry["last_health"] = server.last_health or ""
+                entry["last_error"] = server.last_error or ""
+
+                if result.get("ok") and (result.get("cameras") or server.cached_cameras):
+                    raw_cameras = list(result.get("cameras") or [])
+                    server.cached_cameras = raw_cameras
+                    server.cameras_fetched_at = timezone.now()
+                    server.save(
+                        update_fields=["cached_cameras", "cameras_fetched_at", "updated_at"]
+                    )
+                    entry["ok"] = True
+                    entry["source"] = result.get("source") or "live"
+                else:
+                    entry["error"] = result.get("error") or "Failed to fetch cameras"
+                    if server.cached_cameras:
+                        raw_cameras = list(server.cached_cameras or [])
+                        entry["source"] = "cache_fallback"
+                        entry["ok"] = True
+
+            cameras = _attach_proxy_urls(server.pk, raw_cameras)
+            for cam in cameras:
+                row = dict(cam)
+                row["server_id"] = server.pk
+                row["server_name"] = server.name
+                row["location_code"] = server.location_code or ""
+                cameras_out.append(row)
+
+            entry["camera_count"] = len(cameras)
+            servers_out.append(entry)
+
+        return Response(
+            {
+                "ok": True,
+                "servers": servers_out,
+                "cameras": cameras_out,
+                "count": len(cameras_out),
+                "server_count": len(servers_out),
+            }
+        )
+
+
 class QuickConnectView(APIView):
     """Connect to an ML node (default) or remote Django; save + list that server's cameras."""
 
@@ -399,18 +525,28 @@ class QuickConnectView(APIView):
 
             server_id = None
             if do_save:
+                defaults = {
+                    "connection_mode": ConnectionMode.ML,
+                    "base_url": ml_base,
+                    "ml_base_url": ml_base,
+                    "auth_token": "ml-only",
+                    "is_active": True,
+                    "created_by": request.user,
+                    "cached_cameras": cams.get("cameras") or [],
+                    "cameras_fetched_at": timezone.now(),
+                }
+                site_id = ser.validated_data.get("site")
+                if site_id is not None:
+                    defaults["site_id"] = site_id
+                gpu = (ser.validated_data.get("gpu") or "").strip()
+                if gpu:
+                    defaults["gpu"] = gpu
+                max_cameras = ser.validated_data.get("max_cameras")
+                if max_cameras:
+                    defaults["max_cameras"] = int(max_cameras)
                 server, _ = RemoteServer.objects.update_or_create(
                     name=name,
-                    defaults={
-                        "connection_mode": ConnectionMode.ML,
-                        "base_url": ml_base,
-                        "ml_base_url": ml_base,
-                        "auth_token": "ml-only",
-                        "is_active": True,
-                        "created_by": request.user,
-                        "cached_cameras": cams.get("cameras") or [],
-                        "cameras_fetched_at": timezone.now(),
-                    },
+                    defaults=defaults,
                 )
                 server_id = server.pk
                 cameras = _attach_proxy_urls(server_id, cams.get("cameras") or [])
@@ -554,15 +690,14 @@ class RemoteMjpegProxyView(APIView):
             )
 
         ml_base = server.resolved_ml_base_url()
-        if kind == "raw":
-            path = f"/live/cam/{stream_key}/mjpeg/raw"
-        else:
-            path = f"/live/cam/{stream_key}/mjpeg"
-
-        candidates = [
-            urljoin(ml_base.rstrip("/") + "/", path.lstrip("/")),
-            urljoin(server.normalized_base_url() + "/", f"ml{path}"),
-        ]
+        rtsp_url = _resolve_stream_rtsp_url(server, stream_key)
+        candidates = _ml_mjpeg_upstream_candidates(
+            ml_base=ml_base,
+            django_base=server.normalized_base_url(),
+            stream_key=stream_key,
+            kind=kind,
+            rtsp_url=rtsp_url,
+        )
 
         upstream = None
         last_err = ""

@@ -509,8 +509,26 @@ export function isPathAllowedForRole(
     const path = normalizePathname(pathname)
     return (
       path === ROUTES.OPS_CENTRAL ||
-      path.startsWith(`${ROUTES.OPS_CENTRAL}/`)
+      path.startsWith(`${ROUTES.OPS_CENTRAL}/`) ||
+      path === ROUTES.ALL_CITIES_CAMERAS ||
+      path.startsWith(`${ROUTES.ALL_CITIES_CAMERAS}/`)
     )
+  }
+
+  if (
+    normalized === "COLLECTOR" ||
+    normalized === "DEPUTY_COLLECTOR" ||
+    normalized === "ASSISTANT_COLLECTOR" ||
+    normalized === "LOCATION_ADMIN" ||
+    normalized === "OPERATION_MANAGER"
+  ) {
+    const path = normalizePathname(pathname)
+    if (
+      path === ROUTES.ALL_CITIES_CAMERAS ||
+      path.startsWith(`${ROUTES.ALL_CITIES_CAMERAS}/`)
+    ) {
+      return true
+    }
   }
 
   const path = normalizePathname(pathname)

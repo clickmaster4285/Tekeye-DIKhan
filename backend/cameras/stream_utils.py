@@ -93,9 +93,32 @@ def _stream_fps() -> int:
         return 25
 
 
-def generate_mjpeg_frames(rtsp_url: str) -> Iterator[bytes]:
-    """Yield multipart MJPEG chunks from an RTSP source via ffmpeg."""
+def _preview_max_width() -> int:
+    """0 = native NVR main-stream resolution (4K passthrough)."""
+    try:
+        from django.conf import settings
+
+        raw = getattr(settings, "CAMERA_PREVIEW_MAX_WIDTH", None)
+        if raw is not None:
+            return max(0, int(raw))
+    except Exception:
+        pass
+    try:
+        return max(0, int(os.getenv("CAMERA_PREVIEW_MAX_WIDTH", "0")))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _preview_vf() -> str:
     fps = _stream_fps()
+    max_w = _preview_max_width()
+    if max_w <= 0:
+        return f"fps={fps}"
+    return f"fps={fps},scale='min(iw,{max_w})':-2:flags=lanczos"
+
+
+def generate_mjpeg_frames(rtsp_url: str) -> Iterator[bytes]:
+    """Yield multipart MJPEG chunks from an NVR main RTSP source via ffmpeg."""
     exe = ffmpeg_path()
     cmd = [
         exe,
@@ -113,11 +136,11 @@ def generate_mjpeg_frames(rtsp_url: str) -> Iterator[bytes]:
         rtsp_url,
         "-an",
         "-vf",
-        f"fps={fps},scale=640:-1",
+        _preview_vf(),
         "-f",
         "mjpeg",
         "-q:v",
-        "8",
+        "3" if _preview_max_width() <= 0 else "8",
         "-",
     ]
     try:

@@ -131,7 +131,7 @@ class Camera(models.Model):
         blank=True,
         help_text="AI purposes enabled on this camera (multiple models allowed).",
     )
-    resolution = models.CharField(max_length=32, blank=True, default="1920x1080")
+    resolution = models.CharField(max_length=32, blank=True, default="3840x2160")
     frame_rate = models.CharField(max_length=8, blank=True, default="25")
     status = models.CharField(max_length=16, choices=CameraStatus.choices, default=CameraStatus.ONLINE)
     passage_role = models.CharField(
@@ -143,6 +143,14 @@ class Camera(models.Model):
     recording = models.BooleanField(default=True)
     storage_path = models.CharField(max_length=255, blank=True, default="")
     is_active = models.BooleanField(default=True)
+    ml_server = models.ForeignKey(
+        "ops_central.RemoteServer",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="assigned_cameras",
+        help_text="ML node that should run this camera (set by IT Super Admin).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -682,6 +682,18 @@ export function CameraManagementContent({
                     <Label>Camera name</Label>
                     <Input value={cameraForm.name} onChange={(e) => setCameraForm((p) => ({ ...p, name: e.target.value }))} placeholder="Main Gate" required />
                   </div>
+                  {editingCameraId ? (
+                    <div className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm">
+                      <p className="text-xs text-muted-foreground">ML Server (assigned by IT Super Admin)</p>
+                      <p className="font-medium">
+                        {cameras.find((c) => c.id === editingCameraId)?.ml_server_name || "Unassigned"}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      ML server assignment is done by IT Super Admin in Central Ops → Camera Distribution.
+                    </p>
+                  )}
                   <div className="space-y-2">
                     <Label>Zone</Label>
                     {locationZones.length > 0 ? (
@@ -805,6 +817,7 @@ export function CameraManagementContent({
                           <TableHead>Site / NVR</TableHead>
                           <TableHead>Ch</TableHead>
                           <TableHead>Zone</TableHead>
+                          <TableHead>ML Server</TableHead>
                           <TableHead>Status</TableHead>
                           <TableHead className="text-right">Actions</TableHead>
                         </TableRow>
@@ -816,6 +829,9 @@ export function CameraManagementContent({
                             <TableCell className="text-xs text-muted-foreground">{cameraSourceLabel(cam)}</TableCell>
                             <TableCell className="font-mono">{cam.channel}</TableCell>
                             <TableCell>{zoneLabel(cam.zone)}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {cam.ml_server_name || "Unassigned"}
+                            </TableCell>
                             <TableCell>
                               <Badge variant={cam.status === "Online" ? "default" : "outline"}>{cam.status}</Badge>
                             </TableCell>

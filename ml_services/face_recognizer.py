@@ -87,6 +87,8 @@ def _download(url: str, dest: Path):
 
 
 def _configure_opencv_dnn_gpu() -> None:
+    if os.getenv("ML_PREFER_GPU", "true").strip().lower() not in ("1", "true", "yes"):
+        return
     if os.getenv("ML_DEVICE", "0").strip().lower() == "cpu":
         return
     try:
@@ -356,6 +358,7 @@ class KnownFaceDB:
             0.3,
             5000,
         )
+        self._face_detection_disabled = False
         self.recognizer = cv2.FaceRecognizerSF.create(str(sface_path), "")
         self._lock = threading.Lock()
         self._faiss = _FaissGallery()
@@ -462,10 +465,15 @@ class KnownFaceDB:
 
     def _detect_faces(self, image: np.ndarray):
         h, w = image.shape[:2]
-        if h < 10 or w < 10:
+        if self._face_detection_disabled or h < 10 or w < 10:
             return None
-        self.detector.setInputSize((w, h))
-        _, faces = self.detector.detect(image)
+        try:
+            self.detector.setInputSize((w, h))
+            _, faces = self.detector.detect(image)
+        except cv2.error as exc:
+            self._face_detection_disabled = True
+            print(f"[face] YuNet detection disabled after OpenCV DNN error: {exc}")
+            return None
         if faces is None or len(faces) == 0:
             return None
         return faces

@@ -112,6 +112,9 @@ def _worker_loop() -> None:
         finally:
             release_db()
 
+        from config.worker_throttle import maybe_pause_for_cpu
+
+        maybe_pause_for_cpu(logger, label="journey-live-ingest")
         _stop.wait(interval)
 
 

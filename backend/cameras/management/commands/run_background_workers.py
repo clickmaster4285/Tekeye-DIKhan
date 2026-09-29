@@ -17,6 +17,9 @@ class Command(BaseCommand):
     )
 
     def handle(self, *args, **options):
+        from config.worker_throttle import apply_worker_resource_limits
+
+        apply_worker_resource_limits()
         os.environ["TEKEYE_DETECTION_WORKER"] = "1"
 
         from django.db import connections
@@ -29,7 +32,8 @@ class Command(BaseCommand):
         from cameras.detection_worker import run_worker_forever, stop_background_worker
 
         try:
-            requeue_pending_clips()
+            limit = int(getattr(settings, "DETECTION_CLIP_REQUEUE_LIMIT", 50))
+            requeue_pending_clips(limit=max(1, limit))
         except Exception as exc:
             self.stderr.write(self.style.WARNING(f"Clip requeue skipped: {exc}"))
 

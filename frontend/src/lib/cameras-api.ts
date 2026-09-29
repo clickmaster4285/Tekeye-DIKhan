@@ -101,6 +101,8 @@ export type CameraRecord = {
   ml_stream_key?: string;
   ml_live_stream_url?: string;
   raw_stream_url?: string;
+  ml_server?: number | null;
+  ml_server_name?: string;
   /** @deprecated Use ml_live_stream_url — Django proxy removed */
   stream_path?: string;
   /** @deprecated Use ml_live_stream_url */

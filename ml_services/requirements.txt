@@ -13,8 +13,12 @@ requests>=2.31.0
 # Optional: enable FAISS gallery search when enrolled vectors >= ML_FACE_FAISS_MIN_EMBEDDINGS
 # faiss-cpu>=1.7.4
 
-# License plate OCR (ANPR)
-easyocr>=1.7.0
+# License plate OCR (ANPR) — PaddleOCR PP-OCRv5 (GPU)
+# Install GPU PaddlePaddle first (CUDA 11.8 wheel matches this project's PyTorch).
+# Direct Windows cp311 wheel (official index is often slow):
+#   python -m pip install https://paddle-whl.bj.bcebos.com/stable/cu118/paddlepaddle-gpu/paddlepaddle_gpu-3.2.2-cp311-cp311-win_amd64.whl
+# Then:
+paddleocr>=3.0.0
 
 # Optional: for deployment / inference
 # onnx>=1.14.0

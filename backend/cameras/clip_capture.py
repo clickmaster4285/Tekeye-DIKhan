@@ -28,8 +28,6 @@ _queue_guard = threading.Lock()
 _clip_jobs: deque[tuple[int, int]] = deque()
 _clip_job_ids: set[int] = set()
 _clip_workers = 0
-_MAX_CLIP_WORKERS = 2
-_MAX_CLIP_QUEUE = 80
 
 _attendance_jobs: deque[dict] = deque()
 _attendance_workers = 0
@@ -156,12 +154,53 @@ def _ml_attendance_mjpeg_url(camera, *, target_width: int) -> str | None:
     )
 
 
+def _max_clip_workers() -> int:
+    return max(1, min(4, int(getattr(settings, "DETECTION_CLIP_MAX_WORKERS", 1))))
+
+
+def _max_clip_queue() -> int:
+    return max(10, int(getattr(settings, "DETECTION_CLIP_MAX_QUEUE", 50)))
+
+
+_ffmpeg_spawn_lock = threading.Lock()
+_last_ffmpeg_spawn = 0.0
+
+
+def _ffmpeg_spawn_interval_sec() -> float:
+    raw = os.getenv("FFMPEG_SNAPSHOT_MIN_INTERVAL_SEC", "2")
+    try:
+        return max(0.5, float(raw))
+    except (TypeError, ValueError):
+        return 2.0
+
+
+def _throttle_ffmpeg_spawn() -> None:
+    """Space out short-lived RTSP→JPEG ffmpeg processes."""
+    global _last_ffmpeg_spawn
+    gap = _ffmpeg_spawn_interval_sec()
+    with _ffmpeg_spawn_lock:
+        now = time.monotonic()
+        wait = gap - (now - _last_ffmpeg_spawn)
+        if wait > 0:
+            time.sleep(wait)
+        _last_ffmpeg_spawn = time.monotonic()
+
+
 def _rtsp_input_extra() -> list[str]:
+    timeout_us = os.getenv("FFMPEG_STIMEOUT_US", "10000000").strip() or "10000000"
+    timeout_flag = os.getenv("FFMPEG_TIMEOUT_FLAG", "timeout").strip().lstrip("-") or "timeout"
+    threads = os.getenv("FFMPEG_THREADS", "1").strip() or "1"
     return [
+        "-threads",
+        threads,
         "-rtsp_transport",
         "tcp",
+        f"-{timeout_flag}",
+        timeout_us,
         "-fflags",
-        "+discardcorrupt",
+        "+discardcorrupt+genpts",
+        "-flags",
+        "low_delay",
         "-err_detect",
         "ignore_err",
     ]
@@ -664,12 +703,12 @@ def _enqueue_clip(camera_id: int, event_id: int) -> None:
     with _queue_guard:
         if event_id in _clip_job_ids:
             return
-        if len(_clip_jobs) >= _MAX_CLIP_QUEUE:
+        if len(_clip_jobs) >= _max_clip_queue():
             dropped = _clip_jobs.popleft()
             _clip_job_ids.discard(dropped[1])
         _clip_jobs.append((camera_id, event_id))
         _clip_job_ids.add(event_id)
-        spawn = _clip_workers < _MAX_CLIP_WORKERS
+        spawn = _clip_workers < _max_clip_workers()
         if spawn:
             _clip_workers += 1
     if dropped:
@@ -738,7 +777,7 @@ def _attendance_video_fps() -> int:
 
 
 def _attendance_video_width() -> int:
-    return max(640, min(3840, int(getattr(settings, "ATTENDANCE_VIDEO_WIDTH", 1280))))
+    return max(0, min(4096, int(getattr(settings, "ATTENDANCE_VIDEO_WIDTH", 3840))))
 
 
 def _attendance_jpeg_quality() -> int:
@@ -784,6 +823,7 @@ def _read_rtsp_native_snapshot(stream_url: str) -> object | None:
     except ImportError:
         return None
 
+    _throttle_ffmpeg_spawn()
     temp_dir = os.path.join(settings.MEDIA_ROOT, "detection_clips", "_tmp")
     os.makedirs(temp_dir, exist_ok=True)
     temp_path = os.path.join(temp_dir, f"journey_native_{int(time.time() * 1000)}.jpg")
@@ -804,7 +844,8 @@ def _read_rtsp_native_snapshot(stream_url: str) -> object | None:
         temp_path,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=12)
+        timeout = max(5, int(os.getenv("FFMPEG_SNAPSHOT_TIMEOUT_SEC", "12")))
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         logger.warning("Journey native RTSP snapshot failed: %s", exc)
         return None
@@ -1060,8 +1101,10 @@ def _read_rtsp_clip(
         stream_url,
         "-t",
         f"{duration_sec:.2f}",
-        "-vf",
-        f"scale={target_width}:-2:flags=lanczos",
+    ]
+    if target_width > 0:
+        cmd += ["-vf", f"scale='min(iw,{target_width})':-2:flags=lanczos"]
+    cmd += [
         "-r",
         str(max(4, max_fps)),
         "-q:v",
@@ -1334,7 +1377,7 @@ def capture_attendance_snapshot_sync(
             )
             frames = _upscale_frames_to_hd(frames, hd_width)
 
-    # 3) Last resort: separate RTSP (may be substream on some NVRs).
+    # 3) Last resort: direct NVR main-stream RTSP (same URL as ML registration).
     if not frames and stream_url:
         frames = _read_rtsp_clip(
             stream_url,

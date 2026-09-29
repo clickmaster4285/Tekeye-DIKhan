@@ -18,8 +18,20 @@ _crop_queue: deque[int] = deque()
 _crop_queued: set[int] = set()
 _crop_guard = threading.Lock()
 _crop_workers = 0
-_MAX_CROP_WORKERS = 2
-_MAX_CROP_QUEUE = 40
+
+
+def _max_crop_workers() -> int:
+    return max(1, min(4, int(getattr(settings, "JOURNEY_SNAPSHOT_MAX_WORKERS", 1))))
+
+
+def _max_crop_queue() -> int:
+    return max(10, int(getattr(settings, "JOURNEY_SNAPSHOT_MAX_QUEUE", 40)))
+
+
+def _snapshot_task_timeout_sec() -> float:
+    return max(5.0, float(getattr(settings, "JOURNEY_SNAPSHOT_TASK_TIMEOUT_SEC", 30)))
+
+
 _SNAPSHOT_KIND_CROP = "person_crop"
 
 
@@ -428,6 +440,9 @@ def _process_crop_queue() -> None:
             logger.exception("Journey snapshot worker failed for event %s", journey_event_id)
         finally:
             _release_db()
+            from config.worker_throttle import maybe_pause_for_cpu
+
+            maybe_pause_for_cpu(logger, label="journey-snapshot")
 
 
 def _enqueue_journey_crop(journey_event_id: int) -> None:
@@ -437,12 +452,12 @@ def _enqueue_journey_crop(journey_event_id: int) -> None:
     with _crop_guard:
         if journey_event_id in _crop_queued:
             return
-        if len(_crop_queue) >= _MAX_CROP_QUEUE:
+        if len(_crop_queue) >= _max_crop_queue():
             dropped = _crop_queue.popleft()
             _crop_queued.discard(dropped)
         _crop_queue.append(journey_event_id)
         _crop_queued.add(journey_event_id)
-        spawn = _crop_workers < _MAX_CROP_WORKERS
+        spawn = _crop_workers < _max_crop_workers()
         if spawn:
             _crop_workers += 1
     if dropped:

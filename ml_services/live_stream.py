@@ -3,10 +3,7 @@ Live RTSP streams with purpose-gated multi-model YOLO inference + optional plate
 Only models relevant to each camera's purpose run on that feed.
 
 Pipeline (decoupled — capture / infer / render never block each other):
-  4K Camera ──► NVR records original 4K (unchanged)
-         │
-         ▼
-  FFmpeg NVDEC + scale to 1080p
+  NVR main stream (4K) ──► FFmpeg NVDEC (native, no downscale)
          ▼
   Latest Frame Buffer
          ├─► Partitioned Inference Workers → Result Buffer
@@ -132,6 +129,67 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+# --- RTSP reconnect resilience (per-process; avoids NVR stampede / FFmpeg churn) ---
+_reconnect_gate = threading.Lock()
+_reconnect_last_at = 0.0
+
+
+def _rtsp_reconnect_min_interval() -> float:
+    """Minimum seconds between any two FFmpeg open attempts across all cameras."""
+    return max(0.0, _env_float("ML_RTSP_RECONNECT_MIN_INTERVAL", 1.0))
+
+
+def _rtsp_backoff_max_sec() -> float:
+    return max(5.0, _env_float("ML_RTSP_BACKOFF_MAX_SEC", 60.0))
+
+
+def _rtsp_quarantine_after() -> int:
+    """Consecutive fatal (or repeated) failures before pausing reconnect forever."""
+    return max(1, _env_int("ML_RTSP_QUARANTINE_AFTER", 3))
+
+
+def _rtsp_max_cameras() -> int:
+    """Hard cap on concurrent live sessions on this ML node (0 = unlimited)."""
+    return max(0, _env_int("ML_LIVE_MAX_CAMERAS", 20))
+
+
+def _acquire_reconnect_slot() -> None:
+    global _reconnect_last_at
+    min_gap = _rtsp_reconnect_min_interval()
+    with _reconnect_gate:
+        now = time.monotonic()
+        wait = (_reconnect_last_at + min_gap) - now
+        if wait > 0:
+            time.sleep(wait)
+        _reconnect_last_at = time.monotonic()
+
+
+def _is_fatal_rtsp_error(err: str) -> bool:
+    e = (err or "").lower()
+    markers = (
+        "404 not found",
+        "server returned 404",
+        "401 unauthorized",
+        "403 forbidden",
+        "400 bad request",
+        "405 method not allowed",
+        "invalid data found when processing input",
+        "error number -10054",
+        "connection refused",
+    )
+    return any(m in e for m in markers)
+
+
+def _next_backoff_delay(base_sec: float, attempt: int) -> float:
+    """Exponential backoff with light jitter; caps at ML_RTSP_BACKOFF_MAX_SEC."""
+    base = max(0.5, float(base_sec))
+    exp = min(max(0, int(attempt) - 1), 5)
+    delay = min(_rtsp_backoff_max_sec(), base * (2 ** exp))
+    jitter = 0.85 + 0.3 * ((time.monotonic() * 17.0) % 1.0)
+    return max(0.5, delay * jitter)
+
+
+
 def _resolve_ffmpeg_path() -> str | None:
     custom = os.getenv("FFMPEG_PATH", "").strip()
     if custom and os.path.isfile(custom):
@@ -208,11 +266,44 @@ def _use_nvdec(ffmpeg_path: str) -> bool:
 def _rtsp_scale_size() -> tuple[int, int]:
     """
     Live AI/view capture size after FFmpeg scale (NVR keeps original 4K recording).
-    Default 1920x1080. Set either dim to 0 to disable scaling.
+    Default 0x0 = native 3840x2160 main-stream passthrough.
     """
-    w = max(0, _env_int("ML_RTSP_SCALE_WIDTH", 1920))
-    h = max(0, _env_int("ML_RTSP_SCALE_HEIGHT", 1080))
+    w = max(0, _env_int("ML_RTSP_SCALE_WIDTH", 0))
+    h = max(0, _env_int("ML_RTSP_SCALE_HEIGHT", 0))
     return w, h
+
+
+def _ffmpeg_threads() -> str:
+    return os.getenv("ML_FFMPEG_THREADS", "1").strip() or "1"
+
+
+def _ffmpeg_socket_timeout_us() -> str:
+    return os.getenv("ML_FFMPEG_STIMEOUT_US", "10000000").strip() or "10000000"
+
+
+def _ffmpeg_timeout_cli_flag() -> str:
+    """CLI flag for socket I/O timeout (microseconds). Use 'timeout' — '-stimeout' is not accepted by many ffmpeg builds."""
+    raw = os.getenv("ML_FFMPEG_TIMEOUT_FLAG", "timeout").strip().lstrip("-") or "timeout"
+    return raw
+
+
+def _mjpeg_quality(*, keep_native: bool) -> str:
+    if keep_native:
+        return os.getenv("ML_MJPEG_QUALITY_NATIVE", "2").strip() or "2"
+    return os.getenv("ML_MJPEG_QUALITY", "8").strip() or "8"
+
+
+def _rtsp_stream_input_flags() -> list[str]:
+    flags = [
+        "-rtsp_transport",
+        "tcp",
+        f"-{_ffmpeg_timeout_cli_flag()}",
+        _ffmpeg_socket_timeout_us(),
+    ]
+    reorder = os.getenv("ML_FFMPEG_REORDER_QUEUE_SIZE", "").strip()
+    if reorder:
+        flags += ["-reorder_queue_size", reorder]
+    return flags
 
 
 def _rtsp_scale_filter(use_cuda_scale: bool) -> str | None:
@@ -249,10 +340,13 @@ class CameraStream:
         self.connected = False
         self.cap: cv2.VideoCapture | None = None
         self._fail_streak = 0
-        self._max_fail_before_reconnect = max(5, _env_int("ML_RTSP_MAX_FAILS", 30))
-        self._reconnect_delay = max(0.5, _env_float("ML_RTSP_RECONNECT_SEC", 2.0))
-        self._open_retry_delay = max(0.5, _env_float("ML_RTSP_OPEN_RETRY_SEC", 3.0))
+        self._max_fail_before_reconnect = max(5, _env_int("ML_RTSP_MAX_FAILS", 60))
+        self._reconnect_delay = max(0.5, _env_float("ML_RTSP_RECONNECT_SEC", 8.0))
+        self._open_retry_delay = max(0.5, _env_float("ML_RTSP_OPEN_RETRY_SEC", 12.0))
         self._logged_res = False
+        self._reconnect_attempt = 0
+        self.quarantined = False
+        self.quarantine_reason = ""
         self.thread = threading.Thread(target=self._run, daemon=True, name=f"cam-{label}")
 
     @staticmethod
@@ -317,9 +411,19 @@ class CameraStream:
 
     def _run(self):
         while self.running:
+            if self.quarantined:
+                time.sleep(5.0)
+                continue
             if self.cap is None:
+                _acquire_reconnect_slot()
                 if not self._open_cap():
-                    time.sleep(self._open_retry_delay)
+                    self._reconnect_attempt += 1
+                    if self._reconnect_attempt >= _rtsp_quarantine_after():
+                        self.quarantined = True
+                        self.quarantine_reason = "repeated open failures"
+                        print(f"[live] Quarantined {self.label}: {self.quarantine_reason}")
+                        continue
+                    time.sleep(_next_backoff_delay(self._open_retry_delay, self._reconnect_attempt))
                     continue
 
             frame = self._read_frame()
@@ -333,18 +437,26 @@ class CameraStream:
                     self.frame_seq += 1
                     self.connected = True
                 self._fail_streak = 0
+                self._reconnect_attempt = 0
                 continue
 
             self._fail_streak += 1
             self.connected = False
             if self._fail_streak >= self._max_fail_before_reconnect:
+                self._reconnect_attempt += 1
                 print(
                     f"[live] Reconnecting {self.label} after "
-                    f"{self._fail_streak} failed frame read(s)"
+                    f"{self._fail_streak} failed frame read(s) "
+                    f"(attempt {self._reconnect_attempt})"
                 )
                 self._release_cap()
                 self._fail_streak = 0
-                time.sleep(self._reconnect_delay)
+                if self._reconnect_attempt >= max(8, _rtsp_quarantine_after() * 3):
+                    self.quarantined = True
+                    self.quarantine_reason = "repeated frame read failures"
+                    print(f"[live] Quarantined {self.label}: {self.quarantine_reason}")
+                    continue
+                time.sleep(_next_backoff_delay(self._reconnect_delay, self._reconnect_attempt))
             else:
                 time.sleep(0.02)
 
@@ -386,10 +498,13 @@ class FfmpegCameraStream:
         self.connected = False
         self._proc: subprocess.Popen | None = None
         self._fail_streak = 0
-        self._max_fail_before_reconnect = max(5, _env_int("ML_RTSP_MAX_FAILS", 30))
-        self._reconnect_delay = max(0.5, _env_float("ML_RTSP_RECONNECT_SEC", 2.0))
-        self._open_retry_delay = max(0.5, _env_float("ML_RTSP_OPEN_RETRY_SEC", 3.0))
+        self._max_fail_before_reconnect = max(5, _env_int("ML_RTSP_MAX_FAILS", 60))
+        self._reconnect_delay = max(0.5, _env_float("ML_RTSP_RECONNECT_SEC", 8.0))
+        self._open_retry_delay = max(0.5, _env_float("ML_RTSP_OPEN_RETRY_SEC", 12.0))
         self._logged_res = False
+        self._reconnect_attempt = 0
+        self.quarantined = False
+        self.quarantine_reason = ""
         self._use_nvdec = _use_nvdec(ffmpeg_path)
         # Prefer GPU scale when NVDEC is on; fall back to CPU scale on ffmpeg errors.
         # Native/4K ANPR path skips FFmpeg scale entirely.
@@ -409,6 +524,8 @@ class FfmpegCameraStream:
             "-hide_banner",
             "-loglevel",
             "error",
+            "-threads",
+            _ffmpeg_threads(),
         ]
         if self._use_nvdec:
             cmd += [
@@ -430,8 +547,7 @@ class FfmpegCameraStream:
             "nobuffer+discardcorrupt+genpts",
             "-flags",
             "low_delay",
-            "-rtsp_transport",
-            "tcp",
+            *_rtsp_stream_input_flags(),
             "-i",
             self.rtsp_url,
             "-an",
@@ -443,11 +559,14 @@ class FfmpegCameraStream:
         if vf:
             cmd += ["-vf", vf]
 
+        mux_qsize = os.getenv("ML_FFMPEG_MAX_MUXING_QUEUE_SIZE", "1024").strip() or "1024"
         cmd += [
+            "-max_muxing_queue_size",
+            mux_qsize,
             "-f",
             "mjpeg",
             "-q:v",
-            "2" if self.keep_native else "5",
+            _mjpeg_quality(keep_native=self.keep_native),
             "-",
         ]
         return cmd
@@ -538,7 +657,11 @@ class FfmpegCameraStream:
             print(f"[live] {self.label} opening FFmpeg {scale_note}")
 
         while self.running:
+            if self.quarantined:
+                time.sleep(5.0)
+                continue
             self._stop_proc()
+            _acquire_reconnect_slot()
             # Re-check CUDA availability; keep CPU-scale fallback once chosen.
             self._use_nvdec = _use_nvdec(self.ffmpeg_path)
             if not self._use_nvdec:
@@ -567,12 +690,19 @@ class FfmpegCameraStream:
             except OSError as exc:
                 print(f"[live] Failed to open {self.label} ({decode_tag}): {exc}")
                 self.connected = False
-                time.sleep(self._open_retry_delay)
+                self._reconnect_attempt += 1
+                if self._reconnect_attempt >= _rtsp_quarantine_after():
+                    self.quarantined = True
+                    self.quarantine_reason = str(exc)
+                    print(f"[live] Quarantined {self.label}: {self.quarantine_reason}")
+                    continue
+                time.sleep(_next_backoff_delay(self._open_retry_delay, self._reconnect_attempt))
                 continue
 
             if not self._proc.stdout:
                 self._stop_proc()
-                time.sleep(self._open_retry_delay)
+                self._reconnect_attempt += 1
+                time.sleep(_next_backoff_delay(self._open_retry_delay, self._reconnect_attempt))
                 continue
 
             buffer = bytearray()
@@ -606,17 +736,33 @@ class FfmpegCameraStream:
                         self.frame_seq += 1
                         self.connected = True
                     self._fail_streak = 0
+                    self._reconnect_attempt = 0
 
             self.connected = False
             if self.running:
                 err_hint = (self._last_stderr or "").strip()
                 self._maybe_fallback_cpu_scale()
+                self._reconnect_attempt += 1
+                fatal = _is_fatal_rtsp_error(err_hint)
                 if err_hint:
-                    print(f"[live] Reconnecting {self.label} ({decode_tag}): {err_hint}")
+                    print(
+                        f"[live] Reconnecting {self.label} ({decode_tag}) "
+                        f"attempt={self._reconnect_attempt}: {err_hint}"
+                    )
                 else:
-                    print(f"[live] Reconnecting {self.label} ({decode_tag})")
+                    print(
+                        f"[live] Reconnecting {self.label} ({decode_tag}) "
+                        f"attempt={self._reconnect_attempt}"
+                    )
                 self._stop_proc()
-                time.sleep(self._reconnect_delay)
+                # Fatal NVR errors (404/401/…) quarantine quickly — stop FFmpeg churn.
+                q_limit = _rtsp_quarantine_after() if fatal else max(8, _rtsp_quarantine_after() * 3)
+                if self._reconnect_attempt >= q_limit:
+                    self.quarantined = True
+                    self.quarantine_reason = err_hint or "repeated RTSP failures"
+                    print(f"[live] Quarantined {self.label}: {self.quarantine_reason}")
+                    continue
+                time.sleep(_next_backoff_delay(self._reconnect_delay, self._reconnect_attempt))
 
     def get_frame(self) -> np.ndarray | None:
         frame, _ = self.get_latest()
@@ -970,9 +1116,9 @@ class LiveStreamManager:
         self._plate_frame_counters: dict[str, int] = {}
         self._plate_counter_lock = threading.Lock()
         self._last_plate_dets: dict[str, list[dict[str, Any]]] = {}
-        # Cap live preview for smooth browser streaming through the Vite proxy.
-        self._max_width = 960
-        self._max_height = 540
+        # 0 = native 4K passthrough for browser preview (override via ML_LIVE_MAX_WIDTH/HEIGHT).
+        self._max_width = 0
+        self._max_height = 0
         self._stream_fps = max(5, min(_env_int("ML_LIVE_STREAM_FPS", 12), 30))
         self._frame_interval = 1.0 / self._stream_fps
         self._detections: dict[str, list[dict[str, Any]]] = {}
@@ -1083,9 +1229,17 @@ class LiveStreamManager:
             return False
         purpose_list = self._normalize_purpose_list(purposes, primary=purpose)
         with self._lock:
+            max_cams = _rtsp_max_cameras()
+            existing = self._sessions.get(key)
+            if existing is None and max_cams and len(self._sessions) >= max_cams:
+                print(
+                    f"[live] Rejected {key}: at capacity "
+                    f"({len(self._sessions)}/{max_cams}). "
+                    f"Raise ML_LIVE_MAX_CAMERAS or move cameras to another ML node."
+                )
+                return False
             self._registry[key] = url
             self._purposes[key] = purpose_list
-            existing = self._sessions.get(key)
             if existing is not None:
                 native_mismatch = bool(getattr(existing.stream, "keep_native", False)) != self._want_native_frame(key)
                 if existing.rtsp_url != url or native_mismatch:
@@ -1233,8 +1387,20 @@ class LiveStreamManager:
                     self._registry[key] = url
                 native_mismatch = bool(getattr(existing.stream, "keep_native", False)) != self._want_native_frame(key)
                 if not native_mismatch:
+                    # Clear quarantine if admin re-hit ensure with same cam (manual recovery).
+                    if getattr(existing.stream, "quarantined", False):
+                        existing.stream.quarantined = False
+                        existing.stream.quarantine_reason = ""
+                        existing.stream._reconnect_attempt = 0
                     return True
                 self._close_session(key)
+            max_cams = _rtsp_max_cameras()
+            if max_cams and len(self._sessions) >= max_cams:
+                print(
+                    f"[live] ensure_camera rejected {key}: at capacity "
+                    f"({len(self._sessions)}/{max_cams})"
+                )
+                return False
             self._open_session_locked(key, url)
             return True
 
@@ -1352,6 +1518,11 @@ class LiveStreamManager:
                         det_count = len(session.latest_detections)
                         has_frame = session.latest_jpeg is not None
                     connected = bool(session.stream.connected)
+                quarantined = False
+                quarantine_reason = ""
+                if session is not None:
+                    quarantined = bool(getattr(session.stream, "quarantined", False))
+                    quarantine_reason = str(getattr(session.stream, "quarantine_reason", "") or "")
                 cameras.append(
                     {
                         "ip": key,
@@ -1360,8 +1531,11 @@ class LiveStreamManager:
                         "connected": connected,
                         "has_frame": has_frame,
                         "detections": det_count,
+                        "quarantined": quarantined,
+                        "quarantine_reason": quarantine_reason,
                         "purpose": (self._purposes.get(key) or [""])[0] if self._purposes.get(key) else "",
                         "purposes": list(self._purposes.get(key) or []),
+                        "rtsp_url": (self._registry.get(key) or "").strip(),
                     }
                 )
         return {
@@ -1485,7 +1659,10 @@ class LiveStreamManager:
         return small, w / float(dw), h / float(dh)
 
     def _want_native_frame(self, camera_key: str) -> bool:
-        """Keep the original 4K RTSP frame only for ANPR cameras."""
+        """Keep native camera resolution (4K) when RTSP scaling is disabled."""
+        w, h = _rtsp_scale_size()
+        if w <= 0 and h <= 0:
+            return True
         if self._plate_on_all:
             return True
         return "anpr" in self._purposes_for(camera_key)
@@ -1508,13 +1685,18 @@ class LiveStreamManager:
             "iou": self._iou,
             "imgsz": self._imgsz,
             "max_det": self._max_det,
-            "half": use_half,
             "verbose": False,
         }
         if classes is not None:
             kwargs["classes"] = list(classes)
         # Serialize GPU predict across workers; OCR/post-process can overlap.
         with self._predict_lock:
+            if use_half:
+                try:
+                    # Ultralytics expects quantize='fp16' (not True)
+                    return model.predict(frame, quantize="fp16", **kwargs)
+                except TypeError:
+                    return model.predict(frame, half=True, **kwargs)
             return model.predict(frame, **kwargs)
 
     def _purposes_for(self, camera_key: str) -> list[str]:
@@ -1698,7 +1880,7 @@ class LiveStreamManager:
             with self._plate_counter_lock:
                 counter = self._plate_frame_counters.get(camera_key, 0) + 1
                 self._plate_frame_counters[camera_key] = counter
-            # Plate YOLO every N infer cycles; EasyOCR is track+cooldown gated inside PlateEngine.
+            # Plate YOLO every N infer cycles; PaddleOCR PP-OCRv5 runs inside PlateEngine.
             if counter % self._plate_ocr_every == 0:
                 try:
                     plate_dets = self._plate_engine.detect_and_read(
