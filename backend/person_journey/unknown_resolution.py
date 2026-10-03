@@ -199,7 +199,6 @@ def match_unknown_by_appearance(
         face_embedding=face_embedding or None,
         reid_embedding=reid_embedding or None,
         camera_id=camera_id,
-        person_type_hint=PersonType.UNKNOWN,
     )
     return match.person if match else None
 
@@ -214,7 +213,7 @@ def resolve_unknown_person(
     face_embedding: list[float] | None = None,
     reid_embedding: list[float] | None = None,
     source: str = "live_ingest",
-) -> tuple[JourneyPerson, bool]:
+) -> tuple[JourneyPerson | None, bool]:
     """Return (person, created). Reuse identity via track, bbox, or appearance."""
     matched = match_unknown_by_track(camera, track_id, now)
     if matched is None:
@@ -235,6 +234,16 @@ def resolve_unknown_person(
             matched.save(update_fields=["face_embedding", "updated_at"])
         return matched, False
 
+    from .services import _can_create_unknown_person
+
+    if not _can_create_unknown_person(
+        bbox=bbox,
+        confidence=0.5,
+        face_embedding=face_embedding,
+        reid_embedding=reid_embedding,
+    ):
+        return None, False
+
     person = create_journey_person(
         person_type=PersonType.UNKNOWN,
         display_name="Unknown",
@@ -252,7 +261,7 @@ def resolve_unknown_person(
 
 
 def update_person_embeddings_from_crop(person: JourneyPerson, crop_bytes: bytes) -> list[float]:
-    """Extract ReID from a person crop and store on the journey person."""
+    """Extract ReID from a person crop, store it, then merge cross-camera duplicates."""
     from .reid_utils import extract_reid_embedding_from_bytes
 
     reid = extract_reid_embedding_from_bytes(crop_bytes)
@@ -261,4 +270,15 @@ def update_person_embeddings_from_crop(person: JourneyPerson, crop_bytes: bytes)
     if not person.reid_embedding:
         person.reid_embedding = reid
         person.save(update_fields=["reid_embedding", "updated_at"])
+    else:
+        # Refresh embedding periodically so matching stays current
+        person.reid_embedding = reid
+        person.save(update_fields=["reid_embedding", "updated_at"])
+
+    try:
+        from .services import try_merge_unknown_duplicates
+
+        try_merge_unknown_duplicates(person)
+    except Exception:
+        pass
     return reid

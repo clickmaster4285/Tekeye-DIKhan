@@ -232,7 +232,7 @@ export const WAREHOUSE_MASTER_FIELDS = [
   { key: "rackId", label: "Rack ID" },
   { key: "binId", label: "Bin ID" },
   { key: "coordinatesXYZ", label: "Coordinates (X, Y, Z)" },
-  { key: "cameraIdsCoveringZone", label: "Camera IDs Covering Zone" },
+  { key: "cameraIdsCoveringZone", label: "Cameras Covering Zone" },
   { key: "accessPoints", label: "Access Points" },
   { key: "fireSafetyEquipment", label: "Fire Safety Equipment" },
   { key: "status", label: "Status", options: ["Active", "Inactive", "Maintenance"] },

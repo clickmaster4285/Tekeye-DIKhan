@@ -77,7 +77,8 @@ export const PAGE_LOADERS = {
   OpsMlServers: () => import("@/pages/operations/OpsMlServers").then((m) => ({ default: m.default })),
   OpsCameraDistribution: () =>
     import("@/pages/operations/OpsCameraDistribution").then((m) => ({ default: m.default })),
-  AllCitiesCameras: () => import("@/pages/operations/AllCitiesCameras").then((m) => ({ default: m.default })),
+  AllCitiesCameras: () =>
+    import("@/pages/operations/AllCitiesCameras").then((m) => ({ default: m.default })),
   VehicleDetection: () => import("@/pages/operations/VehicleDetection").then((m) => ({ default: m.default })),
   AiModels: () => import("@/pages/operations/AiModels").then((m) => ({ default: m.default })),
   AiZones: () => import("@/pages/operations/AiZones").then((m) => ({ default: m.default })),
@@ -160,6 +161,7 @@ export const PAGE_LOADERS = {
   ObjectTracking: () => import("@/pages/operations/ObjectTracking").then((m) => ({ default: m.default })),
   ObjectTrackingDetail: () =>
     import("@/pages/operations/ObjectTrackingDetail").then((m) => ({ default: m.default })),
+  Assistant: () => import("@/pages/assistant/AssistantPage").then((m) => ({ default: m.default })),
   PersonJourney: () => import("@/pages/operations/PersonJourney").then((m) => ({ default: m.default })),
   PersonJourneyDetail: () =>
     import("@/pages/operations/PersonJourneyDetail").then((m) => ({ default: m.default })),
@@ -177,8 +179,11 @@ export const PAGE_LOADERS = {
   AnomalyDetection: () => import("@/pages/cameras/AnomalyDetection").then((m) => ({ default: m.default })),
   Reports: () => import("@/pages/reports/Reports").then((m) => ({ default: m.default })),
   PredictiveInsights: () => import("@/pages/reports/PredictiveInsights").then((m) => ({ default: m.default })),
+  AiSuggestions: () => import("@/pages/operations/AiSuggestions").then((m) => ({ default: m.default })),
   DataVisualization: () => import("@/pages/reports/DataVisualization").then((m) => ({ default: m.default })),
   Employees: () => import("@/pages/hr/Employees").then((m) => ({ default: m.default })),
+  MobileAlerts: () => import("@/pages/hr/MobileAlerts").then((m) => ({ default: m.default })),
+  EmployeeDevice: () => import("@/pages/hr/EmployeeDevice").then((m) => ({ default: m.default })),
   Recruitment: () => import("@/pages/hr/Recruitment").then((m) => ({ default: m.default })),
   AddStaff: () => import("@/pages/hr/AddStaff").then((m) => ({ default: m.default })),
   EmployeeDetail: () => import("@/pages/hr/EmployeeDetail").then((m) => ({ default: m.default })),
@@ -202,6 +207,7 @@ export const PAGE_LOADERS = {
   TableOfContents: () => import("@/pages/TableOfContents").then((m) => ({ default: m.default })),
   PlaybackSearch: () => import("@/pages/operations/PlaybackSearch").then((m) => ({ default: m.default })),
   VideoImageSearch: () => import("@/pages/operations/VideoImageSearch").then((m) => ({ default: m.default })),
+  VideoAiTest: () => import("@/pages/operations/VideoAiTest").then((m) => ({ default: m.default })),
   ThermalImaging: () => import("@/pages/operations/ThermalImaging").then((m) => ({ default: m.default })),
   AlertsNotifications: () => import("@/pages/operations/AlertsNotifications").then((m) => ({ default: m.default })),
   IncidentManagement: () => import("@/pages/operations/IncidentManagement").then((m) => ({ default: m.default })),
@@ -216,6 +222,36 @@ export const PAGE_LOADERS = {
   MobileApp: () => import("@/pages/operations/MobileApp").then((m) => ({ default: m.default })),
   DatabaseTables: () => import("@/pages/operations/DatabaseTables").then((m) => ({ default: m.default })),
   VehicleDatabaseDetail: () => import("@/pages/operations/VehicleDatabaseDetail").then((m) => ({ default: m.default })),
+  InfrastructureOverview: () =>
+    import("@/pages/infrastructure/InfrastructurePages").then((m) => ({ default: m.default })),
+  InfrastructureCameras: () =>
+    import("@/pages/infrastructure/InfrastructurePages").then((m) => ({ default: m.InfrastructureCameras })),
+  InfrastructureNvrs: () =>
+    import("@/pages/infrastructure/InfrastructurePages").then((m) => ({ default: m.InfrastructureNvrs })),
+  InfrastructureNvrDetail: () =>
+    import("@/pages/infrastructure/NvrDetailPage").then((m) => ({ default: m.default })),
+  InfrastructureCameraDetail: () =>
+    import("@/pages/infrastructure/CameraDetailPage").then((m) => ({ default: m.default })),
+  InfrastructureUps: () =>
+    import("@/pages/infrastructure/InfrastructurePages").then((m) => ({ default: m.InfrastructureUps })),
+  InfrastructureInverters: () =>
+    import("@/pages/infrastructure/InfrastructurePages").then((m) => ({ default: m.InfrastructureInverters })),
+  InfrastructureNetwork: () =>
+    import("@/pages/infrastructure/InfrastructurePages").then((m) => ({ default: m.InfrastructureNetwork })),
+  InfrastructureServers: () =>
+    import("@/pages/infrastructure/InfrastructurePages").then((m) => ({ default: m.InfrastructureServers })),
+  InfrastructureServerDetail: () =>
+    import("@/pages/infrastructure/ServerDetailPage").then((m) => ({ default: m.default })),
+  InfrastructureDeviceHealth: () =>
+    import("@/pages/infrastructure/InfrastructurePages").then((m) => ({ default: m.InfrastructureDeviceHealth })),
+  InfrastructurePower: () =>
+    import("@/pages/infrastructure/InfrastructurePages").then((m) => ({ default: m.InfrastructurePower })),
+  InfrastructureAlerts: () =>
+    import("@/pages/infrastructure/InfrastructurePages").then((m) => ({ default: m.InfrastructureAlerts })),
+  InfrastructureEvents: () =>
+    import("@/pages/infrastructure/InfrastructurePages").then((m) => ({ default: m.InfrastructureEvents })),
+  InfrastructureReports: () =>
+    import("@/pages/infrastructure/InfrastructurePages").then((m) => ({ default: m.InfrastructureReports })),
 } as const satisfies Record<string, PageLoader>
 
 function toLazyPages<T extends Record<string, PageLoader>>(loaders: T) {

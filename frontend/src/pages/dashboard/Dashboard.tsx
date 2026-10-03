@@ -85,8 +85,7 @@ export function Dashboard() {
 
   const { data: vms, isLoading: vmsLoading } = useQuery({
     queryKey: ["vms", "overview"],
-    queryFn: fetchVmsOverview,
-    refetchInterval: 60_000,
+    queryFn: fetchVmsOverview
   })
 
   const stat = (n: number | undefined) => (vmsLoading ? "—" : String(n ?? 0))

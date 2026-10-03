@@ -13,9 +13,9 @@ class IsITSuperAdminOnly(permissions.BasePermission):
 
 
 class IsOpsViewer(permissions.BasePermission):
-    """View connected servers — Super Admin or IT Super Admin."""
+    """View connected servers / all-cities streams — Super Admin, IT Super Admin, or collectorate officers."""
 
-    message = "Only Super Admin or IT Super Admin can view Central Ops streams."
+    message = "Only Super Admin, IT Super Admin, or Collector officers can view Central Ops streams."
 
     def has_permission(self, request, view):
         return is_ops_viewer(request.user)

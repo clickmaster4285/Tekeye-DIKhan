@@ -109,8 +109,7 @@ export default function VehicleJourneyDetailPage() {
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["vehicle-journey", plateKey],
     queryFn: () => fetchVehicleJourney(plateKey!),
-    enabled: !!plateKey,
-    refetchInterval: 15_000,
+    enabled: !!plateKey
   })
 
   const path = data?.path ?? []

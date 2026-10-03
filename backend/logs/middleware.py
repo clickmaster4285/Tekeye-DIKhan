@@ -16,16 +16,36 @@ SKIP_LOG_PATHS = (
     "/api/activity-logs/report/",
     "/api/activity-logs/report",
     "/api/mobile-sessions/",
+    "/api/mobile/heartbeat/",
+    "/api/mobile/heartbeat",
+    "/api/mobile/gps/",
+    "/api/gps/ping/",
+    "/api/gps/heartbeat/",
     "/favicon.ico",
     "/media/",
 )
 
 
+def _valid_ip(raw) -> str | None:
+    import ipaddress
+
+    value = (raw or "").strip()
+    if not value:
+        return None
+    if value.startswith("::ffff:"):
+        value = value[7:]
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    return value
+
+
 def get_ip(request):
     x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
     if x_forwarded_for:
-        return x_forwarded_for.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR")
+        return _valid_ip(x_forwarded_for.split(",")[0])
+    return _valid_ip(request.META.get("REMOTE_ADDR"))
 
 
 def get_device_info(request):
@@ -63,11 +83,11 @@ def create_activity_log(user, request, action, source="web"):
         ip_address=ip,
         country=country,
         city=city,
-        device=device,
-        os=os_str,
-        browser=browser,
+        device=(device or "")[:50],
+        os=(os_str or "")[:50],
+        browser=(browser or "")[:50],
         action=action[:255],
-        source=source or "web",
+        source=(source or "web")[:20],
     )
 
 

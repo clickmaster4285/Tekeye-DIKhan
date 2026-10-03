@@ -11,6 +11,7 @@ import { useCamera } from "@/hooks/useCamera"
 import { usePolling } from "@/hooks/usePolling"
 import { API_BASE_URL, getAuthHeadersFormData } from "@/lib/api"
 import { recognitionApi, type CctvOverview, type IdentifyResult } from "@/lib/recognition-api"
+import { REALTIME_INVALIDATE_EVENT } from "@/lib/realtime-socket"
 import { ROUTES } from "@/routes/config"
 
 export default function AttendanceMonitorPage() {
@@ -29,11 +30,21 @@ export default function AttendanceMonitorPage() {
       const data = await recognitionApi.cctvOverview()
       setOverview(data)
     } catch {
-      /* ignore transient poll errors */
+      /* ignore transient errors */
     }
   }, [])
 
-  usePolling(refresh, 2000, true)
+  useEffect(() => {
+    void refresh()
+    const onRealtime = (e: Event) => {
+      const domains = (e as CustomEvent<{ domains?: string[] }>).detail?.domains || []
+      if (domains.some((d) => ["attendance", "hr", "recognition", "cameras"].includes(d))) {
+        void refresh()
+      }
+    }
+    window.addEventListener(REALTIME_INVALIDATE_EVENT, onRealtime)
+    return () => window.removeEventListener(REALTIME_INVALIDATE_EVENT, onRealtime)
+  }, [refresh])
 
   // Auto-start all connected cameras once when CCTV data first loads
   useEffect(() => {

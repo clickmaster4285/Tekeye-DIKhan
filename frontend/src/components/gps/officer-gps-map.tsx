@@ -3,6 +3,7 @@ import type { GpsGeofence } from "@/lib/gps-geofences"
 import { haversineM } from "@/lib/gps-geofences"
 import type { GpsHistoryPoint, GpsOfficer } from "@/lib/gps-tracking-api"
 import { STATUS_COLOR, timeAgo } from "@/lib/gps-utils"
+import { cn } from "@/lib/utils"
 
 const PIN_DEEP: Record<string, string> = {
   live: "#15803d",
@@ -12,8 +13,8 @@ const PIN_DEEP: Record<string, string> = {
 
 const LEAFLET_CSS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
 const LEAFLET_JS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-export const GPS_DEFAULT_CENTER: [number, number] = [31.8315, 70.9017]
-const DEFAULT_ZOOM = 12
+export const GPS_DEFAULT_CENTER: [number, number] = [34.008, 71.5789] // Peshawar Customs Office
+const DEFAULT_ZOOM = 14
 
 type LeafletNs = {
   map: (el: HTMLElement, opts?: Record<string, unknown>) => LeafletMap
@@ -147,8 +148,10 @@ export function OfficerGpsMap({
   showGeofences,
   focus,
   fitTrailToken,
+  fitAllToken = 0,
   defaultCenter = GPS_DEFAULT_CENTER,
   onSelect,
+  className,
 }: {
   officers: GpsOfficer[]
   selectedUserId: number | null
@@ -157,8 +160,11 @@ export function OfficerGpsMap({
   showGeofences: boolean
   focus: { lat: number; lng: number; zoom?: number } | null
   fitTrailToken: number
+  /** Bump to re-fit the map to every officer with a GPS fix. */
+  fitAllToken?: number
   defaultCenter?: [number, number]
   onSelect: (userId: number) => void
+  className?: string
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<LeafletMap | null>(null)
@@ -326,5 +332,24 @@ export function OfficerGpsMap({
     }
   }, [fitTrailToken, mapReady])
 
-  return <div ref={containerRef} className="h-full min-h-[420px] w-full bg-muted" />
+  useEffect(() => {
+    const L = window.L
+    const map = mapRef.current
+    if (!L || !map || !mapReady || !fitAllToken) return
+    const markers = [...markersRef.current.values()]
+    if (markers.length === 0) {
+      map.setView(defaultCenter, DEFAULT_ZOOM)
+      return
+    }
+    try {
+      map.fitBounds(L.featureGroup(markers).getBounds().pad(0.35), {
+        maxZoom: markers.length === 1 ? 15 : 13,
+      })
+      map.invalidateSize()
+    } catch {
+      map.setView(defaultCenter, DEFAULT_ZOOM)
+    }
+  }, [fitAllToken, mapReady, officers, defaultCenter])
+
+  return <div ref={containerRef} className={cn("h-full min-h-[420px] w-full bg-muted", className)} />
 }

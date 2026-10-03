@@ -52,10 +52,15 @@ class RemoteServer(models.Model):
         help_text="Optional site this ML node primarily serves (e.g. D.I. Khan).",
     )
     gpu = models.CharField(
-        max_length=64,
+        max_length=128,
         blank=True,
         default="",
-        help_text="GPU label e.g. P4000",
+        help_text="GPU display label e.g. GPU 0 · RTX A6000 (auto-filled from ML /health).",
+    )
+    gpu_device = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="CUDA device index assigned for this ML node (0, 1, …).",
     )
     max_cameras = models.PositiveIntegerField(
         default=25,
@@ -104,17 +109,23 @@ class RemoteServer(models.Model):
     def assigned_camera_count(self) -> int:
         return self.assigned_cameras.filter(is_active=True).count()
 
-
 class AllCitiesCameraPreference(models.Model):
-    """Per-user saved camera selection for the all-cities wall."""
+    """Per-user saved camera selection for All Cities Cameras / wall view."""
 
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="all_cities_camera_preference",
     )
-    selected_camera_keys = models.JSONField(blank=True, default=list)
+    selected_camera_keys = models.JSONField(
+        blank=True,
+        default=list,
+        help_text='Camera keys as "server_id:camera_id:code"',
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "ops_central_all_cities_camera_preference"
+
+    def __str__(self):
+        return f"All Cities selection for {self.user_id} ({len(self.selected_camera_keys or [])} cams)"

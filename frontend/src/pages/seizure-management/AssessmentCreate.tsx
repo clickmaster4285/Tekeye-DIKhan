@@ -26,6 +26,7 @@ import { ROUTES, getSeizureMgmtAssessmentDetailPath } from "@/routes/config"
 import { fetchDetentionMemoById, fetchDetentionMemos, type DetentionMemoApiRecord } from "@/lib/detention-memo-api"
 import {
   assessmentApproval,
+  canUserFullyEditSeizureDocs,
   createAssessment,
   fetchAssessmentById,
   fetchAssessments,
@@ -165,7 +166,11 @@ export default function AssessmentCreatePage() {
     if (!editId) return
     fetchAssessmentById(editId)
       .then((row) => {
-        if (row.status !== "Draft" && row.status !== "Rejected") {
+        if (
+          row.status !== "Draft" &&
+          row.status !== "Rejected" &&
+          !canUserFullyEditSeizureDocs(getStoredUser()?.role)
+        ) {
           toast({
             title: "Cannot edit",
             description: "Only draft or rejected assessments can be edited.",

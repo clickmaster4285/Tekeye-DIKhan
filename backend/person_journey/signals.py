@@ -27,20 +27,11 @@ def on_zone_access_log(sender, instance, created, **kwargs):
     if not created:
         return
     try:
-        from .models import JourneyEvent, JourneyEventType, JourneyPerson, PersonStatus, PersonType
+        from .models import JourneyEvent, JourneyEventType
+        from .services import register_visitor_journey_person
 
         visitor = instance.visitor
-        person = JourneyPerson.objects.filter(visitor_id=visitor.pk, status=PersonStatus.ACTIVE).first()
-        if person is None:
-            person = JourneyPerson.objects.create(
-                code=f"V{visitor.pk}",
-                person_type=PersonType.VISITOR,
-                display_name=visitor.full_name,
-                visitor_id=visitor.pk,
-                latest_zone=instance.zone,
-                latest_seen_at=instance.scanned_at,
-                status=PersonStatus.ACTIVE,
-            )
+        person = register_visitor_journey_person(visitor)
 
         event_type = (
             JourneyEventType.ZONE_EXIT if instance.scan_type == "exit" else JourneyEventType.ZONE_ENTRY
@@ -57,6 +48,7 @@ def on_zone_access_log(sender, instance, created, **kwargs):
                 "allowed": instance.allowed,
                 "scan_type": instance.scan_type,
                 "visitor_id": visitor.pk,
+                "person_id": person.code,
             },
         )
         person.latest_zone = instance.zone
@@ -126,7 +118,7 @@ def on_attendance_record(sender, instance, created, **kwargs):
 
 @receiver(post_save, sender="cameras.DetectionEvent")
 def on_detection_event(sender, instance, created, **kwargs):
-    """Bridge person detections + weapon/alert enrichment from existing pipeline."""
+    """Bridge person detections into Person Journey (movement only — no security alerts)."""
     if not created:
         return
     try:
@@ -135,53 +127,5 @@ def on_detection_event(sender, instance, created, **kwargs):
         bridge_detection_event(instance)
     except Exception:
         logger.exception("Journey detection bridge failed")
-
-    try:
-        from .models import JourneyEvent, JourneyEventType, JourneyPerson, PersonStatus
-
-        cls = (instance.class_name or "").lower()
-        weapon_classes = {"weapon", "gun", "knife", "pistol", "rifle", "firearm"}
-        if cls not in weapon_classes and not instance.is_alert:
-            return
-
-        person = None
-        if instance.person_identity_id:
-            person = JourneyPerson.objects.filter(pk=instance.person_identity_id).first()
-        if person is None and (instance.personal_number or instance.employee_name):
-            person = JourneyPerson.objects.filter(
-                staff__personal_number=instance.personal_number,
-                status=PersonStatus.ACTIVE,
-            ).first()
-            if person is None and instance.employee_name:
-                person = JourneyPerson.objects.filter(
-                    display_name__iexact=instance.employee_name,
-                    status=PersonStatus.ACTIVE,
-                ).first()
-
-        if person is None:
-            return
-
-        if JourneyEvent.objects.filter(
-            journey_person=person,
-            detection_event_id=instance.pk,
-            event_type=JourneyEventType.WEAPON_DETECTED if cls in weapon_classes else JourneyEventType.ALERT,
-        ).exists():
-            return
-
-        alert_event = JourneyEvent.objects.create(
-            journey_person=person,
-            event_type=JourneyEventType.WEAPON_DETECTED if cls in weapon_classes else JourneyEventType.ALERT,
-            title=f"Weapon: {instance.label}" if cls in weapon_classes else f"Alert: {instance.label}",
-            camera=instance.camera,
-            zone=instance.camera.zone if instance.camera else "",
-            detection_event_id=instance.pk,
-            confidence=instance.confidence,
-            bbox=instance.bbox or [],
-            metadata={"class_name": instance.class_name, "label": instance.label},
-        )
-        from .snapshot_capture import schedule_journey_snapshot
-
-        if instance.camera_id:
-            schedule_journey_snapshot(alert_event.pk, instance.pk, instance.camera_id)
-    except Exception:
-        logger.exception("Journey detection alert hook failed")
+    # Weapon / fire / smoke / panic alerts belong on AI Detection Alerts,
+    # not on the person movement timeline.

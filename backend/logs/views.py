@@ -3,14 +3,15 @@ from datetime import datetime, time, timedelta
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_date
-from rest_framework import viewsets, status
+from rest_framework import mixins, viewsets, status
+from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.request import Request
 
-from users.permissions import can_view_all_staff, get_location_scope
+from users.permissions import IsGlobalAdmin, can_view_all_staff, get_location_scope, is_global_admin
 
 from .models import UserActivityLog, MobilePhoneSession
 from .serializers import ActivityLogSerializer, MobilePhoneSessionSerializer
@@ -36,11 +37,17 @@ class ActivityLogPagination(PageNumberPagination):
     max_page_size = 200
 
 
-class ActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
-    """List and retrieve user activity logs. Newest first. Requires authentication."""
+class ActivityLogViewSet(mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
+    """List/retrieve activity logs. Delete actions are Super Admin (ADMIN) only."""
+
     serializer_class = ActivityLogSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = ActivityLogPagination
+
+    def get_permissions(self):
+        if self.action in ("destroy", "bulk_delete", "clear"):
+            return [IsAuthenticated(), IsGlobalAdmin()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         qs = UserActivityLog.objects.all().select_related("user").order_by("-time")
@@ -63,6 +70,42 @@ class ActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
                 start = timezone.make_aware(start, timezone.get_current_timezone())
             qs = qs.filter(time__gte=start, time__lt=start + timedelta(days=1))
         return qs
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.delete()
+        return Response({"ok": True, "deleted": 1}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["post"], url_path="bulk-delete")
+    def bulk_delete(self, request):
+        raw_ids = request.data.get("ids") if isinstance(request.data, dict) else None
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return Response(
+                {"detail": "ids must be a non-empty list of log IDs."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ids: list[int] = []
+        for item in raw_ids:
+            try:
+                ids.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        if not ids:
+            return Response(
+                {"detail": "No valid log IDs provided."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        qs = self.get_queryset().filter(id__in=ids)
+        deleted, _ = qs.delete()
+        return Response({"ok": True, "deleted": deleted})
+
+    @action(detail=False, methods=["post"], url_path="clear")
+    def clear(self, request):
+        """Delete all activity logs visible to the admin (global = entire table)."""
+        if not is_global_admin(request.user):
+            return Response({"detail": "Only Super Admin can clear logs."}, status=status.HTTP_403_FORBIDDEN)
+        deleted, _ = UserActivityLog.objects.all().delete()
+        return Response({"ok": True, "deleted": deleted})
 
 
 class ReportActivityView(APIView):

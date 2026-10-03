@@ -99,3 +99,70 @@ export function haversineM(a: { lat: number; lng: number }, b: { lat: number; ln
     Math.cos((a.lat * Math.PI) / 180) * Math.cos((b.lat * Math.PI) / 180) * sinLng * sinLng
   return 2 * R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h))
 }
+
+/** Distance within which an out-of-fence point is labeled "Near {station}". */
+const NEAR_STATION_M = 2_000
+
+/**
+ * Station-compound label only (customs geofence).
+ * Returns empty string when outside all compounds — do NOT use "Outside station"
+ * as a place name; reverse-geocoding owns city/street labels.
+ */
+export function locationNameForCoords(lat: number, lng: number): string {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return ""
+
+  let nearest: GpsGeofence | null = null
+  let nearestDist = Number.POSITIVE_INFINITY
+
+  for (const fence of STATION_GEOFENCES) {
+    const dist = haversineM(
+      { lat, lng },
+      { lat: fence.latitude, lng: fence.longitude }
+    )
+    if (dist <= fence.radiusM) return fence.name
+    if (dist < nearestDist) {
+      nearestDist = dist
+      nearest = fence
+    }
+  }
+
+  if (nearest && nearestDist <= NEAR_STATION_M) return `Near ${nearest.name}`
+  return ""
+}
+
+function coordKey(lat: number, lng: number): string {
+  const r = (n: number) => (Math.round(n * 1e4) / 1e4).toFixed(4)
+  return `${r(lat)},${r(lng)}`
+}
+
+/**
+ * Prefer exact reverse-geocoded place name; then customs compound; never "Outside station".
+ * Pass `pointLocationName` when the history API already resolved the name.
+ */
+export function resolveLocationName(
+  lat: number,
+  lng: number,
+  exactNames?: Record<string, string> | null,
+  opts?: { loading?: boolean; pointLocationName?: string | null }
+): string {
+  const fromPoint = (opts?.pointLocationName || "").trim()
+  if (fromPoint) return fromPoint
+
+  if (opts?.loading) return "Looking up…"
+
+  const key = coordKey(lat, lng)
+  if (exactNames) {
+    const exact = (exactNames[key] || "").trim()
+    if (exact) return exact
+  }
+
+  const fenceOrNear = locationNameForCoords(lat, lng)
+  if (fenceOrNear) return fenceOrNear
+
+  // Names not loaded yet (still waiting on first response).
+  if (exactNames == null) return "Looking up…"
+
+  // Geocode finished but no street name for this point.
+  return "Place name unavailable"
+}
+

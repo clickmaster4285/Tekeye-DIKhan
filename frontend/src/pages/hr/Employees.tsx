@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { Users, UserPlus, Building2, Mail, Search, Eye, Edit, Trash2, ChevronLeft, ChevronRight } from "lucide-react"
+import { Users, UserPlus, Mail, Search, Eye, Edit, Trash2, ChevronLeft, ChevronRight } from "lucide-react"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -141,25 +141,25 @@ export default function EmployeesPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
-                Database records
+                Mobile app installed
               </CardTitle>
-              <Building2 className="h-4 w-4 text-muted-foreground" />
+              <Users className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{staff.length}</div>
-              <p className="text-xs text-muted-foreground mt-1">Active staff records</p>
+              <div className="text-2xl font-bold">{staff.filter((s) => s.mobile_app_installed).length}</div>
+              <p className="text-xs text-muted-foreground mt-1">Registered CIIS PWA devices</p>
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
-                On Leave Today
+                Logged in on mobile
               </CardTitle>
               <Mail className="h-4 w-4 text-amber-600" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">—</div>
-              <p className="text-xs text-muted-foreground mt-1">N/A</p>
+              <div className="text-2xl font-bold">{staff.filter((s) => s.mobile_logged_in).length}</div>
+              <p className="text-xs text-muted-foreground mt-1">Active CIIS mobile sessions</p>
             </CardContent>
           </Card>
         </div>
@@ -215,6 +215,8 @@ export default function EmployeesPage() {
                     <TableHead>CNIC</TableHead>
                     <TableHead>Mobile No.</TableHead>
                     <TableHead>Current place of Posting</TableHead>
+                    <TableHead className="text-center">Mobile app</TableHead>
+                    <TableHead className="text-center">Mobile login</TableHead>
                     <TableHead>Transferred From</TableHead>
                     <TableHead>Transferred To</TableHead>
                     <TableHead className="text-center">Actions</TableHead>
@@ -223,7 +225,7 @@ export default function EmployeesPage() {
                 <TableBody>
                   {filtered.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={12} className="text-center text-muted-foreground py-8">
+                      <TableCell colSpan={14} className="text-center text-muted-foreground py-8">
                         No staff found. Click "Add Staff" to create a new record.
                       </TableCell>
                     </TableRow>
@@ -257,6 +259,16 @@ export default function EmployeesPage() {
                         <TableCell className="whitespace-nowrap">{row.cnic || "—"}</TableCell>
                         <TableCell className="whitespace-nowrap">{row.phone || row.phone_primary || "—"}</TableCell>
                         <TableCell className="max-w-[200px] truncate">{row.current_posting || row.branch_location || "—"}</TableCell>
+                        <TableCell className="text-center">
+                          <span className={row.mobile_app_installed ? "font-semibold text-emerald-700" : "text-muted-foreground"}>
+                            {row.mobile_app_installed ? "Installed" : "Not installed"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <span className={row.mobile_logged_in ? "font-semibold text-emerald-700" : "text-muted-foreground"}>
+                            {row.mobile_logged_in ? "Logged in" : "Not logged in"}
+                          </span>
+                        </TableCell>
                         <TableCell className="max-w-[150px] truncate">{row.transferred_from || "—"}</TableCell>
                         <TableCell className="max-w-[150px] truncate">{row.transferred_to || "—"}</TableCell>
                         <TableCell>
@@ -271,6 +283,17 @@ export default function EmployeesPage() {
                               }}
                             >
                               <Eye className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-slate-700"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                navigate(`/employees/${row.id}/device`)
+                              }}
+                            >
+                              Device
                             </Button>
                             <Button 
                               variant="ghost" 

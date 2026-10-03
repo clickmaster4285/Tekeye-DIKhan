@@ -41,6 +41,7 @@ def _cctv_threshold() -> float:
 # Backwards-compatible module constants (resolved at import; settings override in match)
 SIMILARITY_THRESHOLD = 0.45
 CCTV_SIMILARITY_THRESHOLD = 0.38
+MODEL_VERSION = "InsightFace_v1_multi_light"
 
 
 _GPU_PROVIDER_ORDER = (
@@ -286,19 +287,221 @@ class FaceEngine:
         result = self.quality.evaluate(small, face)
         result["bbox"] = face.bbox.astype(int).tolist()
         result["image"] = small
+        if result["passed"]:
+            from recognition.services.antispoof import get_antispoof
+
+            liveness = get_antispoof().evaluate(small, face, source="webcam")
+            result["liveness"] = liveness
+            if not liveness.get("passed", True):
+                result["passed"] = False
+                result["message"] = liveness.get("message") or "Spoof detected"
         return result
 
+    def check_liveness(self, image: np.ndarray, face, *, source: str = "webcam") -> dict:
+        from recognition.services.antispoof import get_antispoof
+
+        return get_antispoof().evaluate(image, face, source=source)
+
+    def _relight_probe(self, image: np.ndarray, face):
+        from recognition.services.preprocess import correct_exposure
+
+        bbox = getattr(face, "bbox", None)
+        if bbox is None:
+            return image, face
+        height, width = image.shape[:2]
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(width, x2), min(height, y2)
+        crop = image[y1:y2, x1:x2]
+        if crop.size == 0:
+            return image, face
+        mean = float(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).mean())
+        if 50.0 <= mean <= 200.0:
+            return image, face
+        corrected = correct_exposure(image)
+        faces = self.detect_faces(corrected)
+        if not faces:
+            return image, face
+        return corrected, max(faces, key=lambda item: float(getattr(item, "det_score", 0.0)))
+
+    def _relight_crop(self, image: np.ndarray, face):
+        """Exposure-correct the face crop so a crowded frame does not switch identity."""
+        from recognition.services.preprocess import correct_exposure
+
+        bbox = getattr(face, "bbox", None)
+        if bbox is None:
+            return face
+        height, width = image.shape[:2]
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        pad_x = int(max(x2 - x1, 1) * 0.35)
+        pad_y = int(max(y2 - y1, 1) * 0.35)
+        cx1, cy1 = max(0, x1 - pad_x), max(0, y1 - pad_y)
+        cx2, cy2 = min(width, x2 + pad_x), min(height, y2 + pad_y)
+        crop = image[cy1:cy2, cx1:cx2]
+        if crop.size == 0:
+            return face
+        mean = float(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).mean())
+        if 50.0 <= mean <= 200.0:
+            return face
+        faces = self.detect_faces(correct_exposure(crop))
+        if not faces:
+            return face
+        return max(faces, key=lambda item: float(getattr(item, "det_score", 0.0)))
+
     def generate_embeddings_from_folder(self, folder_path: Path) -> list[np.ndarray]:
+        from recognition.services.preprocess import lighting_variants
+
         embeddings = []
         for img_path in sorted(folder_path.glob("*.jpg")):
             image = cv2.imread(str(img_path))
             if image is None:
                 continue
             image = self.resize_max(image, 640)
-            emb = self.extract_embedding(image)
-            if emb is not None:
-                embeddings.append(emb)
+            for variant in lighting_variants(image):
+                emb = self.extract_embedding(variant)
+                if emb is not None:
+                    embeddings.append(emb)
         return embeddings
+
+    def train_enrollment(self, enrollment, folder: Path, *, required: int) -> dict:
+        from recognition.services.gallery_index import invalidate_gallery
+
+        source_images = len(list(folder.glob("*.jpg")))
+        embeddings = self.generate_embeddings_from_folder(folder)
+        if source_images < required or len(embeddings) < required:
+            return {
+                "trained": False,
+                "error": (
+                    f"Only {source_images} photos and {len(embeddings)} face vectors. "
+                    "Recapture with better quality."
+                ),
+                "images_used": source_images,
+            }
+        mean_embedding = self.average_embedding(embeddings)
+        enrollment.embedding = mean_embedding
+        enrollment.embeddings = [emb.tolist() if hasattr(emb, "tolist") else list(emb) for emb in embeddings]
+        enrollment.is_trained = True
+        enrollment.is_enrolled = True
+        enrollment.model_version = MODEL_VERSION
+        enrollment.save(
+            update_fields=[
+                "embedding",
+                "embeddings",
+                "is_trained",
+                "is_enrolled",
+                "model_version",
+                "updated_at",
+            ]
+        )
+        invalidate_gallery()
+        return {
+            "trained": True,
+            "embedding_dim": len(mean_embedding),
+            "images_used": source_images,
+            "vectors": len(embeddings),
+        }
+
+    def match_probe(self, embedding, *, source: str = "webcam") -> dict:
+        from recognition.services.gallery_index import best_match, get_gallery_index
+
+        threshold = _cctv_threshold() if source == "cctv" else _webcam_threshold()
+        return best_match(embedding, get_gallery_index(), threshold=threshold)
+
+    def identify_from_image(
+        self,
+        image: np.ndarray,
+        gallery: dict[str, list[float]] | None = None,
+        threshold: float | None = None,
+        source: str = "webcam",
+    ) -> dict:
+        from recognition.services.preprocess import apply_clahe_bgr
+        from recognition.services.reviews import enqueue_match_review, record_spoof, record_unknown
+
+        del gallery  # live search uses GalleryIndex
+        small = self.resize_max(image, 640)
+        face, error = self.get_single_face(small, allow_largest=True)
+        if error:
+            small = apply_clahe_bgr(small)
+            face, error = self.get_single_face(small, allow_largest=True)
+            if error:
+                record_unknown(source=source, message=error)
+                return {"matched": False, "message": error, "confidence": 0.0}
+
+        liveness = self.check_liveness(small, face, source=source)
+        if not liveness.get("passed", True):
+            record_spoof(source=source, message=liveness.get("message") or "Spoof")
+            return {
+                "matched": False,
+                "message": liveness.get("message") or "Spoof detected",
+                "confidence": 0.0,
+                "spoof": True,
+                "liveness": liveness,
+            }
+
+        small, face = self._relight_probe(small, face)
+        if threshold is not None:
+            from recognition.services.gallery_index import best_match, get_gallery_index
+
+            match = best_match(face.embedding, get_gallery_index(), threshold=threshold)
+        else:
+            match = self.match_probe(face.embedding, source=source)
+        return self._match_result(match, source=source)
+
+    def score_face(self, image: np.ndarray, face, *, source: str = "cctv", camera_id: int | None = None) -> dict:
+        """One detected face: liveness, exposure correction, then gallery match."""
+        from recognition.services.reviews import record_spoof
+
+        liveness = self.check_liveness(image, face, source=source)
+        if not liveness.get("passed", True):
+            record_spoof(
+                source=source,
+                camera_id=camera_id,
+                message=liveness.get("message") or "Spoof",
+            )
+            return {
+                "matched": False,
+                "spoof": True,
+                "confidence": 0.0,
+                "message": liveness.get("message") or "Spoof detected",
+                "liveness": liveness,
+            }
+        face = self._relight_crop(image, face)
+        embedding = getattr(face, "embedding", None)
+        if embedding is None:
+            return {"matched": False, "confidence": 0.0, "message": "No face embedding"}
+        match = self.match_probe(embedding, source=source)
+        result = self._match_result(match, source=source, camera_id=camera_id)
+        result["face"] = face
+        return result
+
+    @staticmethod
+    def _match_result(match: dict, *, source: str, camera_id: int | None = None) -> dict:
+        from recognition.services.reviews import enqueue_match_review, record_unknown
+
+        confidence = round(float(match.get("confidence") or 0.0), 4)
+        gallery_key = match.get("gallery_key")
+        if gallery_key:
+            staff_id = int(gallery_key.replace("staff-", "")) if str(gallery_key).startswith("staff-") else None
+            return {
+                "matched": True,
+                "gallery_key": gallery_key,
+                "staff_id": staff_id,
+                "confidence": confidence,
+                "message": "Face recognized",
+            }
+        if match.get("ambiguous"):
+            enqueue_match_review(
+                confidence=confidence,
+                source=source,
+                camera_id=camera_id,
+                message="Ambiguous match",
+            )
+            return {"matched": False, "confidence": confidence, "message": "Ambiguous face — not marked"}
+        if match.get("soft_miss"):
+            enqueue_match_review(confidence=confidence, source=source, camera_id=camera_id)
+            return {"matched": False, "confidence": confidence, "message": "Possible match held for review"}
+        record_unknown(confidence=confidence, source=source, camera_id=camera_id, message="Unknown face")
+        return {"matched": False, "confidence": confidence, "message": "Unknown face"}
 
     @staticmethod
     def average_embedding(embeddings: list[np.ndarray]) -> list[float]:
@@ -355,30 +558,3 @@ class FaceEngine:
         if best_sim >= min_sim:
             return best_id, best_sim
         return None, best_sim
-
-    def identify_from_image(
-        self,
-        image: np.ndarray,
-        gallery: dict[str, list[float]],
-        threshold: float | None = None,
-    ) -> dict:
-        face, error = self.get_single_face(image)
-        if error:
-            return {"matched": False, "message": error, "confidence": 0.0}
-
-        gallery_key, confidence = self.match_embedding(
-            face.embedding, gallery, threshold=threshold
-        )
-        if gallery_key:
-            return {
-                "matched": True,
-                "gallery_key": gallery_key,
-                "staff_id": int(gallery_key.replace("staff-", "")) if gallery_key.startswith("staff-") else None,
-                "confidence": round(confidence, 4),
-                "message": "Face recognized",
-            }
-        return {
-            "matched": False,
-            "confidence": round(confidence, 4),
-            "message": "Unknown face",
-        }

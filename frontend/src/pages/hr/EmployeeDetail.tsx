@@ -25,6 +25,14 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { CreateEmployeeLoginForm } from "@/components/hr/CreateEmployeeLoginForm"
+import {
   ArrowLeft,
   User,
   Phone,
@@ -214,6 +222,7 @@ export default function EmployeeDetailPage() {
   const { toast } = useToast()
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [createLoginOpen, setCreateLoginOpen] = useState(false)
   const staffId = id ? parseInt(id, 10) : NaN
 
   const { data: staff, isLoading, isError } = useQuery({
@@ -303,6 +312,11 @@ export default function EmployeeDetailPage() {
         </div>
         <div className="flex items-center gap-2">
           {s.user != null && <Badge variant="default">Linked account</Badge>}
+          {s.user == null ? (
+            <Button variant="outline" size="sm" onClick={() => setCreateLoginOpen(true)}>
+              Create login
+            </Button>
+          ) : null}
           <Button variant="outline" size="sm" asChild>
             <Link to={`/employees/${s.id}/edit`}>
               <Pencil className="h-4 w-4 mr-2" />
@@ -454,8 +468,20 @@ export default function EmployeeDetailPage() {
               ["Role / Access level", val(s.role_access_level)],
               ["System permissions", val(s.system_permissions)],
               ["Linked user", s.user_details ? `${s.user_details.username} (${s.user_details.role})` : "—"],
+              ["CIIS mobile app", s.mobile_app_installed ? "Installed" : "Not installed"],
+              ["Mobile login", s.mobile_logged_in ? "Logged in" : "Not logged in"],
             ]}
           />
+          <div className="mt-4 flex flex-wrap gap-2">
+            {s.user == null ? (
+              <Button variant="outline" size="sm" onClick={() => setCreateLoginOpen(true)}>
+                Create login
+              </Button>
+            ) : null}
+            <Button variant="outline" size="sm" asChild>
+              <Link to={`/employees/${s.id}/device`}>Open device page</Link>
+            </Button>
+          </div>
         </DetailSection>
 
         <DetailSection title="Emergency contact" icon={AlertCircle}>
@@ -500,6 +526,27 @@ export default function EmployeeDetailPage() {
           />
         </DetailSection>
       </div>
+
+      <Dialog open={createLoginOpen} onOpenChange={setCreateLoginOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create login for {val(s.full_name)}</DialogTitle>
+            <DialogDescription>
+              A unique ID is generated for this employee. Enter a password. Role and location are required only if they are not already on the employee record.
+            </DialogDescription>
+          </DialogHeader>
+          <CreateEmployeeLoginForm
+            staffId={s.id}
+            onCancel={() => setCreateLoginOpen(false)}
+            onSuccess={(loginId) => {
+              toast({ title: "Login created", description: `Username: ${loginId}` })
+              setCreateLoginOpen(false)
+              void queryClient.invalidateQueries({ queryKey: ["staff", s.id] })
+              void queryClient.invalidateQueries({ queryKey: ["staff"] })
+            }}
+          />
+        </DialogContent>
+      </Dialog>
 
       <div className="mt-8 flex gap-3">
         <Button variant="outline" asChild>

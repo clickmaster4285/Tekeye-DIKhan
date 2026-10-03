@@ -168,7 +168,12 @@ def _create_global_object(
                     last_seen_at=now,
                     entry_at=now,
                     latest_camera=camera,
-                    camera_history=[{"camera_id": camera.pk, "at": now.isoformat()}],
+                    camera_history=[{
+                        "camera_id": camera.pk,
+                        "camera_name": (camera.name or "").strip(),
+                        "camera_code": (camera.code or "").strip(),
+                        "at": now.isoformat(),
+                    }],
                     track_history=[],
                     metadata={"source": "object_tracking"},
                 )
@@ -456,7 +461,12 @@ def upsert_global_object(
         if not hist or hist[-1].get("camera_id") != camera.pk:
             obj.camera_history = _append_history(
                 hist,
-                {"camera_id": camera.pk, "at": now.isoformat()},
+                {
+                    "camera_id": camera.pk,
+                    "camera_name": (camera.name or "").strip(),
+                    "camera_code": (camera.code or "").strip(),
+                    "at": now.isoformat(),
+                },
             )
         obj.save()
 

@@ -596,7 +596,7 @@ export default function MemoDistributionPage() {
                             rel="noreferrer"
                             className="block text-[#3b82f6] underline text-xs"
                           >
-                            {cam?.name || `Camera ${v.camera_id}`} — {v.filename || "recording"}
+                            {cam?.name || cam?.code || "Camera"} — {v.filename || "recording"}
                           </a>
                         )
                       })}

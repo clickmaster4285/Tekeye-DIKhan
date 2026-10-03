@@ -6,7 +6,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("ops_central", "0005_ml_server_capacity"),
-        ("cameras", "0016_alter_camera_resolution"),
+        ("cameras", "0015_ensure_camera_purposes"),
     ]
 
     operations = [

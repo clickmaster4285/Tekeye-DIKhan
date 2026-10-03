@@ -30,6 +30,7 @@ import {
 } from "@/routes/config"
 import {
   canUserDeleteNoteSheet,
+  canUserEditNoteSheet,
   deleteNoteSheet,
   fetchNoteSheetById,
   noteSheetApproval,
@@ -41,8 +42,21 @@ import { getStoredToken } from "@/lib/api"
 import { fetchCurrentUser } from "@/lib/users-api"
 import { toast } from "@/hooks/use-toast"
 import { reportMissingField } from "@/lib/form-missing-field"
-import { GoodsLineText, goodsLineCellClass } from "@/components/goods/goods-line-text-field"
+import { GoodsLineText, goodsDetailCellClass, goodsHeadClass } from "@/components/goods/goods-line-text-field"
+import { GoodsQrDisplay } from "@/components/goods/goods-qr-display"
+import { cn } from "@/lib/utils"
+import {
+  ViewLocatedCameraDialog,
+  ViewCameraButton,
+  locatedCameraLabel,
+  type ViewCameraTarget,
+} from "@/components/detention/view-located-camera-dialog"
 import NoteSheetReportPrint from "@/components/seizure/NoteSheetReportPrint"
+
+function getQrCodeUrl(data: string, size = 120) {
+  const responsiveSize = typeof window !== "undefined" && window.innerWidth < 640 ? Math.min(size, 100) : size
+  return `https://api.qrserver.com/v1/create-qr-code/?size=${responsiveSize}x${responsiveSize}&data=${encodeURIComponent(data)}`
+}
 
 function statusBadge(status: NoteSheetStatus) {
   if (status === "Approved") return <Badge>Approved</Badge>
@@ -96,6 +110,7 @@ export default function NoteSheetDetailPage() {
   const [approvalRemarks, setApprovalRemarks] = useState("")
   const [rejectionReason, setRejectionReason] = useState("")
   const [invalidField, setInvalidField] = useState("")
+  const [viewCamera, setViewCamera] = useState<ViewCameraTarget | null>(null)
 
   const load = () => {
     if (!id) return
@@ -228,7 +243,7 @@ export default function NoteSheetDetailPage() {
   }
 
   const title = row.noteSheetNo || row.referenceNumber || row.subject || "Note Sheet"
-  const canEdit = row.status === "Draft" || row.status === "Rejected"
+  const canEdit = canUserEditNoteSheet(row, currentUser?.role)
   const canApprove = canUserApproveNoteSheet(row, currentUser)
   const canDelete = canUserDeleteNoteSheet(row, currentUser?.role)
 
@@ -374,6 +389,7 @@ export default function NoteSheetDetailPage() {
         )}
 
         {/* 1. Basic Information */}
+        <div className="grid gap-4 sm:gap-6 md:grid-cols-[1fr_200px]">
         <Card className="rounded-[10px] border-gray-200">
           <CardHeader>
             <CardTitle className="text-base">1. Basic Information</CardTitle>
@@ -390,6 +406,25 @@ export default function NoteSheetDetailPage() {
             </dl>
           </CardContent>
         </Card>
+        <Card className="rounded-[10px] border-gray-200">
+          <CardHeader>
+            <CardTitle className="text-base">QR Code</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col items-center gap-2 pt-0">
+            <img
+              src={getQrCodeUrl(
+                `${typeof window !== "undefined" ? window.location.origin : ""}${getSeizureMgmtNoteSheetDetailPath(row.id)}`,
+                160
+              )}
+              alt="Note sheet QR code"
+              className="rounded-lg border bg-white p-2"
+            />
+            <p className="text-center font-mono text-[10px] text-muted-foreground break-all">
+              {row.noteSheetNo || row.referenceNumber || row.id}
+            </p>
+          </CardContent>
+        </Card>
+        </div>
 
         {/* 2. Officer Information */}
         <Card className="rounded-[10px] border-gray-200">
@@ -435,37 +470,54 @@ export default function NoteSheetDetailPage() {
           </CardHeader>
           <CardContent>
             {row.items?.length ? (
-              <div className="overflow-auto">
-                <Table className="table-fixed w-full">
+              <div className="max-w-full overflow-x-auto rounded-md border border-border/70">
+                <Table className="w-max min-w-full text-sm">
                   <TableHeader>
-                    <TableRow>
-                      <TableHead>QR Code</TableHead>
-                      <TableHead className="w-[22%]">Description</TableHead>
-                      <TableHead>Qty</TableHead>
-                      <TableHead>Unit</TableHead>
-                      <TableHead>Condition</TableHead>
-                      <TableHead>Perishable</TableHead>
-                      <TableHead>ID / Chassis No.</TableHead>
-                      <TableHead className="w-[16%]">Item Notes</TableHead>
-                      <TableHead>Images</TableHead>
+                    <TableRow className="border-b bg-muted/40 hover:bg-muted/40">
+                      <TableHead className={goodsHeadClass}>QR Code</TableHead>
+                      <TableHead className={goodsHeadClass}>Description</TableHead>
+                      <TableHead className={goodsHeadClass}>Located Camera</TableHead>
+                      <TableHead className={goodsHeadClass}>Qty</TableHead>
+                      <TableHead className={goodsHeadClass}>Unit</TableHead>
+                      <TableHead className={goodsHeadClass}>Condition</TableHead>
+                      <TableHead className={goodsHeadClass}>Perishable</TableHead>
+                      <TableHead className={goodsHeadClass}>ID / Chassis</TableHead>
+                      <TableHead className={goodsHeadClass}>Item Notes</TableHead>
+                      <TableHead className={goodsHeadClass}>Images</TableHead>
+                      <TableHead className={goodsHeadClass} />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {row.items.map((item, i) => (
                       <TableRow key={item.id ?? i}>
-                        <TableCell className="font-mono text-xs">{item.qrCodeNumber || "—"}</TableCell>
-                        <TableCell className={goodsLineCellClass}>
+                        <TableCell className={cn(goodsDetailCellClass, "w-[7.5rem]")}>
+                          <GoodsQrDisplay code={item.qrCodeNumber} size={64} />
+                        </TableCell>
+                        <TableCell className={cn(goodsDetailCellClass, "min-w-[10rem] max-w-[16rem] font-medium")}>
                           <GoodsLineText>{item.product || item.description || "—"}</GoodsLineText>
                         </TableCell>
-                        <TableCell>{item.quantity || "—"}</TableCell>
-                        <TableCell>{item.unit || "—"}</TableCell>
-                        <TableCell>{item.condition || "—"}</TableCell>
-                        <TableCell>{item.perishable ? "Yes" : "No"}</TableCell>
-                        <TableCell>{item.identificationRef || "—"}</TableCell>
-                        <TableCell className={goodsLineCellClass}>
+                        <TableCell className={cn(goodsDetailCellClass, "min-w-[9rem] text-xs")}>
+                          <div className="space-y-0.5">
+                            <p className="font-medium text-sm">
+                              {locatedCameraLabel(item.locatedCamera, item.locatedCameraId)}
+                            </p>
+                            <p className="text-muted-foreground">
+                              Zone: {item.locatedCamera?.zone?.trim() || "—"}
+                            </p>
+                            {item.detectedAt ? (
+                              <p className="text-muted-foreground">{item.detectedAt}</p>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                        <TableCell className={goodsDetailCellClass}>{item.quantity || "—"}</TableCell>
+                        <TableCell className={goodsDetailCellClass}>{item.unit || "—"}</TableCell>
+                        <TableCell className={goodsDetailCellClass}>{item.condition || "—"}</TableCell>
+                        <TableCell className={goodsDetailCellClass}>{item.perishable ? "Yes" : "No"}</TableCell>
+                        <TableCell className={goodsDetailCellClass}>{item.identificationRef || "—"}</TableCell>
+                        <TableCell className={cn(goodsDetailCellClass, "min-w-[8rem] max-w-[14rem]")}>
                           <GoodsLineText>{item.remarks || item.itemNotes || "—"}</GoodsLineText>
                         </TableCell>
-                        <TableCell>
+                        <TableCell className={goodsDetailCellClass}>
                           {item.images?.length ? (
                             <div className="flex flex-wrap gap-1">
                               {item.images.map((url, idx) => (
@@ -474,14 +526,24 @@ export default function NoteSheetDetailPage() {
                                 </a>
                               ))}
                             </div>
+                          ) : item.evidenceUrl ? (
+                            <img
+                              src={item.evidenceUrl}
+                              alt="Evidence"
+                              className="h-8 w-8 object-cover rounded border"
+                            />
                           ) : (
                             "—"
                           )}
+                        </TableCell>
+                        <TableCell className={goodsDetailCellClass}>
+                          <ViewCameraButton item={item} onView={setViewCamera} />
                         </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
+                <ViewLocatedCameraDialog target={viewCamera} onClose={() => setViewCamera(null)} />
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">No goods recorded.</p>

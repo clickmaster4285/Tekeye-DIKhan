@@ -58,7 +58,7 @@ def _is_person_detection(class_name: str, label: str, employee_name: str = "") -
     lbl = (label or "").strip().lower()
     emp = (employee_name or "").strip()
 
-    if cls in _WEAPON_CLASSES or cls in _NON_PERSON_CLASSES:
+    if cls in _WEAPON_CLASSES or cls in _NON_PERSON_CLASSES or cls in ("crowd", "fire", "smoke", "weapon"):
         return False
     if cls in ("person", "face"):
         return True
@@ -186,7 +186,9 @@ def record_journey_sighting(
     detection_event_id: int | None = None,
     source: str = "detection_bridge",
 ) -> JourneyEvent:
-    """Create timeline row + queue snapshot for one person sighting."""
+    """Create timeline row + tracklet link + queue snapshot for one person sighting."""
+    from .services import ensure_camera_track
+
     now = getattr(instance, "created_at", None) or timezone.now()
     staff_id, staff_name = resolve_staff_from_face_label(
         getattr(instance, "employee_name", "") or getattr(instance, "label", "") or ""
@@ -205,9 +207,20 @@ def record_journey_sighting(
         updates.extend(["staff_id", "person_type", "display_name"])
     person.save(update_fields=list(dict.fromkeys(updates)))
 
+    track_id = getattr(instance, "local_track_id", None)
+    track = ensure_camera_track(
+        person=person,
+        camera=camera,
+        track_id=track_id,
+        now=now,
+        bbox=getattr(instance, "bbox", None) or [],
+        metadata={"source": source},
+    )
+    tracklet_id = track.tracklet_id if track else ""
+
     if created:
         event_type = JourneyEventType.UNKNOWN_CREATED
-        title = f"Unknown person — {person.code}"
+        title = f"First seen at {camera.name if camera else 'camera'}"
     elif staff_id or person.person_type == PersonType.STAFF:
         event_type = JourneyEventType.STAFF_RECOGNIZED
         title = f"Recognized: {person.display_name}"
@@ -215,13 +228,38 @@ def record_journey_sighting(
         event_type = JourneyEventType.CAMERA_DETECTION
         title = f"Seen at {camera.name if camera else 'camera'}"
 
+    from django.conf import settings
+    from .services import _extend_visit, _open_visit
+
+    # Visit style: extend one log while the person stays on this camera.
+    if camera and not bool(getattr(settings, "JOURNEY_KEEP_ALL_EVENTS", False)):
+        visit = _open_visit(person, camera, now)
+        if visit is not None:
+            _extend_visit(
+                visit,
+                now=now,
+                track=track,
+                track_id=track_id,
+                confidence=getattr(instance, "confidence", None),
+            )
+            if detection_event_id:
+                from cameras.models import DetectionEvent
+
+                DetectionEvent.objects.filter(pk=detection_event_id).update(
+                    person_qr=person.code,
+                    person_identity_id=person.pk,
+                    track_event="detection",
+                )
+            return visit
+
     journey_event = JourneyEvent.objects.create(
         journey_person=person,
         event_type=event_type,
         title=title,
-        description=f"{instance.class_name}: {instance.label}",
+        description=f"On {camera.name if camera else 'camera'} (1 sighting)",
         camera=camera,
         zone=_camera_zone(camera),
+        track=track,
         detection_event_id=detection_event_id,
         confidence=getattr(instance, "confidence", None),
         bbox=getattr(instance, "bbox", None) or [],
@@ -231,6 +269,14 @@ def record_journey_sighting(
             "label": getattr(instance, "label", ""),
             "employee_name": getattr(instance, "employee_name", ""),
             "personal_number": getattr(instance, "personal_number", ""),
+            "track_id": track_id,
+            "tracklet_id": tracklet_id,
+            "person_id": person.code,
+            "visit_start": now.isoformat(),
+            "last_seen_at": now.isoformat(),
+            "duration_seconds": 0,
+            "sightings": 1,
+            "track_ids": [track_id] if track_id else [],
         },
     )
 
@@ -242,34 +288,6 @@ def record_journey_sighting(
             person_identity_id=person.pk,
             track_event="detection",
         )
-
-    track_id = getattr(instance, "local_track_id", None)
-    if track_id and camera and person.person_type == PersonType.UNKNOWN:
-        from .models import CameraTrack, TrackStatus
-
-        track = (
-            CameraTrack.objects.filter(
-                journey_person=person,
-                camera=camera,
-                track_id=track_id,
-                status=TrackStatus.ACTIVE,
-            )
-            .order_by("-started_at")
-            .first()
-        )
-        if track is None:
-            CameraTrack.objects.create(
-                journey_person=person,
-                camera=camera,
-                track_id=track_id,
-                status=TrackStatus.ACTIVE,
-                started_at=now,
-                last_bbox=getattr(instance, "bbox", None) or [],
-                metadata={"source": source},
-            )
-        else:
-            track.last_bbox = getattr(instance, "bbox", None) or []
-            track.save(update_fields=["last_bbox"])
 
     from .snapshot_capture import schedule_journey_snapshot
 

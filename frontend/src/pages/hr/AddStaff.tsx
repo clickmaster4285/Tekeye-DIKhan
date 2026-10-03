@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
-import { createStaff, type CreateStaffPayload } from "@/lib/staff-api"
+import { createStaff, usernameFromFullName, type CreateStaffPayload } from "@/lib/staff-api"
 import { ROUTES } from "@/routes/config"
 import { StaffStepIndicator } from "@/components/hr/add-staff/staff-step-indicator"
 import { AddStaffStep1PersonalInfo } from "@/components/hr/add-staff/step1-personal-info"
@@ -13,9 +13,12 @@ import {
   primaryStaffPhotoFile,
   newStaffPhotoFiles,
   existingStaffPhotoPaths,
+  photosOrderedForProfile,
+  profileIsExistingPath,
   revokeStaffUploadBlobs,
 } from "@/lib/staff-photo-utils"
 import { useToast } from "@/hooks/use-toast"
+import { inferLocationCode } from "@/lib/locations"
 import {
   STAFF_BPS_OPTIONS,
   STAFF_DEPARTMENT_OPTIONS,
@@ -31,6 +34,7 @@ const emptyForm: CreateStaffPayload = {
   password: "",
   email: "",
   role: "RECEPTIONIST",
+  location: "",
   phone: "",
   full_name: "",
   father_name: "",
@@ -102,6 +106,7 @@ export default function AddStaffPage() {
   const { toast } = useToast()
   const [form, setForm] = useState<CreateStaffPayload>(emptyForm)
   const [staffPhotos, setStaffPhotos] = useState<UploadValue[]>([])
+  const [profilePhotoKey, setProfilePhotoKey] = useState<string | null>(null)
   const [cameraOpen, setCameraOpen] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -112,6 +117,20 @@ export default function AddStaffPage() {
   const [cnicBack, setCnicBack] = useState<UploadValue>({ file: null, previewUrl: null })
   const [appointmentLetter, setAppointmentLetter] = useState<UploadValue>({ file: null, previewUrl: null })
   const [additionalDocument, setAdditionalDocument] = useState<UploadValue>({ file: null, previewUrl: null })
+
+  const profilePhotoIndex = useMemo(() => {
+    if (staffPhotos.length === 0) return 0
+    if (profilePhotoKey) {
+      const idx = staffPhotos.findIndex((p) => p.previewUrl === profilePhotoKey)
+      if (idx >= 0) return idx
+    }
+    return 0
+  }, [staffPhotos, profilePhotoKey])
+
+  const handleSetProfilePhoto = (index: number) => {
+    const key = staffPhotos[index]?.previewUrl ?? null
+    setProfilePhotoKey(key)
+  }
 
   const savingDraftRef = useRef(false)
   const lastSavedDraftJsonRef = useRef<string>("")
@@ -178,7 +197,10 @@ export default function AddStaffPage() {
             // ignore corrupted draft items
           }
         }
-        if (!cancelled) setStaffPhotos(restoredPhotos)
+        if (!cancelled) {
+          setStaffPhotos(restoredPhotos)
+          setProfilePhotoKey(restoredPhotos[0]?.previewUrl ?? null)
+        }
 
         const restoreSingle = async (
           stored: StoredFile | null | undefined,
@@ -292,6 +314,11 @@ export default function AddStaffPage() {
     setStaffPhotos((prev) => {
       const item = prev[index]
       if (item?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(item.previewUrl)
+      if (item?.previewUrl && item.previewUrl === profilePhotoKey) {
+        const next = prev.filter((_, i) => i !== index)
+        setProfilePhotoKey(next[0]?.previewUrl ?? null)
+        return next
+      }
       return prev.filter((_, i) => i !== index)
     })
   }
@@ -327,6 +354,7 @@ export default function AddStaffPage() {
       }
       return []
     })
+    setProfilePhotoKey(null)
     updateUploadValue(setCnicFront, null)
     updateUploadValue(setCnicBack, null)
     updateUploadValue(setAppointmentLetter, null)
@@ -344,24 +372,30 @@ export default function AddStaffPage() {
       const first_name = nameParts[0] || ""
       const last_name = nameParts.slice(1).join(" ") || ""
 
+      const orderedPhotos = photosOrderedForProfile(staffPhotos, profilePhotoIndex)
+      const address = (form.address || "").trim()
       const payload: any = {
         ...form,
         first_name,
         last_name,
-        national_id: form.cnic,
-        street_address: form.address,
-        date_of_joining: form.joining_date,
-        emergency_contact_phone: form.emergency_contact_phone || form.emergency_contact,
-        emergency_contact_name: form.emergency_contact_name || (form.full_name ? `${form.full_name} Contact` : ""),
-        emergency_contact_relationship: form.emergency_contact_relationship,
-        emergency_contact_address: form.emergency_contact_address,
-        profile_image: primaryStaffPhotoFile(staffPhotos),
-        staff_photos: newStaffPhotoFiles(staffPhotos),
-        staff_photos_keep: existingStaffPhotoPaths(staffPhotos),
+        national_id: form.cnic || undefined,
+        ...(address ? { address, street_address: address } : { address: undefined, street_address: undefined }),
+        date_of_joining: form.joining_date || undefined,
+        emergency_contact_phone: form.emergency_contact_phone || form.emergency_contact || undefined,
+        emergency_contact_name: form.emergency_contact_name || undefined,
+        emergency_contact_relationship: form.emergency_contact_relationship || undefined,
+        emergency_contact_address: form.emergency_contact_address || undefined,
+        profile_image: primaryStaffPhotoFile(orderedPhotos),
+        profile_from_keep: profileIsExistingPath(staffPhotos, profilePhotoIndex),
+        staff_photos: newStaffPhotoFiles(orderedPhotos),
+        staff_photos_keep: existingStaffPhotoPaths(orderedPhotos),
         cnic_front: cnicFront.file ?? undefined,
         cnic_back: cnicBack.file ?? undefined,
         appointment_letter: appointmentLetter.file ?? undefined,
         additional_document: additionalDocument.file ?? undefined,
+        location:
+          form.location ||
+          inferLocationCode(form.branch_location, form.current_posting, form.city),
       }
 
       if (!form.has_login) {
@@ -434,6 +468,8 @@ export default function AddStaffPage() {
               form={form}
               updateForm={(patch) => setForm((f) => ({ ...f, ...patch }))}
               staffPhotos={staffPhotos}
+              profilePhotoIndex={profilePhotoIndex}
+              onSetProfilePhoto={handleSetProfilePhoto}
               cameraOpen={cameraOpen}
               onOpenCamera={() => setCameraOpen(true)}
               onCaptureFromCamera={handleImageCapture}
@@ -484,6 +520,10 @@ export default function AddStaffPage() {
                 formEl?.requestSubmit()
               }}
               submitting={submitting}
+              generatedLoginId={
+                usernameFromFullName(form.full_name)
+                || usernameFromFullName(form.personal_number || form.employee_id || "")
+              }
             />
           )}
               </div>

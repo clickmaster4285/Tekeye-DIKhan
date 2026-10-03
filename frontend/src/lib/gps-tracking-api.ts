@@ -10,6 +10,7 @@ export type GpsOfficer = {
   name: string
   role: string
   employeeId?: string
+  profileImage?: string | null
   location: string
   latitude: number | null
   longitude: number | null
@@ -24,12 +25,46 @@ export type GpsOfficer = {
   status: GpsStatus
 }
 
+export type GpsMotionStatus = "Moving" | "Stationary" | string
+
 export type GpsHistoryPoint = {
   latitude: number
   longitude: number
   accuracy: number | null
+  speedKmh?: number | null
   recordedAt: string | null
+  status?: GpsMotionStatus
+  /** Exact reverse-geocoded place name from the API */
+  locationName?: string
+  /** Google Maps link for this fix */
+  mapsUrl?: string
 }
+
+export type GpsClosestPoint = GpsHistoryPoint & {
+  requestedAt: string
+  deltaSeconds: number
+}
+
+export type GpsHistoryResponse = {
+  userId: number
+  points: GpsHistoryPoint[]
+  closest: GpsClosestPoint | null
+  count: number
+  totalCount?: number
+  sampled?: boolean
+  period?: {
+    period?: string
+    date?: string
+    dateFrom?: string
+    dateTo?: string
+    hours?: number
+    start?: string
+    end?: string
+    since?: string
+  }
+}
+
+export type GpsReportPeriod = "day" | "week" | "month"
 
 async function readError(res: Response, fallback: string): Promise<string> {
   try {
@@ -89,17 +124,105 @@ export async function postGpsPing(payload: {
   return res.json()
 }
 
-export async function fetchGpsLive(location?: string): Promise<GpsOfficer[]> {
-  const q = location && location !== "all" ? `?location=${encodeURIComponent(location)}` : ""
-  const res = await fetch(`${API}/live/${q}`, { headers: getAuthHeaders() })
+export async function fetchGpsLive(
+  location?: string,
+  options?: { includeOffDuty?: boolean }
+): Promise<GpsOfficer[]> {
+  const params = new URLSearchParams()
+  if (location && location !== "all") params.set("location", location)
+  if (options?.includeOffDuty) params.set("include_off_duty", "1")
+  const qs = params.toString()
+  const res = await fetch(`${API}/live/${qs ? `?${qs}` : ""}`, { headers: getAuthHeaders() })
   if (!res.ok) throw new Error(await readError(res, "Failed to load live GPS"))
   const data = await res.json()
   return Array.isArray(data?.officers) ? data.officers : []
 }
 
-export async function fetchGpsHistory(userId: number, hours = 24): Promise<GpsHistoryPoint[]> {
-  const res = await fetch(`${API}/history/${userId}/?hours=${hours}`, { headers: getAuthHeaders() })
+export async function fetchGpsHistory(
+  userId: number,
+  options: number | { hours?: number; date?: string; at?: string; period?: GpsReportPeriod } = 24
+): Promise<GpsHistoryResponse> {
+  const params = new URLSearchParams()
+  if (typeof options === "number") {
+    params.set("hours", String(options))
+  } else {
+    if (options.date) params.set("date", options.date)
+    if (options.at) params.set("at", options.at)
+    if (options.period) params.set("period", options.period)
+    if (options.hours != null && !options.date && !options.period) {
+      params.set("hours", String(options.hours))
+    }
+  }
+  const qs = params.toString()
+  const res = await fetch(`${API}/history/${userId}/${qs ? `?${qs}` : ""}`, {
+    headers: getAuthHeaders(),
+  })
   if (!res.ok) throw new Error(await readError(res, "Failed to load GPS history"))
   const data = await res.json()
-  return Array.isArray(data?.points) ? data.points : []
+  return {
+    userId: data?.userId ?? userId,
+    points: Array.isArray(data?.points) ? data.points : [],
+    closest: data?.closest ?? null,
+    count: typeof data?.count === "number" ? data.count : Array.isArray(data?.points) ? data.points.length : 0,
+    totalCount: typeof data?.totalCount === "number" ? data.totalCount : undefined,
+    sampled: Boolean(data?.sampled),
+    period: data?.period,
+  }
+}
+
+/** Round key matching backend gps_tracking.geocode.coord_key */
+export function gpsCoordKey(lat: number, lng: number): string {
+  const r = (n: number) => (Math.round(n * 1e4) / 1e4).toFixed(4)
+  return `${r(lat)},${r(lng)}`
+}
+
+export type GpsReverseGeocodeResult = {
+  key: string
+  latitude: number
+  longitude: number
+  locationName: string
+}
+
+/** Batch reverse-geocode (street / area names via OSM). Chunks requests to avoid timeouts. */
+export async function fetchGpsLocationNames(
+  points: Array<{ latitude: number; longitude: number }>
+): Promise<Record<string, string>> {
+  if (!points.length) return {}
+
+  // Deduplicate by rounded key so we don't spam the API.
+  const unique = new Map<string, { latitude: number; longitude: number }>()
+  for (const p of points) {
+    if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) continue
+    const key = gpsCoordKey(p.latitude, p.longitude)
+    if (!unique.has(key)) unique.set(key, { latitude: p.latitude, longitude: p.longitude })
+  }
+  const uniquePoints = [...unique.values()]
+  const out: Record<string, string> = {}
+  const CHUNK = 25
+
+  for (let i = 0; i < uniquePoints.length; i += CHUNK) {
+    const chunk = uniquePoints.slice(i, i + CHUNK)
+    const res = await fetch(`${API}/reverse-geocode/`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        points: chunk.map((p) => ({
+          latitude: p.latitude,
+          longitude: p.longitude,
+        })),
+      }),
+    })
+    if (!res.ok) throw new Error(await readError(res, "Failed to resolve location names"))
+    const data = await res.json()
+    const results = Array.isArray(data?.results) ? data.results : []
+    for (const row of results as GpsReverseGeocodeResult[]) {
+      if (!row?.locationName) continue
+      if (row.key) out[row.key] = row.locationName
+      // Index with frontend rounding too (avoids Python/JS round mismatch).
+      if (typeof row.latitude === "number" && typeof row.longitude === "number") {
+        out[gpsCoordKey(row.latitude, row.longitude)] = row.locationName
+      }
+    }
+  }
+  return out
 }

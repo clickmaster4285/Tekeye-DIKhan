@@ -140,16 +140,17 @@ export default function DetentionReportingPage() {
             </div>
           </div>
 
-          <Table className="table-fixed w-full" containerClassName="overflow-x-hidden">
+          <div className="w-full max-w-full overflow-x-auto rounded-lg border">
+          <Table className="min-w-[980px]">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[16%]">Case No</TableHead>
-                <TableHead className="w-[14%]">Detention Date</TableHead>
-                <TableHead className="w-[22%]">Place</TableHead>
-                <TableHead className="w-[8%]">Days</TableHead>
-                <TableHead className="w-[12%]">Assessment</TableHead>
-                <TableHead className="w-[14%]">Window</TableHead>
-                <TableHead className="w-[7.5rem] text-right">Actions</TableHead>
+                <TableHead className="min-w-[8rem]">Case No</TableHead>
+                <TableHead className="min-w-[8rem]">Detention Date</TableHead>
+                <TableHead className="min-w-[10rem]">Place</TableHead>
+                <TableHead className="min-w-[4.5rem]">Days</TableHead>
+                <TableHead className="min-w-[7rem]">Assessment</TableHead>
+                <TableHead className="min-w-[7rem]">Window</TableHead>
+                <TableHead className="min-w-[7.5rem] text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -204,6 +205,7 @@ export default function DetentionReportingPage() {
               )}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
       <PdfExportHost hostRef={pdf.hostRef}>

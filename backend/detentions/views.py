@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 
+from django.conf import settings
 from django.db import transaction
 
 from django.shortcuts import get_object_or_404
@@ -40,6 +41,16 @@ from .serializers import (
 )
 
 from .image_utils import compress_image
+
+
+def _detention_memo_scan_url(*, memo_id, client_origin: str = "") -> str:
+    """Canonical frontend detail URL encoded in memo QR (not print mode)."""
+    origin = (client_origin or "").strip().rstrip("/")
+    if not origin:
+        origin = (getattr(settings, "FRONTEND_ORIGIN", "") or "").strip().rstrip("/")
+    if not origin:
+        origin = ""
+    return f"{origin}/seizure-management/detention-memo/{memo_id}"
 
 
 def _body_from_request(request) -> dict[str, Any]:
@@ -182,7 +193,12 @@ def get_memo_queryset():
     return (
 
         DetentionMemo.objects.prefetch_related(
-            "goods_lines__images", "attachments").all()
+            "goods_lines__images",
+            "goods_lines__located_camera__nvr__site",
+            "goods_lines__located_camera__ml_server",
+            "goods_lines__detection_event",
+            "attachments",
+        ).all()
 
     )
 
@@ -234,18 +250,14 @@ class DetentionMemoCreateAPIView(APIView):
 
             memo.refresh_from_db()
 
-        base = (validated.get("clientOrigin") or "").strip() or request.build_absolute_uri("/").rstrip(
-
-            "/"
-
-        )
+        base = (validated.get("clientOrigin") or "").strip() or getattr(settings, "FRONTEND_ORIGIN", "").strip()
 
         update_fields = []
 
-        if not (memo.memo_qr_code_payload or "").strip():
-
-            memo.memo_qr_code_payload = f"{base}/detention-memo/{memo.pk}?print=full"
-
+        # Always keep scan URL on the seizure-management detail route (not legacy /detention-memo or print=full).
+        correct_payload = _detention_memo_scan_url(memo_id=memo.pk, client_origin=base)
+        if (memo.memo_qr_code_payload or "").strip() != correct_payload:
+            memo.memo_qr_code_payload = correct_payload
             update_fields.append("memo_qr_code_payload")
 
         if not (memo.memo_qr_code_number or "").strip():

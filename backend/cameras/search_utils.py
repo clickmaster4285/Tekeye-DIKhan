@@ -9,7 +9,18 @@ _SYNONYM_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"smog", "smoog", "smoke", "fog", "haze", "mist", "fire", "flame"}),
     frozenset({"person", "people", "human", "man", "woman", "pedestrian", "staff", "worker"}),
     frozenset({"car", "vehicle", "truck", "van", "bus", "motorcycle", "bike", "bicycle"}),
-    frozenset({"gun", "weapon", "knife", "pistol", "rifle"}),
+    frozenset(
+        {
+            "gun",
+            "weapon",
+            "knife",
+            "pistol",
+            "rifle",
+            "firearm",
+            "heavy-weapon",
+            "knife_weapon",
+        }
+    ),
     frozenset({"box", "package", "parcel", "carton", "container"}),
     frozenset({"dog", "cat", "animal", "pet"}),
     frozenset({"alert", "warning", "danger", "alarm"}),

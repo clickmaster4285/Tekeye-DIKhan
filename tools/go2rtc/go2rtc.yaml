@@ -1,0 +1,9 @@
+# Local go2rtc for All Cities WebRTC viewing.
+# Streams are registered by the backend (GO2RTC_URL). Do not put camera passwords here.
+api:
+  listen: ":1984"
+rtsp:
+  listen: ":8554"
+webrtc:
+  listen: ":8555"
+streams: {}

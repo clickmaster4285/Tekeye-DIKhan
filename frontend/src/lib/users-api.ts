@@ -26,6 +26,8 @@ export type ApiUser = {
   last_login?: string | null;
   can_delete?: boolean;
   allowed_modules?: string[];
+  /** Linked staff photo (/media/...) when available. */
+  profile_image?: string | null;
 };
 
 export function canDeleteUser(user: Pick<ApiUser, "role" | "can_delete">): boolean {

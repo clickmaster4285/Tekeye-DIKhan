@@ -13,17 +13,21 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         if not ml_service_enabled():
-            self.stderr.write("ML_SERVICE_URL is not configured.")
+            self.stderr.write(
+                "No ML servers configured — set ML_SERVICE_URL or add an active ML RemoteServer."
+            )
             return
 
         entries = collect_active_camera_entries()
-        self.stdout.write(f"Found {len(entries)} active camera stream(s).")
+        self.stdout.write(f"Found {len(entries)} active assigned camera stream(s).")
         result = sync_cameras_to_ml()
         if result is None:
-            self.stderr.write("Camera sync failed — is the ML service running?")
+            self.stderr.write("Camera sync failed — are ML services reachable?")
             return
         self.stdout.write(
             self.style.SUCCESS(
-                f"Registered {result.get('registered', 0)}/{result.get('total', len(entries))} on ML service."
+                f"Registered {result.get('registered', 0)}/{result.get('total', len(entries))} "
+                f"(removed {result.get('removed', 0)} orphans) across "
+                f"{len(result.get('by_server') or {})} ML node(s)."
             )
         )

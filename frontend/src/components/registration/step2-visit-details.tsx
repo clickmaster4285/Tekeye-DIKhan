@@ -93,6 +93,8 @@ export function Step2VisitDetails({ formData, updateFormData }: Step2Props) {
               <SelectValue placeholder="Select the department" />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="appraisement">Appraisement</SelectItem>
+              <SelectItem value="enforcement">Enforcement</SelectItem>
               <SelectItem value="hr">Human Resources</SelectItem>
               <SelectItem value="it">Information Technology</SelectItem>
               <SelectItem value="finance">Finance</SelectItem>

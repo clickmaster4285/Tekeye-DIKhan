@@ -3,7 +3,7 @@ import { useLocation, useNavigate, Outlet } from "react-router-dom"
 import { Shield } from "lucide-react"
 import { Spinner } from "@/components/ui/spinner"
 import { Toaster } from "@/components/ui/toaster"
-import { AUTH_SESSION_KEY, AUTH_USER_UPDATED_EVENT, getStoredUser, goToSafeMediaNext } from "@/lib/auth"
+import { AUTH_SESSION_KEY, AUTH_USER_UPDATED_EVENT, getStoredUser, goToSafeNext } from "@/lib/auth"
 import { getHomeRouteForRole, isPathAllowedForRole } from "@/lib/role-access"
 import { ROUTES, isLoginRoute } from "@/routes/config"
 import { clearLegacyVmsLocalStorage } from "@/lib/vms-list-api"
@@ -46,11 +46,16 @@ export function AuthGuard() {
     const homeRoute = getHomeRouteForRole(user?.role, user?.allowed_modules)
 
     if (!isLoginPage && !auth) {
-      navigate(ROUTES.LOGIN, { replace: true })
+      const returnTo = `${location.pathname}${location.search}`
+      const loginTo =
+        returnTo && returnTo !== "/"
+          ? `${ROUTES.LOGIN}?next=${encodeURIComponent(returnTo)}`
+          : ROUTES.LOGIN
+      navigate(loginTo, { replace: true })
       return
     }
     if (isLoginPage && auth) {
-      if (goToSafeMediaNext(new URLSearchParams(location.search).get("next"))) {
+      if (goToSafeNext(new URLSearchParams(location.search).get("next"), navigate)) {
         return
       }
       navigate(homeRoute, { replace: true })

@@ -77,14 +77,14 @@ def _camera_refresh_interval() -> int:
 
 
 def _wait_for_ml(timeout_sec: float = 180.0) -> bool:
-    from ml.client import ml_health, ml_service_enabled
+    from ml.client import ml_health_any, ml_service_enabled
 
     if not ml_service_enabled():
         return False
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline and not _stop_event.is_set():
         try:
-            ml_health()
+            ml_health_any()
             return True
         except Exception:
             time.sleep(2.0)
@@ -99,6 +99,7 @@ def _active_camera_ids() -> list[int]:
             is_active=True,
             nvr__is_active=True,
             nvr__site__is_active=True,
+            ml_server_id__isnull=False,
         )
         .order_by("id")
         .values_list("id", flat=True)
@@ -106,8 +107,14 @@ def _active_camera_ids() -> list[int]:
 
 
 def _poll_camera(camera_id: int) -> int:
-    from ml.client import MLServiceError, ml_live_detections, ml_service_enabled
+    from ml.client import (
+        MLServiceError,
+        ml_live_detections_for_camera,
+        ml_live_jpeg_evidence_url_for_camera,
+        ml_service_enabled,
+    )
 
+    from .clip_capture import stash_evidence_jpeg
     from .detection_utils import save_detection_batch
     from .models import Camera
 
@@ -115,19 +122,42 @@ def _poll_camera(camera_id: int) -> int:
         return 0
 
     try:
-        camera = Camera.objects.select_related("nvr", "nvr__site").get(pk=camera_id)
+        camera = Camera.objects.select_related("nvr", "nvr__site", "ml_server").get(pk=camera_id)
     except Camera.DoesNotExist:
         return 0
 
+    if not camera.ml_server_id:
+        return 0
+
     try:
-        result = ml_live_detections(camera.stream_key, rtsp_url=camera.effective_stream_url())
+        result = ml_live_detections_for_camera(camera)
     except MLServiceError as exc:
         logger.debug("ML poll skipped for camera %s: %s", camera_id, exc)
         return 0
 
     detections = result.get("detections") or []
     if not detections:
-        return 0
+        # Still evaluate crowd / fire / smoke / weapon clear when the frame has no boxes.
+        try:
+            from .detection_utils import evaluate_camera_alerts
+
+            return evaluate_camera_alerts(camera, [])
+        except Exception:
+            logger.debug("Alert clear skipped for camera %s", camera_id, exc_info=True)
+            return 0
+
+    # Same-frame evidence right after detections (ML keeps the YOLO infer JPEG).
+    if result.get("has_evidence"):
+        try:
+            import requests
+
+            url = ml_live_jpeg_evidence_url_for_camera(camera)
+            resp = requests.get(url, timeout=(1.5, 3.0))
+            if resp.status_code == 200 and resp.content:
+                stash_evidence_jpeg(camera.pk, resp.content)
+        except Exception:
+            logger.debug("Evidence fetch skipped for camera %s", camera_id, exc_info=True)
+
     return save_detection_batch(camera, detections)
 
 

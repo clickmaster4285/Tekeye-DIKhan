@@ -81,6 +81,7 @@ export const ROUTES = {
   OBJECT_DETECTION: "/object-detection",
   OBJECT_TRACKING: "/object-tracking",
   VIDEO_IMAGE_SEARCH: "/find-in-video",
+  VIDEO_AI_TEST: "/video-ai-test",
   OBJECT_TRACKING_DETAIL: "/object-tracking/:uuid",
   /** Super Admin only — remote location servers + live detection streams */
   OPS_CENTRAL: "/ops-central",
@@ -88,8 +89,10 @@ export const ROUTES = {
   OPS_ML_SERVERS: "/ops-central/ml-servers",
   /** IT Super Admin — drag-drop / auto camera distribution */
   OPS_CAMERA_DISTRIBUTION: "/ops-central/distribution",
+  /** All connected Central Ops servers — live city camera wall */
   ALL_CITIES_CAMERAS: "/all-cities-cameras",
   PERSON_JOURNEY: "/person-journey",
+  ASSISTANT: "/assistant",
   PERSON_JOURNEY_DETAIL: "/person-journey/:uuid",
   GPS_TRACKING: "/gps-tracking",
   VIDEO_RECOVERY: "/video-recovery",
@@ -173,6 +176,7 @@ export const ROUTES = {
   CUSTOM_REPORT_BUILDER: "/reports/custom-builder",
   EXPORT_CENTER: "/reports/export-center",
   PREDICTIVE_INSIGHTS: "/predictive-insights",
+  AI_SUGGESTIONS: "/ai-suggestions",
   DATA_VISUALIZATION: "/data-visualization",
 
   // WMS Integration
@@ -187,6 +191,8 @@ export const ROUTES = {
   // HR
   EMPLOYEES: "/employees",
   ADD_STAFF: "/employees/add",
+  MOBILE_ALERTS: "/employees/mobile-alerts",
+  EMPLOYEE_DEVICE: "/employees/:id/device",
   RECRUITMENT: "/recruitment",
   VISITOR_EDIT: "/visitors/:id/edit",
   /** Path for employee detail; use getEmployeeDetailPath(id) for links */
@@ -231,6 +237,23 @@ export const ROUTES = {
   AI_ALERTS_HISTORY: "/ai-zone-alerts",
   AI_ALERTS_CONFIGURATION: "/system-alerts",
 
+  // Infrastructure Monitoring (IT Super Admin)
+  INFRASTRUCTURE_OVERVIEW: "/infrastructure",
+  INFRASTRUCTURE_CAMERAS: "/infrastructure/cameras",
+  INFRASTRUCTURE_CAMERA_DETAIL: "/infrastructure/cameras/:id",
+  INFRASTRUCTURE_NVRS: "/infrastructure/nvrs",
+  INFRASTRUCTURE_NVR_DETAIL: "/infrastructure/nvrs/:id",
+  INFRASTRUCTURE_UPS: "/infrastructure/ups",
+  INFRASTRUCTURE_INVERTERS: "/infrastructure/inverters",
+  INFRASTRUCTURE_NETWORK: "/infrastructure/network-devices",
+  INFRASTRUCTURE_SERVERS: "/infrastructure/servers",
+  INFRASTRUCTURE_SERVER_DETAIL: "/infrastructure/servers/:id",
+  INFRASTRUCTURE_DEVICE_HEALTH: "/infrastructure/device-health",
+  INFRASTRUCTURE_POWER: "/infrastructure/power-monitoring",
+  INFRASTRUCTURE_ALERTS: "/infrastructure/alerts",
+  INFRASTRUCTURE_EVENTS: "/infrastructure/events",
+  INFRASTRUCTURE_REPORTS: "/infrastructure/reports",
+
   // Fallback
   NOT_FOUND: "/404",
 } as const
@@ -240,6 +263,22 @@ export type RoutePath = (typeof ROUTES)[keyof typeof ROUTES]
 /** Build path to employee detail page */
 export function getEmployeeDetailPath(id: number): string {
   return `/employees/${id}`
+}
+
+export function getEmployeeDevicePath(id: number): string {
+  return `/employees/${id}/device`
+}
+
+export function getInfrastructureNvrDetailPath(id: number): string {
+  return `/infrastructure/nvrs/${id}`
+}
+
+export function getInfrastructureCameraDetailPath(id: number): string {
+  return `/infrastructure/cameras/${id}`
+}
+
+export function getInfrastructureServerDetailPath(id: number): string {
+  return `/infrastructure/servers/${id}`
 }
 
 /** Person journey lookup by PQR code */
@@ -306,8 +345,22 @@ export function getDetentionMemoCreatePath(pathname?: string): string {
   return `${getDetentionMemoListPath(pathname)}/create`
 }
 
+export function getDetentionMemoEditPath(id: string, pathname?: string): string {
+  return `${getDetentionMemoListPath(pathname)}/${encodeURIComponent(id)}/edit`
+}
+
 export function getDetentionMemoDetailPath(id: string, pathname?: string): string {
   return `${getDetentionMemoListPath(pathname)}/${encodeURIComponent(id)}`
+}
+
+/**
+ * Absolute URL encoded in detention-memo QR codes (opens the detail page, not print mode).
+ * Canonical path: /seizure-management/detention-memo/:id
+ */
+export function getDetentionMemoScanUrl(id: string, origin?: string): string {
+  const base =
+    (origin || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/+$/, "")
+  return `${base}${ROUTES.DETENTION_MEMO}/${encodeURIComponent(id)}`
 }
 
 export function getDetentionMemoSectionCrumb(pathname: string): { label: string; href: string } {
@@ -374,7 +427,8 @@ export function getPeopleDatabaseDetailPath(id: number | string): string {
 /** Nav item for sidebar (leaf) */
 export interface NavItem {
   label: string
-  href: RoutePath
+  /** Route path; may include :id segments resolved elsewhere, or hash anchors on detail pages */
+  href: string
 }
 
 /** Nav group for sidebar (with children; children can be items or nested groups). Optional overviewHref: when user clicks the group, navigate here and expand. */
@@ -551,6 +605,7 @@ const ALL_NAV_ITEMS: (NavItem | NavGroup)[] = [
     label: "Human Resource",
     children: [
       { label: "Employees", href: ROUTES.EMPLOYEES },
+      { label: "Mobile Alerts", href: ROUTES.MOBILE_ALERTS },
       { label: "Face Enrollment", href: ROUTES.FACE_ENROLLMENT },
       { label: "Attendance Monitor", href: ROUTES.ATTENDANCE_MONITOR },
       { label: "Attendance Dashboard", href: ROUTES.ATTENDANCE_DASHBOARD },
@@ -601,6 +656,7 @@ const ALL_NAV_ITEMS: (NavItem | NavGroup)[] = [
           { label: "Object Detection", href: ROUTES.OBJECT_DETECTION },
           { label: "Object Tracking", href: ROUTES.OBJECT_TRACKING },
           { label: "Find in Video", href: ROUTES.VIDEO_IMAGE_SEARCH },
+          { label: "Video AI Test", href: ROUTES.VIDEO_AI_TEST },
           { label: "Person Journey", href: ROUTES.PERSON_JOURNEY },
           { label: "GPS Tracking", href: ROUTES.GPS_TRACKING },
           { label: "ANPR Settings", href: ROUTES.ANPR_SETTINGS },
@@ -622,6 +678,7 @@ const ALL_NAV_ITEMS: (NavItem | NavGroup)[] = [
           { label: "Playback & Search", href: ROUTES.PLAYBACK_SEARCH },
           { label: "Video Recovery", href: ROUTES.VIDEO_RECOVERY },
           { label: "Find in Video", href: ROUTES.VIDEO_IMAGE_SEARCH },
+          { label: "Video AI Test", href: ROUTES.VIDEO_AI_TEST },
           { label: "Thermal Imaging", href: ROUTES.THERMAL_IMAGING },
         ],
       },
@@ -663,6 +720,7 @@ const ALL_NAV_ITEMS: (NavItem | NavGroup)[] = [
         label: "AI Analytics & Insights",
         children: [
           { label: "Reports & Analytics", href: ROUTES.REPORTS },
+          { label: "AI Suggestions", href: ROUTES.AI_SUGGESTIONS },
           { label: "Predictive Insights", href: ROUTES.PREDICTIVE_INSIGHTS },
           { label: "Data Visualization", href: ROUTES.DATA_VISUALIZATION },
         ],
@@ -697,6 +755,26 @@ const WAREHOUSE_MANAGEMENT_NAV = ALL_NAV_ITEMS[2] as NavGroup
 const SEIZURE_MANAGEMENT_NAV = ALL_NAV_ITEMS[3] as NavGroup
 const HUMAN_RESOURCE_NAV = ALL_NAV_ITEMS[4] as NavGroup
 const AUCTION_MANAGEMENT_NAV = ALL_NAV_ITEMS[7] as NavGroup
+
+/** IT Super Admin only — not part of Super Admin sidebar. */
+const INFRASTRUCTURE_MONITORING_NAV: NavGroup = {
+  label: "Infrastructure Monitoring",
+  overviewHref: ROUTES.INFRASTRUCTURE_OVERVIEW,
+  children: [
+    { label: "Overview", href: ROUTES.INFRASTRUCTURE_OVERVIEW },
+    { label: "Cameras", href: ROUTES.INFRASTRUCTURE_CAMERAS },
+    { label: "NVRs", href: ROUTES.INFRASTRUCTURE_NVRS },
+    { label: "UPS Systems", href: ROUTES.INFRASTRUCTURE_UPS },
+    { label: "Inverters", href: ROUTES.INFRASTRUCTURE_INVERTERS },
+    { label: "Network Devices", href: ROUTES.INFRASTRUCTURE_NETWORK },
+    { label: "Servers", href: ROUTES.INFRASTRUCTURE_SERVERS },
+    { label: "Device Health", href: ROUTES.INFRASTRUCTURE_DEVICE_HEALTH },
+    { label: "Power Monitoring", href: ROUTES.INFRASTRUCTURE_POWER },
+    { label: "Alerts", href: ROUTES.INFRASTRUCTURE_ALERTS },
+    { label: "Events", href: ROUTES.INFRASTRUCTURE_EVENTS },
+    { label: "Reports", href: ROUTES.INFRASTRUCTURE_REPORTS },
+  ],
+}
 
 const VEHICLE_MANAGEMENT_NAV: NavGroup = {
   label: "Vehicle Management",
@@ -882,17 +960,7 @@ export function getNavSectionsForRole(
   // Super Admin — full sidebar, no Central Ops.
   if (normalized === "ADMIN") return NAV_SECTIONS
 
-  if (
-    normalized === "LOCATION_ADMIN" ||
-    normalized === "OPERATION_MANAGER" ||
-    normalized === "COLLECTOR" ||
-    normalized === "DEPUTY_COLLECTOR" ||
-    normalized === "ASSISTANT_COLLECTOR"
-  ) {
-    return NAV_SECTIONS
-  }
-
-  // IT Super Admin — Central Ops only.
+  // IT Super Admin — Central Ops + Infrastructure Monitoring.
   if (normalized === "IT_SUPERADMIN") {
     return [
       {
@@ -904,27 +972,20 @@ export function getNavSectionsForRole(
           { label: "All Cities Cameras", href: ROUTES.ALL_CITIES_CAMERAS },
         ],
       },
+      {
+        title: "Infrastructure Monitoring",
+        items: [INFRASTRUCTURE_MONITORING_NAV],
+      },
     ]
   }
 
-  // Custom grants: only show modules Super Admin explicitly allowed (no main Dashboard).
+  // Custom grants: only show modules Super Admin explicitly allowed.
   const modules = (allowedModules ?? []).map((m) => m.trim()).filter(Boolean)
   if (modules.length > 0) {
     return filterNavSectionsByModules(NAV_SECTIONS, modules)
   }
 
-  // No custom grants → role default template. Never fall through to the full sidebar.
-  if (normalized === "GUARD") return GUARD_NAV_SECTIONS
-  if (normalized === "RECEPTIONIST") return RECEPTIONIST_NAV_SECTIONS
-  if (normalized === "WAREHOUSE_OFFICER") return WAREHOUSE_OFFICER_NAV_SECTIONS
-  if (normalized === "WAREHOUSE_SUPERINTENDENT") return WAREHOUSE_SUPERINTENDENT_NAV_SECTIONS
-  if (normalized === "WAREHOUSE_IN_CHARGE") return WAREHOUSE_IN_CHARGE_NAV_SECTIONS
-  if (normalized === "EXAMINATION_OFFICER") return EXAMINATION_OFFICER_NAV_SECTIONS
-  if (normalized === "STOCK_CONTROLLER") return STOCK_CONTROLLER_NAV_SECTIONS
-  if (normalized === "AUDITOR") return AUDITOR_NAV_SECTIONS
-  if (normalized === "PRAL") return PRAL_NAV_SECTIONS
-  if (normalized === "IT_ADMIN") return IT_ADMIN_NAV_SECTIONS
-  if (normalized === "HR") return HR_NAV_SECTIONS
+  // No custom grants means no module sidebar until permissions are assigned.
   return EMPTY_NAV_SECTIONS
 }
 
@@ -1008,12 +1069,15 @@ export function getModuleLabelForPath(
 }
 
 /** All leaf nav items (label + href) from the full nav tree, for favorites etc. */
-export function getAllNavItems(): { label: string; href: RoutePath }[] {
-  const out: { label: string; href: RoutePath }[] = []
+export function getAllNavItems(): { label: string; href: string }[] {
+  const out: { label: string; href: string }[] = []
   function walk(nodes: (NavItem | NavGroup)[]) {
     for (const node of nodes) {
-      if ("href" in node) out.push({ label: node.label, href: node.href })
-      else walk(node.children)
+      if ("href" in node && typeof node.href === "string") {
+        out.push({ label: node.label, href: node.href })
+      } else if ("children" in node) {
+        walk(node.children)
+      }
     }
   }
   for (const section of NAV_SECTIONS) walk(section.items)

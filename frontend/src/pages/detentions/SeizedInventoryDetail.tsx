@@ -14,7 +14,9 @@ import {
 } from "@/components/ui/table"
 import { DestructionRecordsPanel } from "@/components/warehouse/destruction-records-panel"
 import { ROUTES, getDetentionMemoDetailPath } from "@/routes/config"
-import { GoodsLineText, goodsLineCellClass } from "@/components/goods/goods-line-text-field"
+import { GoodsLineText, goodsDetailCellClass, goodsHeadClass } from "@/components/goods/goods-line-text-field"
+import { GoodsQrDisplay } from "@/components/goods/goods-qr-display"
+import { cn } from "@/lib/utils"
 
 const STORAGE_KEY = "wms_seized_inventory"
 
@@ -203,37 +205,39 @@ export default function SeizedInventoryDetailPage() {
                 <Package className="h-4 w-4" />
                 Goods Information
               </h4>
-              <div className="rounded-lg border overflow-hidden">
-                <Table className="table-fixed w-full">
+              <div className="max-w-full overflow-x-auto rounded-md border border-border/70">
+                <Table className="w-full min-w-[960px] text-sm">
                   <TableHeader>
-                    <TableRow>
-                      <TableHead> QR Code</TableHead>
-                      <TableHead className="w-[22%]">Description</TableHead>
-                      <TableHead>PCT</TableHead>
-                      <TableHead>Qty</TableHead>
-                      <TableHead>Unit</TableHead>
-                      <TableHead>Condition</TableHead>
-                      <TableHead>Assessable</TableHead>
-                      <TableHead>Perishable</TableHead>
-                      <TableHead>ID / Chassis</TableHead>
-                      <TableHead className="w-[16%]">Item Notes</TableHead>
+                    <TableRow className="border-b bg-muted/40 hover:bg-muted/40">
+                      <TableHead className={goodsHeadClass}>QR Code</TableHead>
+                      <TableHead className={goodsHeadClass}>Description</TableHead>
+                      <TableHead className={goodsHeadClass}>PCT</TableHead>
+                      <TableHead className={goodsHeadClass}>Qty</TableHead>
+                      <TableHead className={goodsHeadClass}>Unit</TableHead>
+                      <TableHead className={goodsHeadClass}>Condition</TableHead>
+                      <TableHead className={goodsHeadClass}>Assessable</TableHead>
+                      <TableHead className={goodsHeadClass}>Perishable</TableHead>
+                      <TableHead className={goodsHeadClass}>ID / Chassis</TableHead>
+                      <TableHead className={goodsHeadClass}>Item Notes</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {row.goodsItems.map((item) => (
                       <TableRow key={item.id}>
-                        <TableCell className="font-mono text-xs">{item.qrCodeNumber || "—"}</TableCell>
-                        <TableCell className={`${goodsLineCellClass} font-medium`}>
+                        <TableCell className={cn(goodsDetailCellClass, "w-[7rem]")}>
+                          <GoodsQrDisplay code={item.qrCodeNumber} size={56} />
+                        </TableCell>
+                        <TableCell className={cn(goodsDetailCellClass, "min-w-[10rem] max-w-[16rem] font-medium")}>
                           <GoodsLineText>{item.description || "—"}</GoodsLineText>
                         </TableCell>
-                        <TableCell className="font-mono">{item.pctCode || "—"}</TableCell>
-                        <TableCell>{item.quantity || "—"}</TableCell>
-                        <TableCell>{item.unit || "—"}</TableCell>
-                        <TableCell>{item.condition || "—"}</TableCell>
-                        <TableCell>{item.assessableValuePkr || "—"}</TableCell>
-                        <TableCell>{item.perishable ? "Yes" : "No"}</TableCell>
-                        <TableCell>{item.identificationRef || "—"}</TableCell>
-                        <TableCell className={`${goodsLineCellClass} text-muted-foreground`}>
+                        <TableCell className={cn(goodsDetailCellClass, "font-mono")}>{item.pctCode || "—"}</TableCell>
+                        <TableCell className={goodsDetailCellClass}>{item.quantity || "—"}</TableCell>
+                        <TableCell className={goodsDetailCellClass}>{item.unit || "—"}</TableCell>
+                        <TableCell className={goodsDetailCellClass}>{item.condition || "—"}</TableCell>
+                        <TableCell className={goodsDetailCellClass}>{item.assessableValuePkr || "—"}</TableCell>
+                        <TableCell className={goodsDetailCellClass}>{item.perishable ? "Yes" : "No"}</TableCell>
+                        <TableCell className={goodsDetailCellClass}>{item.identificationRef || "—"}</TableCell>
+                        <TableCell className={cn(goodsDetailCellClass, "min-w-[8rem] max-w-[14rem] text-muted-foreground")}>
                           <GoodsLineText>{item.itemNotes || "—"}</GoodsLineText>
                         </TableCell>
                       </TableRow>

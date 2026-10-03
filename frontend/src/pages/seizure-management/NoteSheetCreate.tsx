@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, Camera, ChevronDown, Copy, Eye, Plus, Send, Trash2, X } from "lucide-react"
+import { ArrowLeft, Camera, ChevronDown, Copy, Plus, Send, Trash2, X } from "lucide-react"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -36,26 +36,37 @@ import { ROUTES, getSeizureMgmtNoteSheetDetailPath } from "@/routes/config"
 import { getStoredUser } from "@/lib/auth"
 import { locationLabel } from "@/lib/locations"
 import { fetchCurrentUser, pickUserContact } from "@/lib/users-api"
+import { useCameras } from "@/hooks/use-cameras"
+import type { CameraRecord } from "@/lib/cameras-api"
 import {
   EVIDENCE_OPTIONS,
   RECOMMENDATION_OPTIONS,
+  canUserFullyEditSeizureDocs,
   createNoteSheet,
   fetchNoteSheetById,
   noteSheetApproval,
   updateNoteSheet,
   type NoteSheetCreateMedia,
   type NoteSheetItem,
+  type NoteSheetStatus,
   type NoteSheetWritePayload,
 } from "@/lib/seizure-management-api"
 import { toast } from "@/hooks/use-toast"
 import { firstMissingField, reportMissingField } from "@/lib/form-missing-field"
+import { GoodsQrDisplay, getGoodsQrImageUrl } from "@/components/goods/goods-qr-display"
 import {
   GoodsLineTextField,
+  GoodsTableColGroup,
+  GOODS_TABLE_MIN_WIDTH,
+  goodsControlCellClass,
+  goodsControlWrapClass,
+  goodsHeadClass,
   goodsLineCellClass,
   goodsPlaceholderClass,
   goodsSelectTriggerClass,
   goodsTableClass,
 } from "@/components/goods/goods-line-text-field"
+import { cn } from "@/lib/utils"
 
 const NOTE_SHEET_APPROVER_LABEL =
   "Assistant Collector, Deputy Collector, Location Admin, Super Admin"
@@ -82,8 +93,7 @@ function newClientLineId(): string {
   return `gi-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 }
 
-const getQrCodeUrl = (data: string, size = 120) =>
-  `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(data)}`
+const getQrCodeUrl = getGoodsQrImageUrl
 
 function emptyItem(): NoteSheetItem {
   const clientLineId = newClientLineId()
@@ -101,7 +111,45 @@ function emptyItem(): NoteSheetItem {
     remarks: "",
     images: [],
     imageFiles: [],
+    locatedZone: "",
+    locatedCameraId: null,
+    detectedAt: "",
+    detectionEventId: null,
   }
+}
+
+function normalizeLocationKey(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, "")
+}
+
+function camerasForOfficeLocation(cameras: CameraRecord[], office: string): CameraRecord[] {
+  const active = cameras.filter((c) => c.is_active)
+  const key = normalizeLocationKey(office)
+  if (!key) return active
+  return active.filter((c) => {
+    const loc = normalizeLocationKey(c.location || c.site_code || "")
+    const site = normalizeLocationKey(c.site_name || "")
+    return loc.includes(key) || key.includes(loc) || site.includes(key) || key.includes(site)
+  })
+}
+
+function uniqueCameraZones(cameras: CameraRecord[]): string[] {
+  const zones = new Set<string>()
+  for (const cam of cameras) {
+    const z = (cam.zone || "").trim()
+    if (z) zones.add(z)
+  }
+  return Array.from(zones).sort((a, b) => a.localeCompare(b))
+}
+
+function camerasForZone(cameras: CameraRecord[], zone: string): CameraRecord[] {
+  const z = zone.trim().toLowerCase()
+  if (!z) return []
+  return cameras.filter((c) => (c.zone || "").trim().toLowerCase() === z)
+}
+
+function cameraOptionLabel(cam: CameraRecord): string {
+  return (cam.name || "").trim() || cam.code || "Camera"
 }
 
 type MediaKey = keyof NoteSheetCreateMedia
@@ -140,7 +188,7 @@ export default function NoteSheetCreatePage() {
   const [saving, setSaving] = useState(false)
   const [invalidField, setInvalidField] = useState("")
   const [noteSheetNo, setNoteSheetNo] = useState("")
-  const [status, setStatus] = useState<"Draft" | "Rejected">("Draft")
+  const [status, setStatus] = useState<NoteSheetStatus>("Draft")
   const [existingAttachments, setExistingAttachments] = useState<
     { id: string; fileType: string; originalFilename: string; url: string }[]
   >([])
@@ -167,6 +215,28 @@ export default function NoteSheetCreatePage() {
 
   const [items, setItems] = useState<NoteSheetItem[]>([])
   const [previewQrData, setPreviewQrData] = useState<string | null>(null)
+
+  const { cameras: allCameras } = useCameras({ activeOnly: true, allocatedOnly: true })
+  const locationCameras = useMemo(
+    () => camerasForOfficeLocation(allCameras, office),
+    [allCameras, office]
+  )
+  const availableZones = useMemo(() => uniqueCameraZones(locationCameras), [locationCameras])
+
+  useEffect(() => {
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.locatedCameraId == null) return item
+        const cam = locationCameras.find((c) => c.id === item.locatedCameraId)
+        if (!cam) return { ...item, locatedCameraId: null, locatedZone: item.locatedZone }
+        const zone = (cam.zone || "").trim()
+        if (item.locatedZone && zone && item.locatedZone !== zone) {
+          return { ...item, locatedCameraId: null }
+        }
+        return item.locatedZone ? item : { ...item, locatedZone: zone }
+      })
+    )
+  }, [locationCameras])
 
   const [placeOfInspection, setPlaceOfInspection] = useState("")
   const [warehouseShop, setWarehouseShop] = useState("")
@@ -228,7 +298,11 @@ export default function NoteSheetCreatePage() {
     setLoading(true)
     fetchNoteSheetById(editId)
       .then((row) => {
-        if (row.status !== "Draft" && row.status !== "Rejected") {
+        if (
+          row.status !== "Draft" &&
+          row.status !== "Rejected" &&
+          !canUserFullyEditSeizureDocs(getStoredUser()?.role)
+        ) {
           toast({
             title: "Only Draft or Rejected note sheets can be edited",
             variant: "destructive",
@@ -272,6 +346,12 @@ export default function NoteSheetCreatePage() {
                 remarks: it.remarks || it.itemNotes || "",
                 images: it.images || [],
                 imageFiles: [],
+                locatedZone: it.locatedCamera?.zone || "",
+                locatedCameraId: it.locatedCameraId ?? it.locatedCamera?.id ?? null,
+                locatedCamera: it.locatedCamera ?? null,
+                detectedAt: it.detectedAt || "",
+                detectionEventId: it.detectionEventId ?? null,
+                evidenceUrl: it.evidenceUrl || "",
               }))
             : [emptyItem()]
         )
@@ -300,7 +380,7 @@ export default function NoteSheetCreatePage() {
   const updateItem = (
     index: number,
     field: keyof NoteSheetItem,
-    value: string | boolean | File[] | string[]
+    value: string | boolean | File[] | string[] | number | null
   ) => {
     setItems((prev) => prev.map((row, i) => (i === index ? { ...row, [field]: value } : row)))
   }
@@ -700,7 +780,10 @@ export default function NoteSheetCreatePage() {
             <CollapsibleContent>
               <CardContent className="pt-0">
                 <p className="text-sm text-muted-foreground mb-4">
-                  List of seized/detained goods. <strong>Each item gets a unique QR code</strong> for scanning. Click the eye button to preview a larger QR code.
+                  List of seized/detained goods. <strong>Each item gets a unique QR code</strong> for scanning.
+                  Pick <strong>Zone</strong> first, then <strong>Located Camera</strong> (filtered by Office / Region).
+                  Only <strong>assigned</strong> cameras are listed.
+                  {office ? ` Office: ${office}.` : " Set Office / Region to filter cameras by location."}
                 </p>
                 <div
                   id="ns-goods"
@@ -711,153 +794,160 @@ export default function NoteSheetCreatePage() {
                       : undefined
                   }
                 >
-                <div className="overflow-auto max-w-full">
-                  <Table className={goodsTableClass}>
+                <div className="max-w-full overflow-x-auto rounded-md border border-border/70">
+                  <Table
+                    className={goodsTableClass}
+                    containerClassName="overflow-visible"
+                    style={{ minWidth: GOODS_TABLE_MIN_WIDTH, width: GOODS_TABLE_MIN_WIDTH }}
+                  >
+                    <GoodsTableColGroup />
                     <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-[180px]">QR Code</TableHead>
-                        <TableHead className="w-[240px]">Description of Goods <span className="text-red-600">*</span></TableHead>
-                        <TableHead className="w-[88px]">Qty</TableHead>
-                        <TableHead className="w-[110px]">Unit</TableHead>
-                        <TableHead className="w-[190px]">Condition</TableHead>
-                        <TableHead className="w-[92px]">Perishable</TableHead>
-                        <TableHead className="w-[160px]">ID / Chassis No.</TableHead>
-                        <TableHead className="w-[220px]">Item Notes</TableHead>
-                        <TableHead className="w-[96px]">Images</TableHead>
-                        <TableHead className="w-[44px]"></TableHead>
+                      <TableRow className="border-b bg-muted/40 hover:bg-muted/40">
+                        <TableHead className={goodsHeadClass}>QR Code</TableHead>
+                        <TableHead className={goodsHeadClass}>
+                          Description <span className="normal-case text-red-600">*</span>
+                        </TableHead>
+                        <TableHead className={goodsHeadClass}>Qty</TableHead>
+                        <TableHead className={goodsHeadClass}>Unit</TableHead>
+                        <TableHead className={goodsHeadClass}>Condition</TableHead>
+                        <TableHead className={cn(goodsHeadClass, "text-center")}>Perish.</TableHead>
+                        <TableHead className={goodsHeadClass}>ID / Chassis</TableHead>
+                        <TableHead className={goodsHeadClass}>Item Notes</TableHead>
+                        <TableHead className={goodsHeadClass}>Images</TableHead>
+                        <TableHead className={goodsHeadClass}>Camera Zone</TableHead>
+                        <TableHead className={goodsHeadClass}>Located Camera</TableHead>
+                        <TableHead className={goodsHeadClass} />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {items.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={10} className="text-muted-foreground text-center py-6">
+                          <TableCell colSpan={12} className="text-muted-foreground text-center py-6">
                             No goods added. Click "Add line" to add seized/detained items.
                           </TableCell>
                         </TableRow>
                       ) : (
-                        items.map((row, index) => (
+                        items.map((row, index) => {
+                          const zoneCameras = camerasForZone(locationCameras, row.locatedZone || "")
+                          const selectedCam =
+                            row.locatedCameraId != null
+                              ? zoneCameras.find((c) => c.id === row.locatedCameraId) ||
+                                locationCameras.find((c) => c.id === row.locatedCameraId) ||
+                                null
+                              : null
+                          const cameraSelectOptions =
+                            selectedCam && !zoneCameras.some((c) => c.id === selectedCam.id)
+                              ? [selectedCam, ...zoneCameras]
+                              : zoneCameras
+                          return (
                           <TableRow key={row.clientLineId || index} className={index % 2 === 1 ? "bg-muted/10" : ""}>
-                            <TableCell className="align-middle">
-                              <div className="flex flex-col gap-1 items-start">
-                                <span className="font-mono text-xs bg-muted px-1 py-0.5 rounded truncate max-w-[130px]">
-                                  {row.qrCodeNumber}
-                                </span>
-                                <div className="flex gap-1">
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-6 px-1 text-xs"
-                                    onClick={() => copyToClipboard(row.qrCodeNumber)}
-                                  >
-                                    <Copy className="h-3 w-3 mr-1" />
-                                    Copy
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-6 px-1 text-xs"
-                                    onClick={() => setPreviewQrData(row.qrCodeNumber)}
-                                  >
-                                    <Eye className="h-3 w-3 mr-1" />
-                                    Preview
-                                  </Button>
-                                </div>
-                                <img
-                                  src={getQrCodeUrl(row.qrCodeNumber, 100)}
-                                  alt="QR Code"
-                                  width={100}
-                                  height={100}
-                                  className="mt-1 border border-gray-200 rounded-sm bg-white p-1"
-                                  onError={(e) => {
-                                    (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23f0f0f0'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%23999' font-size='10'%3EQR Error%3C/text%3E%3C/svg%3E"
+                            <TableCell className={goodsControlCellClass}>
+                              <GoodsQrDisplay
+                                code={row.qrCodeNumber}
+                                size={72}
+                                onCopy={() => copyToClipboard(row.qrCodeNumber)}
+                                onView={() => setPreviewQrData(row.qrCodeNumber)}
+                              />
+                            </TableCell>
+                            <TableCell className={goodsLineCellClass}>
+                              <div className="min-w-0 max-w-full overflow-hidden">
+                                <GoodsLineTextField
+                                  value={row.product}
+                                  onChange={(e) => {
+                                    updateItem(index, "product", e.target.value)
+                                    if (invalidField === "ns-goods") setInvalidField("")
                                   }}
+                                  placeholder="Description of goods"
+                                  title="Description of goods"
+                                  aria-invalid={invalidField === "ns-goods" && index === 0}
+                                />
+                              </div>
+                            </TableCell>
+                            <TableCell className={goodsControlCellClass}>
+                              <div className={goodsControlWrapClass}>
+                                <Input
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={row.quantity}
+                                  onChange={(e) => updateItem(index, "quantity", e.target.value)}
+                                  placeholder="Qty"
+                                  title="Qty"
+                                  className={goodsPlaceholderClass}
+                                />
+                              </div>
+                            </TableCell>
+                            <TableCell className={goodsControlCellClass}>
+                              <div className={goodsControlWrapClass}>
+                                <Select value={row.unit} onValueChange={(v) => updateItem(index, "unit", v)}>
+                                  <SelectTrigger className={goodsSelectTriggerClass} title="Unit">
+                                    <SelectValue placeholder="Unit" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {GOODS_UNITS.map((u) => (
+                                      <SelectItem key={u} value={u}>
+                                        {u}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            </TableCell>
+                            <TableCell className={goodsControlCellClass}>
+                              <div className={goodsControlWrapClass}>
+                                <Select
+                                  value={row.condition}
+                                  onValueChange={(v) => updateItem(index, "condition", v)}
+                                >
+                                  <SelectTrigger className={goodsSelectTriggerClass} title="Condition">
+                                    <SelectValue placeholder="Condition" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {GOODS_CONDITIONS.map((c) => (
+                                      <SelectItem key={c} value={c}>
+                                        {c}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            </TableCell>
+                            <TableCell className={goodsControlCellClass}>
+                              <div className={cn(goodsControlWrapClass, "justify-center pt-2")}>
+                                <Checkbox
+                                  checked={row.perishable}
+                                  onCheckedChange={(checked) => updateItem(index, "perishable", !!checked)}
+                                  aria-label="Perishable"
+                                />
+                              </div>
+                            </TableCell>
+                            <TableCell className={goodsControlCellClass}>
+                              <div className={goodsControlWrapClass}>
+                                <Input
+                                  value={row.identificationRef}
+                                  onChange={(e) => updateItem(index, "identificationRef", e.target.value)}
+                                  placeholder="Chassis / Serial"
+                                  title="Chassis / Serial"
+                                  className={goodsPlaceholderClass}
                                 />
                               </div>
                             </TableCell>
                             <TableCell className={goodsLineCellClass}>
-                              <GoodsLineTextField
-                                value={row.product}
-                                onChange={(e) => {
-                                  updateItem(index, "product", e.target.value)
-                                  if (invalidField === "ns-goods") setInvalidField("")
-                                }}
-                                placeholder="Description of goods"
-                                title="Description of goods"
-                                aria-invalid={invalidField === "ns-goods" && index === 0}
-                              />
+                              <div className="min-w-0 max-w-full overflow-hidden">
+                                <GoodsLineTextField
+                                  value={row.remarks}
+                                  onChange={(e) => updateItem(index, "remarks", e.target.value)}
+                                  placeholder="Officer notes"
+                                  title="Officer notes for this item"
+                                />
+                              </div>
                             </TableCell>
-                            <TableCell className="align-middle">
-                              <Input
-                                type="text"
-                                inputMode="numeric"
-                                value={row.quantity}
-                                onChange={(e) => updateItem(index, "quantity", e.target.value)}
-                                placeholder="Qty"
-                                title="Qty"
-                                className={goodsPlaceholderClass}
-                              />
-                            </TableCell>
-                            <TableCell className="align-middle">
-                              <Select value={row.unit} onValueChange={(v) => updateItem(index, "unit", v)}>
-                                <SelectTrigger className={goodsSelectTriggerClass} title="Unit">
-                                  <SelectValue placeholder="Unit" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {GOODS_UNITS.map((u) => (
-                                    <SelectItem key={u} value={u}>
-                                      {u}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </TableCell>
-                            <TableCell className="align-middle">
-                              <Select
-                                value={row.condition}
-                                onValueChange={(v) => updateItem(index, "condition", v)}
-                              >
-                                <SelectTrigger className={goodsSelectTriggerClass} title="Condition">
-                                  <SelectValue placeholder="Condition" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {GOODS_CONDITIONS.map((c) => (
-                                    <SelectItem key={c} value={c}>
-                                      {c}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </TableCell>
-                            <TableCell className="text-center align-middle">
-                              <Checkbox
-                                checked={row.perishable}
-                                onCheckedChange={(checked) => updateItem(index, "perishable", !!checked)}
-                              />
-                            </TableCell>
-                            <TableCell className="align-middle">
-                              <Input
-                                value={row.identificationRef}
-                                onChange={(e) => updateItem(index, "identificationRef", e.target.value)}
-                                placeholder="Chassis / Serial"
-                                title="Chassis / Serial"
-                                className={goodsPlaceholderClass}
-                              />
-                            </TableCell>
-                            <TableCell className={goodsLineCellClass}>
-                              <GoodsLineTextField
-                                value={row.remarks}
-                                onChange={(e) => updateItem(index, "remarks", e.target.value)}
-                                placeholder="Officer notes for this item"
-                                title="Officer notes for this item"
-                              />
-                            </TableCell>
-                            <TableCell className="align-middle">
-                              <div className="flex flex-col gap-1">
-                                <label className="cursor-pointer inline-flex items-center gap-1 text-xs bg-secondary text-secondary-foreground hover:bg-secondary/80 px-2 py-1 rounded">
-                                  <Camera className="h-3 w-3" />
-                                  Add ({(row.imageFiles?.length ?? 0) + (row.images?.length ?? 0)}/10)
+                            <TableCell className={goodsControlCellClass}>
+                              <div className={cn(goodsControlWrapClass, "flex-col gap-1")}>
+                                <label className="cursor-pointer inline-flex h-9 w-full items-center justify-center gap-1 rounded-md border border-input bg-background px-2 text-xs font-medium hover:bg-muted/60">
+                                  <Camera className="h-3.5 w-3.5 shrink-0" />
+                                  <span className="truncate">
+                                    {(row.imageFiles?.length ?? 0) + (row.images?.length ?? 0)}/10
+                                  </span>
                                   <input
                                     type="file"
                                     accept="image/*"
@@ -881,7 +971,7 @@ export default function NoteSheetCreatePage() {
                                         key={`existing-${idx}`}
                                         src={imgUrl}
                                         alt={`Goods ${idx + 1}`}
-                                        className="h-8 w-8 object-cover rounded border"
+                                        className="h-7 w-7 object-cover rounded border"
                                       />
                                     ))}
                                     {row.imageFiles?.map((file, idx) => (
@@ -889,7 +979,7 @@ export default function NoteSheetCreatePage() {
                                         <img
                                           src={URL.createObjectURL(file)}
                                           alt={`New ${idx + 1}`}
-                                          className="h-8 w-8 object-cover rounded border"
+                                          className="h-7 w-7 object-cover rounded border"
                                         />
                                         <button
                                           type="button"
@@ -908,22 +998,112 @@ export default function NoteSheetCreatePage() {
                                 )}
                               </div>
                             </TableCell>
-                            <TableCell className="align-middle text-center">
-                              <div className="flex items-center justify-center">
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-destructive"
-                                disabled={false}
-                                onClick={() => setItems((prev) => prev.filter((_, i) => i !== index))}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                            <TableCell className={goodsControlCellClass}>
+                              <div className={goodsControlWrapClass}>
+                                <Select
+                                  value={row.locatedZone || "__none__"}
+                                  onValueChange={(v) => {
+                                    const zone = v === "__none__" ? "" : v
+                                    setItems((prev) =>
+                                      prev.map((item, i) =>
+                                        i === index
+                                          ? { ...item, locatedZone: zone, locatedCameraId: null, locatedCamera: null }
+                                          : item
+                                      )
+                                    )
+                                  }}
+                                >
+                                  <SelectTrigger className={goodsSelectTriggerClass} title="Camera zone">
+                                    <SelectValue placeholder="Select zone" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="__none__">Select zone</SelectItem>
+                                    {availableZones.map((zone) => (
+                                      <SelectItem key={zone} value={zone}>
+                                        {zone}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            </TableCell>
+                            <TableCell className={goodsControlCellClass}>
+                              <div className={goodsControlWrapClass}>
+                                <Select
+                                  value={row.locatedCameraId != null ? String(row.locatedCameraId) : "__none__"}
+                                  onValueChange={(v) => {
+                                    if (v === "__none__") {
+                                      updateItem(index, "locatedCameraId", null)
+                                      setItems((prev) =>
+                                        prev.map((item, i) =>
+                                          i === index ? { ...item, locatedCamera: null } : item
+                                        )
+                                      )
+                                      return
+                                    }
+                                    const camId = Number(v)
+                                    const cam =
+                                      zoneCameras.find((c) => c.id === camId) ||
+                                      locationCameras.find((c) => c.id === camId)
+                                    setItems((prev) =>
+                                      prev.map((item, i) =>
+                                        i === index
+                                          ? {
+                                              ...item,
+                                              locatedCameraId: Number.isFinite(camId) ? camId : null,
+                                              locatedZone: cam?.zone?.trim() || item.locatedZone || "",
+                                              locatedCamera: cam
+                                                ? {
+                                                    id: cam.id,
+                                                    code: cam.code,
+                                                    name: cam.name,
+                                                    zone: cam.zone,
+                                                    location: cam.location,
+                                                    displayLabel: cam.name || cam.code,
+                                                  }
+                                                : null,
+                                            }
+                                          : item
+                                      )
+                                    )
+                                  }}
+                                  disabled={!row.locatedZone}
+                                >
+                                  <SelectTrigger className={goodsSelectTriggerClass} title="Located camera">
+                                    <SelectValue
+                                      placeholder={row.locatedZone ? "Select camera" : "Pick zone first"}
+                                    >
+                                      {selectedCam ? cameraOptionLabel(selectedCam) : undefined}
+                                    </SelectValue>
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="__none__">No camera</SelectItem>
+                                    {cameraSelectOptions.map((cam) => (
+                                      <SelectItem key={cam.id} value={String(cam.id)}>
+                                        {cameraOptionLabel(cam)}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            </TableCell>
+                            <TableCell className={goodsControlCellClass}>
+                              <div className={cn(goodsControlWrapClass, "justify-center")}>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-9 w-9 text-destructive hover:text-destructive"
+                                  onClick={() => setItems((prev) => prev.filter((_, i) => i !== index))}
+                                  aria-label="Remove line"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
                               </div>
                             </TableCell>
                           </TableRow>
-                        ))
+                          )
+                        })
                       )}
                     </TableBody>
                   </Table>

@@ -48,11 +48,9 @@ export default function SeizureRegisterPage() {
     refresh()
     window.addEventListener(WMS_STOCK_UPDATED_EVENT, refresh)
     window.addEventListener("storage", refresh)
-    window.addEventListener("focus", refresh)
     return () => {
       window.removeEventListener(WMS_STOCK_UPDATED_EVENT, refresh)
       window.removeEventListener("storage", refresh)
-      window.removeEventListener("focus", refresh)
     }
   }, [])
 

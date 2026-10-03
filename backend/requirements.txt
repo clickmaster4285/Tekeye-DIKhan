@@ -12,14 +12,18 @@ pillow==12.1.1
 psycopg2-binary==2.9.11
 python-dotenv==1.2.1
 psutil>=5.9.0
+paramiko>=3.4.0
 PyYAML==6.0.3
 requests==2.32.5
+anthropic>=1.8.0
 sqlparse==0.5.5
 tzdata==2025.3
 ua-parser==1.0.1
 ua-parser-builtins==202603
 urllib3==2.6.3
 user-agents==2.2.0
+python-socketio>=5.11.0
+simple-websocket>=1.0.0
 
 # ML inference service (backend/ml_service — YOLO + face recognition)
 ultralytics>=8.0.0
@@ -34,8 +38,12 @@ python-multipart>=0.0.9
 # Install CUDA build: pip install torch --index-url https://download.pytorch.org/whl/cu118
 torch>=2.0.0
 
-# InsightFace attendance (webcam + CCTV)
+# InsightFace attendance (webcam + CCTV) — Windows uses DirectML GPU ONNX
 insightface>=0.7.3
 onnx>=1.14.0
 onnxruntime-directml>=1.15.0; platform_system=="Windows"
-onnxruntime>=1.15.0; platform_system!="Windows"
+onnxruntime-gpu>=1.15.0; platform_system!="Windows"
+
+# TekEye agent reports (PDF / Excel export)
+reportlab>=4.0
+openpyxl>=3.1

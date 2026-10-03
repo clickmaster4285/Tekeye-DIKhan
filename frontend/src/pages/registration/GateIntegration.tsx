@@ -300,7 +300,7 @@ export default function GateIntegrationPage() {
               )}
             </div>
             <div className="space-y-1.5">
-              <Label>Camera ID (optional)</Label>
+              <Label>Camera (optional)</Label>
               <Input
                 value={formData.camera_id_ref}
                 onChange={(e) => setFormData((p) => ({ ...p, camera_id_ref: e.target.value }))}

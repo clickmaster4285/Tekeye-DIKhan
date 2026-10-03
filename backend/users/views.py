@@ -14,7 +14,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 
 logger = logging.getLogger(__name__)
 from .models import (
@@ -69,16 +69,52 @@ class LoginView(APIView):
             serializer = LoginSerializer(data=request.data, context={"request": request})
             serializer.is_valid(raise_exception=True)
             user = serializer.validated_data["user"]
+            mobile_session = None
+            device_uuid = (request.data.get("device_uuid") or "").strip()
+            if device_uuid:
+                from logs.enforcement import DeviceRevoked, register_or_update_device, session_payload, start_mobile_session
+
+                try:
+                    device, created = register_or_update_device(user, request.data, request=request)
+                    access = start_mobile_session(user, device, request=request, created_device=created)
+                    mobile_session = session_payload(access)
+                    create_activity_log(user, request, "LOGIN", source="mobile")
+                except DeviceRevoked as exc:
+                    return Response(
+                        {"detail": str(exc), "code": "DEVICE_REVOKED"},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+                except ValidationError:
+                    raise
+                except Exception:
+                    logger.exception("Mobile session registration failed during login")
             token, _ = Token.objects.get_or_create(user=user)
-            create_activity_log(user, request, "POST /api/auth/login (success)")
+            try:
+                create_activity_log(user, request, "POST /api/auth/login (success)")
+            except Exception:
+                logger.exception("Failed to write login activity log")
+            payload = {"token": token.key, "user": user}
+            if mobile_session:
+                payload["mobile_session"] = mobile_session
             response = Response(
-                LoginResponseSerializer({"token": token.key, "user": user}).data,
+                LoginResponseSerializer(payload).data,
                 status=status.HTTP_200_OK,
             )
             return attach_media_auth_cookie(response, token.key, request)
         except ValidationError:
-            create_activity_log(None, request, "POST /api/auth/login (failed)")
+            try:
+                create_activity_log(None, request, "POST /api/auth/login (failed)")
+            except Exception:
+                logger.exception("Failed to write failed-login activity log")
             raise
+        except Exception:
+            logger.exception("Login crashed")
+            return Response(
+                {
+                    "detail": "Server error during login. Apply pending migrations (including mobile device tables) and check the Django log."
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 # -----------------------------
@@ -167,13 +203,33 @@ class StaffViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminOrHR]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     filter_backends = [filters.SearchFilter, DjangoFilterBackend, filters.OrderingFilter]
-    search_fields = ["full_name", "cnic", "designation", "department"]
+    search_fields = ["full_name", "cnic", "designation", "department", "employee_id", "personal_number", "phone_primary"]
     filterset_fields = ["department", "designation"]
     ordering_fields = ["full_name", "created_at"]
 
     def get_queryset(self):
+        from logs.models import MobileAccessSession, MobileDevice
+
         qs = Staff.objects.select_related("user", "face_enrollment")
-        return apply_location_filter(qs, self.request.user, field="user__location")
+        unlinked = (self.request.query_params.get("unlinked") or "").strip().lower()
+        if unlinked in ("1", "true", "yes"):
+            # Unlinked rows have no user__location; do not hide them behind that filter.
+            qs = qs.filter(user__isnull=True)
+        else:
+            qs = apply_location_filter(qs, self.request.user, field="user__location")
+        installed = MobileDevice.objects.filter(
+            user_id=OuterRef("user_id"),
+            is_revoked=False,
+            is_active=True,
+        )
+        logged_in = MobileAccessSession.objects.filter(
+            user_id=OuterRef("user_id"),
+            status=MobileAccessSession.STATUS_ACTIVE,
+        )
+        return qs.annotate(
+            mobile_app_installed=Exists(installed),
+            mobile_logged_in=Exists(logged_in),
+        )
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -359,41 +415,123 @@ class StaffViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
+    @action(detail=True, methods=["get"], url_path="login-preview")
+    def login_preview(self, request, pk=None):
+        from users.staff_login import staff_login_preview
+
+        staff = self.get_object()
+        return Response(staff_login_preview(staff))
+
     @action(detail=True, methods=["post"])
     def create_user(self, request, pk=None):
-        """Create a new user account for this staff member. Requires username, email, password, role, phone in body."""
+        """Create a login for this staff member. Password is required; unique ID/email/profile come from the employee."""
+        from users.staff_login import (
+            infer_staff_location,
+            infer_staff_role,
+            normalize_login_id,
+            staff_login_preview,
+            unique_employee_login_id,
+        )
+
         staff = self.get_object()
-        
         if staff.user:
             return Response(
                 {"error": "Staff member already has a linked user account."},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        
-        username = request.data.get("username") or (request.data.get("email") or "").split("@")[0] or f"staff_{staff.id}"
-        user_data = {
-            "username": request.data.get("username", username),
-            "email": request.data.get("email", ""),
-            "password": request.data.get("password"),
-            "role": request.data.get("role", "RECEPTIONIST"),
-            "phone": request.data.get("phone", staff.emergency_contact or ""),
-            "location": request.data.get("location", ""),
-        }
-        
-        if not user_data["email"]:
-            return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
-        if not user_data["password"]:
+
+        password = (request.data.get("password") or "").strip()
+        if not password:
+            return Response({"error": "Password is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        preview = staff_login_preview(staff)
+        login_id = normalize_login_id(request.data.get("username") or "") or unique_employee_login_id(staff)
+        if len(login_id) < 3:
             return Response(
-                {"error": "Password is required."},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": "User ID must be at least 3 letters or numbers."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        
-        serializer = UserCreateSerializer(data=user_data)
+        if User.objects.filter(username__iexact=login_id).exists():
+            return Response(
+                {"error": f"User ID '{login_id}' is already taken. Choose another."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        role = (request.data.get("role") or "").strip().upper() or infer_staff_role(staff)
+        location = (request.data.get("location") or "").strip().upper() or infer_staff_location(staff) or ""
+        valid_roles = {code for code, _label in User.ROLE_CHOICES}
+        valid_locations = {code for code, _label in User.LOCATION_CHOICES}
+        if role == "ADMIN":
+            location = ""
+        elif not location:
+            scope = get_location_scope(request.user)
+            if scope:
+                location = scope
+
+        if not role:
+            return Response(
+                {"error": "Role is required because this employee does not have a system role yet."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if role not in valid_roles:
+            return Response(
+                {"error": "Select a valid system role."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if role != "ADMIN" and not location:
+            return Response(
+                {"error": "Location is required because this employee does not have a posting location yet."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if role != "ADMIN" and location not in valid_locations:
+            return Response(
+                {"error": "Select a valid office location."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        email = (request.data.get("email") or staff.email or "").strip() or f"{login_id.lower()}@ciis.local"
+        phone = (
+            request.data.get("phone")
+            or staff.phone_primary
+            or staff.emergency_contact
+            or "0000000000"
+        )
+
+        user_data = {
+            "username": login_id,
+            "email": email,
+            "password": password,
+            "role": role,
+            "phone": phone,
+            "location": location,
+            "full_name": staff.full_name or login_id,
+            "cnic": staff.cnic or "",
+            "cell_no": staff.phone_primary or "",
+            "address": staff.address or staff.street_address or "",
+            "designation": staff.designation or "",
+            "employee_id": staff.employee_id or login_id,
+        }
+
+        serializer = UserCreateSerializer(data=user_data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        
-        # Link user to staff
+
         staff.user = user
+        staff_updates = ["user"]
+        if not staff.employee_id:
+            staff.employee_id = login_id
+            staff_updates.append("employee_id")
+        if not (staff.personal_number or "").strip():
+            staff.personal_number = login_id
+            staff_updates.append("personal_number")
+        if not (staff.role_access_level or "").strip():
+            staff.role_access_level = role
+            staff_updates.append("role_access_level")
+        if not (staff.email or "").strip() and email:
+            staff.email = email
+            staff_updates.append("email")
+        if location and not (staff.branch_location or "").strip():
+            staff.branch_location = location
+            staff_updates.append("branch_location")
         staff.save()
 
         try:
@@ -406,16 +544,18 @@ class StaffViewSet(viewsets.ModelViewSet):
         create_activity_log(
             request.user,
             request,
-            f"Created and linked user {user.username} for staff {staff.full_name}"
+            f"Created and linked user {user.username} for staff {staff.full_name}",
         )
-        
+
         return Response(
             {
                 "message": "User created and linked successfully",
+                "login_id": login_id,
                 "user": UserCreateSerializer(user).data,
-                "staff": StaffSerializer(staff).data
+                "staff": StaffSerializer(staff).data,
+                "preview": preview,
             },
-            status=status.HTTP_201_CREATED
+            status=status.HTTP_201_CREATED,
         )
 
 

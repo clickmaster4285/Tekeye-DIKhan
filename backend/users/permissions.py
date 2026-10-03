@@ -1,5 +1,5 @@
-from rest_framework import permissions
 from django.db.models import Q
+from rest_framework import permissions
 
 GLOBAL_ADMIN_ROLE = "ADMIN"
 IT_SUPERADMIN_ROLE = "IT_SUPERADMIN"
@@ -25,13 +25,14 @@ def is_it_superadmin(user) -> bool:
 
 
 def is_ops_viewer(user) -> bool:
-    """Global and location-scoped operations users may view Central Ops streams."""
+    """Super Admin, IT Super Admin, location admin, or collectorate officers may view camera streams."""
     if not user or not getattr(user, "is_authenticated", False):
         return False
     if is_global_admin(user) or is_it_superadmin(user):
         return True
-    return getattr(user, "role", None) in {
-        "LOCATION_ADMIN",
+    role = getattr(user, "role", None)
+    return role in {
+        LOCATION_ADMIN_ROLE,
         "COLLECTOR",
         "DEPUTY_COLLECTOR",
         "ASSISTANT_COLLECTOR",
@@ -49,6 +50,10 @@ _LOCATION_NAME_ALIASES = {
     "DI_KHAN": ("DI Khan", "Dera Ismail Khan", "DIKhan"),
     "SWH_RATTA_KULACHI": ("Ratta Kulachi", "SWH Ratta Kulachi"),
     "THAKOT": ("Thakot",),
+    "SWAT": ("Swat",),
+    "ABBOTTABAD": ("Abbottabad",),
+    "MANSEHRA": ("Mansehra",),
+    "BANNU": ("Bannu",),
 }
 
 _ALL_CITIES_VIEWER_ROLES = frozenset(
@@ -90,6 +95,22 @@ def ops_camera_location_scope(user) -> str | None:
     return loc or THIS_SITE_LOCATION
 
 
+def apply_remote_server_scope(queryset, user):
+    """Restrict remote servers to the viewer's site unless they may see all cities."""
+    scope = ops_camera_location_scope(user)
+    if not scope:
+        return queryset
+    aliases = _LOCATION_NAME_ALIASES.get(scope.upper(), ())
+    match = Q(location_code__iexact=scope)
+    for alias in aliases:
+        match |= Q(location_code__iexact=alias)
+        match |= Q(name__icontains=alias)
+    pretty = scope.replace("_", " ")
+    if pretty.lower() != scope.lower():
+        match |= Q(name__icontains=pretty)
+    return queryset.filter(match)
+
+
 def is_location_admin(user) -> bool:
     return bool(
         user
@@ -109,26 +130,10 @@ def get_location_scope(user) -> str | None:
     """
     if not user or not getattr(user, "is_authenticated", False):
         return None
-    if is_global_admin(user) or is_it_superadmin(user):
+    if is_global_admin(user):
         return None
     loc = (getattr(user, "location", None) or "").strip()
     return loc or None
-
-
-def apply_remote_server_scope(queryset, user):
-    """Restrict remote servers to the viewer's site unless they may see all cities."""
-    scope = ops_camera_location_scope(user)
-    if not scope:
-        return queryset
-    aliases = _LOCATION_NAME_ALIASES.get(scope.upper(), ())
-    match = Q(location_code__iexact=scope)
-    for alias in aliases:
-        match |= Q(location_code__iexact=alias)
-        match |= Q(name__icontains=alias)
-    pretty = scope.replace("_", " ")
-    if pretty.lower() != scope.lower():
-        match |= Q(name__icontains=pretty)
-    return queryset.filter(match)
 
 
 def get_effective_location(user, query_param: str | None = None) -> str | None:

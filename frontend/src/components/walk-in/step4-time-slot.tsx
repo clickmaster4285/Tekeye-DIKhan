@@ -72,7 +72,7 @@ export function WalkInStep4TimeSlot({ formData, updateFormData }: WalkInStep4Tim
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="clearance">Customs Clearance</SelectItem>
-              <SelectItem value="appraisal">Appraisal</SelectItem>
+              <SelectItem value="appraisement">Appraisement</SelectItem>
               <SelectItem value="enforcement">Enforcement</SelectItem>
               <SelectItem value="intelligence">Intelligence</SelectItem>
               <SelectItem value="legal">Legal</SelectItem>

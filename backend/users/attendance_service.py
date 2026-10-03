@@ -36,6 +36,23 @@ def _work_start() -> dt_time:
     return dt_time(h, m)
 
 
+def _work_end():
+    raw = getattr(settings, "ATTENDANCE_WORK_END", "17:00")
+    h, m = [int(x) for x in str(raw).split(":")[:2]]
+    return dt_time(h, m)
+
+
+def camera_attendance_zone(camera) -> str:
+    """entry / exit / interior / mixed. Place names stay mixed so existing cameras keep last-seen checkout."""
+    if camera is None:
+        return "mixed"
+    for raw in (getattr(camera, "passage_role", ""), getattr(camera, "zone", "")):
+        token = (raw or "").strip().lower()
+        if token in {"mixed", "entry", "exit", "interior"}:
+            return token
+    return "mixed"
+
+
 def _late_after() -> dt_time:
     raw = getattr(settings, "ATTENDANCE_LATE_AFTER", "09:30")
     h, m = [int(x) for x in str(raw).split(":")[:2]]
@@ -145,13 +162,42 @@ class AttendanceDecisionEngine:
     """
 
     @classmethod
-    def determine_status(cls, check_in_time: datetime) -> str:
+    def is_on_time(cls, check_in_time: datetime, staff: Staff | None = None) -> bool:
         local_time = timezone.localtime(check_in_time).time()
-        if local_time <= _work_start():
+        deadline = _late_after()
+        shift_start = getattr(staff, "work_shift_start", None) if staff is not None else None
+        if shift_start is not None:
+            grace = datetime.combine(check_in_time.date(), _late_after()) - datetime.combine(
+                check_in_time.date(), _work_start()
+            )
+            deadline_dt = datetime.combine(check_in_time.date(), shift_start) + grace
+            deadline = deadline_dt.time()
+        return local_time <= deadline
+
+    @classmethod
+    def determine_status(cls, check_in_time: datetime, staff: Staff | None = None) -> str:
+        if cls.is_on_time(check_in_time, staff):
             return Attendance.STATUS_PRESENT
-        if local_time <= _late_after():
-            return Attendance.STATUS_LATE
         return Attendance.STATUS_LATE
+
+    @classmethod
+    def apply_checkout_rules(cls, record: Attendance, staff: Staff | None, now: datetime, *, zone: str = "mixed") -> None:
+        if not record.check_in or not record.check_out:
+            return
+        hours = (record.check_out - record.check_in).total_seconds() / 3600.0
+        shift_end = getattr(staff, "work_shift_end", None) if staff is not None else None
+        end = shift_end or _work_end()
+        local_out = timezone.localtime(record.check_out).time()
+        notes: list[str] = []
+        if zone == "exit" and hours < 4:
+            record.status = Attendance.STATUS_HALF_DAY
+            notes.append("Half day")
+        elif zone == "exit" and local_out < end:
+            notes.append("Early leave")
+        if local_out > end:
+            notes.append("Overtime")
+        if notes:
+            record.notes = "; ".join(notes)
 
     @classmethod
     def _get_or_create_today(cls, staff: Staff, source: str, now: datetime) -> Attendance:
@@ -190,8 +236,12 @@ class AttendanceDecisionEngine:
         allow_checkout: bool = True,
         enforce_camera_cooldown: bool = False,
         enforce_min_checkout_hours: bool = False,
+        camera_zone: str = "mixed",
     ) -> dict:
         now = now or timezone.now()
+        zone = (camera_zone or "mixed").strip().lower()
+        if zone not in {"mixed", "entry", "exit", "interior"}:
+            zone = "mixed"
         key = _cooldown_key(staff=staff) if not (staff.user_id) else _cooldown_key(user=staff.user)
 
         camera_like = source in (
@@ -209,9 +259,17 @@ class AttendanceDecisionEngine:
         record = cls._get_or_create_today(staff, source, now)
 
         if record.check_in is None:
+            if zone == "exit":
+                if record.pk:
+                    record.delete()
+                return {
+                    "action": "ignored",
+                    "message": "Exit camera with no check-in",
+                    "record": None,
+                }
             record.check_in = now
             record.check_in_confidence = confidence
-            record.status = cls.determine_status(now)
+            record.status = cls.determine_status(now, staff)
             record.source = source
             record.save(
                 update_fields=[
@@ -245,6 +303,13 @@ class AttendanceDecisionEngine:
                 "record": record,
             }
 
+        if zone in {"entry", "interior"}:
+            return {
+                "action": "ignored",
+                "message": "Already checked in — entry/interior camera does not check out",
+                "record": record,
+            }
+
         if enforce_min_checkout_hours and camera_like:
             min_checkout = _min_checkout_seconds()
             if min_checkout > 0 and (now - record.check_in).total_seconds() < min_checkout:
@@ -257,7 +322,8 @@ class AttendanceDecisionEngine:
         # Continuously update check-out (last seen) for CCTV/webcam
         record.check_out = now
         record.check_out_confidence = confidence
-        record.save(update_fields=["check_out", "check_out_confidence", "updated_at"])
+        cls.apply_checkout_rules(record, staff, now, zone=zone)
+        record.save(update_fields=["check_out", "check_out_confidence", "status", "notes", "updated_at"])
         if enforce_camera_cooldown and camera_like and key:
             _touch_camera_cooldown(key)
         logger.info("Attendance check-out: %s (%s)", staff.full_name, source)
@@ -357,29 +423,6 @@ def try_mark_attendance_from_detection(
     class_name: str,
     confidence: float,
 ) -> tuple[AttendanceAction | None, Attendance | None]:
-    """Auto-mark attendance when a camera recognizes enrolled staff (legacy YOLO path)."""
-    if not _camera_allows_attendance(camera):
-        return None, None
-
-    cls = (class_name or "").strip().lower()
-    if cls not in ("person", "face"):
-        return None, None
-
-    if not _is_recognized_identity(label):
-        return None, None
-
-    staff = resolve_staff_for_face_identity(label)
-    if not staff:
-        logger.debug("Attendance skip: no staff for label %r on camera %s", label, camera.pk)
-        return "skipped_no_staff", None
-
-    if not staff_is_enrolled_for_attendance(staff):
-        logger.debug("Attendance skip: staff %s not enrolled on camera %s", staff.pk, camera.pk)
-        return "skipped_not_enrolled", None
-
-    return mark_attendance_for_staff(
-        staff,
-        source=Attendance.SOURCE_CAMERA,
-        allow_checkout=True,
-        confidence=confidence,
-    )
+    """Detection labels are not a face match. InsightFace CCTV is the only punch path."""
+    del camera, label, class_name, confidence
+    return None, None

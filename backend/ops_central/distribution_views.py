@@ -14,9 +14,10 @@ from .distribution import (
     assign_camera_to_server,
     build_distribution_board,
     preview_auto_distribute,
+    unassign_all_cameras_from_server,
 )
 from .permissions import IsITSuperAdminOnly
-from .serializers import AssignCameraSerializer, AutoDistributeSerializer
+from .serializers import AssignCameraSerializer, AutoDistributeSerializer, UnassignAllCamerasSerializer
 
 
 class DistributionBoardAPIView(APIView):
@@ -98,6 +99,24 @@ class AutoDistributeAPIView(APIView):
                     location_code=location_code,
                     dry_run=False,
                 )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)
+
+
+class UnassignAllCamerasAPIView(APIView):
+    """POST unassign every camera currently on a given ML server."""
+
+    permission_classes = [IsITSuperAdminOnly]
+
+    def post(self, request):
+        ser = UnassignAllCamerasSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        ml_server_id = ser.validated_data["ml_server_id"]
+        if not RemoteServer.objects.filter(pk=ml_server_id).exists():
+            return Response({"detail": "ML server not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            result = unassign_all_cameras_from_server(ml_server_id)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(result)

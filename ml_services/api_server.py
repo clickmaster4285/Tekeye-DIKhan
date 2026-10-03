@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from load_env import load_ml_env
@@ -104,6 +104,17 @@ def _resolve_live_stream(
     # Do not block HTTP on YOLO load. Raw JPEG/RTSP can serve before infer is ready.
     if require_engine and not _live.is_ready():
         raise HTTPException(status_code=503, detail="Live engine still starting")
+    key = (key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing camera key")
+    if not _live.is_registered(key):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Camera {key} is not assigned to this ML server. "
+                "Assign it in Camera Distribution and sync; unassigned cameras stay idle."
+            ),
+        )
     purpose_list = [p.strip() for p in (purposes or "").split(",") if p.strip()]
     if purpose_list or (purpose or "").strip():
         applied = _live.set_camera_purposes(key, purpose=purpose, purposes=purpose_list)
@@ -136,7 +147,21 @@ def root():
 def health():
     data = health_status()
     data["live_streams"] = _live.status()
+    try:
+        from camera_session import get_camera_session_manager
+
+        data["camera_sessions"] = get_camera_session_manager().status()
+    except Exception as exc:
+        data["camera_sessions"] = {"error": str(exc)}
     return data
+
+
+@app.get("/camera-sessions/status")
+def camera_sessions_status():
+    """One FFmpeg/NVDEC ingest per camera — shared frame buffer status."""
+    from camera_session import get_camera_session_manager
+
+    return get_camera_session_manager().status()
 
 
 @app.post("/reload/faces")
@@ -211,6 +236,75 @@ async def detect(
     return {"detections": detections, "count": len(detections)}
 
 
+@app.post("/camera-health/analyze")
+async def camera_health_analyze(
+    image: UploadFile | None = File(None),
+    purposes: str = Form(""),
+    roi_json: str = Form(""),
+    detections_json: str = Form(""),
+    previous_fingerprint_json: str = Form(""),
+    rtsp_available: bool = Form(True),
+    fps: float | None = Form(None),
+    frame_age_sec: float | None = Form(None),
+    dropped_frames: int | None = Form(None),
+    camera_key: str = Form(""),
+):
+    """Analyze one camera frame for health / visibility (OpenCV + purpose checks)."""
+    import json
+
+    from cam_health import analyze_camera_health
+
+    frame = None
+    if image is not None:
+        data = await image.read()
+        if data:
+            try:
+                frame = decode_image(data)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    purpose_list = [p.strip() for p in purposes.split(",") if p.strip()]
+    roi = None
+    detections = None
+    prev_fp = None
+    try:
+        if roi_json.strip():
+            roi = json.loads(roi_json)
+        if detections_json.strip():
+            detections = json.loads(detections_json)
+        if previous_fingerprint_json.strip():
+            prev_fp = json.loads(previous_fingerprint_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON field: {exc}") from exc
+
+    # Prefer live detections when camera_key is registered
+    key = (camera_key or "").strip()
+    if key and _live.is_ready() and detections is None:
+        try:
+            snap = _live.get_detection_snapshot(key)
+            detections = snap.get("detections") or []
+            if frame is None:
+                jpeg = _live.get_raw_jpeg_bytes(key)
+                if jpeg:
+                    frame = decode_image(jpeg)
+        except Exception:
+            pass
+
+    result = analyze_camera_health(
+        frame,
+        purposes=purpose_list,
+        roi=roi if isinstance(roi, dict) else None,
+        detections=detections if isinstance(detections, list) else None,
+        previous_fingerprint=prev_fp if isinstance(prev_fp, list) else None,
+        rtsp_available=bool(rtsp_available),
+        fps=fps,
+        frame_age_sec=frame_age_sec,
+        dropped_frames=dropped_frames,
+    )
+    # Drop bulky fingerprint from HTTP response body (still returned nested under image)
+    return result
+
+
 @app.post("/plates/detect")
 async def detect_plates(
     image: UploadFile = File(...),
@@ -248,6 +342,26 @@ async def detect_plates(
     }
 
 
+@app.post("/voice/transcribe")
+def voice_transcribe(
+    audio: UploadFile = File(...),
+    language: str = Form(""),
+    prompt: str = Form(""),
+):
+    """On-prem Whisper STT for the TekEye voice agent (short WAV utterances)."""
+    import speech_to_text
+
+    if not speech_to_text.available():
+        raise HTTPException(status_code=503, detail="faster-whisper is not installed on this ML node.")
+    data = audio.file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty audio.")
+    try:
+        return speech_to_text.transcribe(data, language=language.strip() or None, prompt=prompt.strip())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}") from exc
+
+
 @app.post("/recognize/face")
 async def recognize(image: UploadFile = File(...)):
     data = await image.read()
@@ -274,7 +388,10 @@ def live_status():
 
 
 @app.post("/live/register/bulk")
-def register_cameras_bulk(payload: list[CameraRegisterEntry]):
+def register_cameras_bulk(
+    payload: list[CameraRegisterEntry],
+    replace: bool = False,
+):
     entries = []
     for item in payload:
         if not item.key.strip() or not item.rtsp_url.strip():
@@ -289,7 +406,7 @@ def register_cameras_bulk(payload: list[CameraRegisterEntry]):
         if purposes:
             entry["purposes"] = purposes
         entries.append(entry)
-    result = _live.register_cameras_bulk(entries)
+    result = _live.register_cameras_bulk(entries, replace=bool(replace))
     if not _live.ensure_started():
         print("[live] Warning: camera registry updated but infer loops did not start")
     return result
@@ -314,6 +431,20 @@ def live_detections(
     key = camera_key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="camera_key required")
+    # Warm-up: return empty 200 instead of 503 so clients can keep polling quietly.
+    if not _live.is_ready():
+        return {
+            "ip": key,
+            "key": key,
+            "detections": [],
+            "purposes": [],
+            "frame_width": 0,
+            "frame_height": 0,
+            "display_width": 0,
+            "display_height": 0,
+            "has_evidence": False,
+            "count": 0,
+        }
     _resolve_live_stream(key, rtsp_url, purpose=purpose, purposes=purposes)
     snapshot = _live.get_detection_snapshot(key)
     return {
@@ -325,6 +456,7 @@ def live_detections(
         "frame_height": snapshot.get("frame_height") or 0,
         "display_width": snapshot.get("display_width") or 0,
         "display_height": snapshot.get("display_height") or 0,
+        "has_evidence": bool(snapshot.get("has_evidence")),
         "count": len(snapshot.get("detections") or []),
     }
 
@@ -369,6 +501,31 @@ def live_jpeg_raw(
     frame = _live.wait_for_raw_jpeg(key, timeout_sec=2.0)
     if not frame:
         raise HTTPException(status_code=503, detail="No frame yet")
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers=_mjpeg_headers(),
+    )
+
+
+@app.get("/live/cam/{camera_key}/jpeg/evidence")
+def live_jpeg_evidence(
+    camera_key: str,
+    rtsp_url: str | None = None,
+    purpose: str = "",
+    purposes: str = "",
+):
+    """
+    Raw JPEG of the SAME frame YOLO last ran on (evidence buffer).
+    Use this for detection snapshots — do not re-open RTSP in Django.
+    """
+    key = camera_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="camera_key required")
+    _resolve_live_stream(key, rtsp_url, purpose=purpose, purposes=purposes, require_engine=False)
+    frame = _live.get_evidence_jpeg(key)
+    if not frame:
+        raise HTTPException(status_code=503, detail="No evidence frame yet")
     return Response(
         content=frame,
         media_type="image/jpeg",
@@ -566,6 +723,100 @@ def search_video_status(job_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="Search job not found.")
     return row
+
+
+def _form_flag(value: str, default: bool = True) -> bool:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+@app.post("/analyze/video")
+async def analyze_video(
+    video: UploadFile | None = File(default=None),
+    video_path: str = Form(default=""),
+    person: str = Form(default="true"),
+    vehicle: str = Form(default="true"),
+    weapon: str = Form(default="true"),
+    fire: str = Form(default="true"),
+    match_staff: str = Form(default="true"),
+    sample_fps: float = 0.5,
+):
+    """Tag an uploaded video with person / vehicle / weapon / fire detections."""
+    from video_analyze_jobs import copy_upload, new_upload_dir, start_analyze_job
+
+    allowed_local = os.getenv("ML_ALLOW_LOCAL_VIDEO_PATHS", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    local_video = (video_path or "").strip()
+    upload_dir = new_upload_dir()
+    cleanup_video = True
+    stored_video = ""
+    if local_video:
+        if not allowed_local:
+            raise HTTPException(status_code=400, detail="Local video paths are disabled.")
+        if not os.path.isfile(local_video):
+            raise HTTPException(status_code=400, detail="Invalid local video path.")
+        normalized = os.path.normpath(local_video).replace("\\", "/")
+        if "video_analyze" not in normalized.lower():
+            raise HTTPException(status_code=400, detail="Invalid local video path.")
+        stored_video = local_video
+        cleanup_video = False
+    elif video is not None and video.filename:
+        stored_path = upload_dir / "source.mp4"
+        copy_upload(video.file, stored_path)
+        stored_video = str(stored_path)
+    else:
+        raise HTTPException(status_code=400, detail="video file is required.")
+
+    want_person = _form_flag(person)
+    want_vehicle = _form_flag(vehicle)
+    want_weapon = _form_flag(weapon)
+    want_fire = _form_flag(fire)
+    if not any([want_person, want_vehicle, want_weapon, want_fire]):
+        raise HTTPException(status_code=400, detail="Select at least one detection type.")
+
+    job_id = start_analyze_job(
+        stored_video,
+        person=want_person,
+        vehicle=want_vehicle,
+        weapon=want_weapon,
+        fire=want_fire,
+        match_staff=_form_flag(match_staff),
+        sample_fps=max(0.5, min(float(sample_fps or 0.5), 4.0)),
+        cleanup_video=cleanup_video,
+    )
+    return {"job_id": job_id, "status": "queued", "progress": 1, "message": "Queued"}
+
+
+@app.get("/analyze/video/{job_id}")
+def analyze_video_status(job_id: str):
+    from video_analyze_jobs import get_analyze_job
+
+    row = get_analyze_job(job_id.strip())
+    if not row:
+        raise HTTPException(status_code=404, detail="Analyze job not found.")
+    public = dict(row)
+    public.pop("output_path", None)
+    return public
+
+
+@app.get("/analyze/video/{job_id}/file")
+def analyze_video_file(job_id: str):
+    from video_analyze_jobs import get_analyze_job, get_output_path
+
+    row = get_analyze_job(job_id.strip())
+    if not row:
+        raise HTTPException(status_code=404, detail="Analyze job not found.")
+    if str(row.get("status") or "") != "done":
+        raise HTTPException(status_code=409, detail="Tagged video is not ready yet.")
+    path = get_output_path(job_id.strip())
+    if path is None:
+        raise HTTPException(status_code=404, detail="Tagged video file is missing.")
+    return FileResponse(str(path), media_type="video/mp4", filename=path.name)
 
 
 if __name__ == "__main__":

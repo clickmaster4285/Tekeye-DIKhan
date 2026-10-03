@@ -50,7 +50,8 @@ class DetectionSnapshotSerializer(serializers.ModelSerializer):
         ]
 
     def get_camera_label(self, obj):
-        return f"Camera #{obj.camera_id or '?'} · {obj.camera_name}"
+        name = (obj.camera_name or "").strip()
+        return name or "Camera"
 
     def get_image_url(self, obj):
         return snapshot_to_dict(obj)["image_url"]

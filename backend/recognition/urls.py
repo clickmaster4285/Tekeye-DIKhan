@@ -12,12 +12,14 @@ from recognition.views import (
     EnrollmentStatusView,
     GalleryStatsView,
     IdentifyFaceView,
+    SelfiePunchView,
     TrainEmbeddingsView,
 )
 
 urlpatterns = [
     path("gallery/stats/", GalleryStatsView.as_view(), name="gallery-stats"),
     path("identify/", IdentifyFaceView.as_view(), name="identify-face"),
+    path("selfie/", SelfiePunchView.as_view(), name="selfie-punch"),
     path("cctv/", CCTVControlView.as_view(), name="cctv-control"),
     path("cctv/events/", CCTVEventsView.as_view(), name="cctv-events"),
     path(

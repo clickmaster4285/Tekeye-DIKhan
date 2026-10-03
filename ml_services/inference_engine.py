@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ WEIGHTS_DIR = BASE_DIR / "runs" / "train" / "stage3_finetune3" / "weights"
 # Multi-model live stack:
 # 1) yolo26l.pt — COCO pretrained (classes 0–79, allowlisted)
 # 2) best.pt — custom classes only (drop COCO 0–79)
-# 3) best_Smoke_Detection.pt — fire/smoke specialist
+# 3) best_Smoke_Detection.pt — fire/smoke specialist (replaced with Desktop "fire and smoke"/best.pt)
 # 4) best_weapon_detection.pt — weapon specialist
 YOLO_WEIGHTS_COCO = WEIGHTS_DIR / "yolo26l.pt"
 YOLO_WEIGHTS_CUSTOM = WEIGHTS_DIR / "best.pt"
@@ -153,9 +154,16 @@ _yolo_custom = None
 _yolo_smoke = None
 _yolo_weapon = None
 _face_db: KnownFaceDB | None = None
+_face_db_lock = threading.Lock()
 _warmup_done = False
 _custom_class_ids_cache: list[int] | None = None
 _custom_class_names_cache: dict[int, str] | None = None
+_PREDICT_LOCK = threading.Lock()
+
+
+def gpu_predict_lock() -> threading.Lock:
+    """One lock for all YOLO predicts so live + video jobs cannot deadlock the GPU."""
+    return _PREDICT_LOCK
 
 
 def prefer_gpu() -> bool:
@@ -199,6 +207,55 @@ def use_gpu_half() -> bool:
     return resolve_ml_device() != "cpu"
 
 
+def _list_gpus_nvidia_smi() -> list[dict[str, Any]]:
+    """Full host GPU inventory via nvidia-smi (ignores CUDA_VISIBLE_DEVICES)."""
+    import shutil
+    import subprocess
+
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return []
+    try:
+        proc = subprocess.run(
+            [
+                smi,
+                "--query-gpu=index,name,memory.total,memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        return []
+    out: list[dict[str, Any]] = []
+    for line in (proc.stdout or "").splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            idx = int(parts[0])
+        except ValueError:
+            continue
+        name = parts[1] or f"GPU {idx}"
+        row: dict[str, Any] = {"index": idx, "name": name}
+        if len(parts) >= 3:
+            try:
+                row["total_memory_mb"] = int(float(parts[2]))
+            except ValueError:
+                pass
+        if len(parts) >= 4:
+            try:
+                row["free_memory_mb"] = int(float(parts[3]))
+            except ValueError:
+                pass
+        out.append(row)
+    return out
+
+
 def get_cuda_status() -> dict[str, Any]:
     device = resolve_ml_device()
     info: dict[str, Any] = {
@@ -206,17 +263,60 @@ def get_cuda_status() -> dict[str, Any]:
         "cuda_available": False,
         "cuda_device_name": None,
         "cuda_device_count": 0,
+        "gpus": [],
     }
+    # Prefer host-wide inventory so admin UI sees GPU 0 + GPU 1 even when
+    # this process is pinned with CUDA_VISIBLE_DEVICES.
+    host_gpus = _list_gpus_nvidia_smi()
     try:
         import torch
 
         info["cuda_available"] = bool(torch.cuda.is_available())
-        info["cuda_device_count"] = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+        torch_count = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+        torch_gpus: list[dict[str, Any]] = []
+        for idx in range(torch_count):
+            props = torch.cuda.get_device_properties(idx)
+            total_mb = int(getattr(props, "total_memory", 0) or 0) // (1024 * 1024)
+            free_mb = None
+            try:
+                free_b, _total_b = torch.cuda.mem_get_info(idx)
+                free_mb = int(free_b) // (1024 * 1024)
+            except Exception:
+                free_mb = None
+            torch_gpus.append(
+                {
+                    "index": idx,
+                    "name": torch.cuda.get_device_name(idx),
+                    "total_memory_mb": total_mb or None,
+                    "free_memory_mb": free_mb,
+                }
+            )
+        gpus = host_gpus or torch_gpus
+        info["gpus"] = gpus
+        info["cuda_device_count"] = len(gpus) if gpus else torch_count
         if torch.cuda.is_available() and device != "cpu":
             idx = int(device) if isinstance(device, int) else 0
-            info["cuda_device_name"] = torch.cuda.get_device_name(idx)
+            if 0 <= idx < torch_count:
+                info["cuda_device_name"] = torch.cuda.get_device_name(idx)
+            elif gpus:
+                # Map visible torch index → host name when possible
+                match = next((g for g in gpus if g.get("index") == idx), None)
+                info["cuda_device_name"] = (match or gpus[0]).get("name")
+        elif gpus and not info["cuda_device_name"]:
+            info["cuda_device_name"] = gpus[0].get("name")
+            info["cuda_available"] = True
     except Exception as exc:
         info["cuda_error"] = str(exc)
+        if host_gpus:
+            info["gpus"] = host_gpus
+            info["cuda_device_count"] = len(host_gpus)
+            info["cuda_available"] = True
+            info["cuda_device_name"] = host_gpus[0].get("name")
+    if not info["gpus"] and host_gpus:
+        info["gpus"] = host_gpus
+        info["cuda_device_count"] = len(host_gpus)
+        info["cuda_available"] = True
+        info["cuda_device_name"] = info["cuda_device_name"] or host_gpus[0].get("name")
     return info
 
 
@@ -420,8 +520,10 @@ def get_yolo_model():
 def get_face_db() -> KnownFaceDB:
     global _face_db
     if _face_db is None:
-        threshold = float(os.getenv("ML_FACE_THRESHOLD", "0.32"))
-        _face_db = KnownFaceDB(threshold=threshold)
+        with _face_db_lock:
+            if _face_db is None:
+                threshold = float(os.getenv("ML_FACE_THRESHOLD", "0.32"))
+                _face_db = KnownFaceDB(threshold=threshold)
     return _face_db
 
 
@@ -457,7 +559,7 @@ def decode_image(file_bytes: bytes) -> np.ndarray:
 
 
 def is_fire_smoke_class(class_name: str) -> bool:
-    name = str(class_name).lower()
+    name = str(class_name).lower().strip()
     return any(keyword in name for keyword in FIRE_SMOKE_KEYWORDS)
 
 
@@ -468,14 +570,17 @@ def is_alert_detection(
     smoke_model: bool = False,
     weapon_model: bool = False,
 ) -> bool:
-    if smoke_model or weapon_model:
+    if weapon_model:
         return True
+    # Smoke specialist may include non-alert classes (e.g. "other") — only fire/smoke alert.
+    if smoke_model:
+        return is_fire_smoke_class(class_name)
     return cls_id in ALERT_CLASS_IDS or is_fire_smoke_class(class_name)
 
 
 def is_smoke_fire_detection(cls_id: int, class_name: str, *, smoke_model: bool = False) -> bool:
     if smoke_model:
-        return True
+        return is_fire_smoke_class(class_name)
     return cls_id in ALERT_CLASS_IDS or is_fire_smoke_class(class_name)
 
 
@@ -736,7 +841,8 @@ def _predict_model(
     }
     if classes is not None:
         kwargs["classes"] = list(classes)
-    return model.predict(**kwargs)
+    with _PREDICT_LOCK:
+        return model.predict(**kwargs)
 
 
 def parse_yolo_result(
@@ -767,6 +873,9 @@ def parse_yolo_result(
             continue
         if smoke_model:
             if confidence < SMOKE_FIRE_MIN_CONF:
+                continue
+            # New fire/smoke weights include an "other" class — drop non fire/smoke hits.
+            if not is_fire_smoke_class(yolo_name):
                 continue
         elif weapon_model:
             if confidence < WEAPON_MIN_CONF:

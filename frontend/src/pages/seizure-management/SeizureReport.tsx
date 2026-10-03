@@ -112,14 +112,15 @@ export default function SeizureReportPage() {
             </div>
           </div>
 
-          <Table className="table-fixed w-full" containerClassName="overflow-x-hidden">
+          <div className="w-full max-w-full overflow-x-auto rounded-lg border">
+          <Table className="min-w-[800px]">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[22%]">Case No</TableHead>
-                <TableHead className="w-[18%]">Report Date</TableHead>
-                <TableHead className="w-[28%]">Prepared By</TableHead>
-                <TableHead className="w-[16%]">Status</TableHead>
-                <TableHead className="w-[7.5rem] text-right">Actions</TableHead>
+                <TableHead className="min-w-[9rem]">Case No</TableHead>
+                <TableHead className="min-w-[8rem]">Report Date</TableHead>
+                <TableHead className="min-w-[10rem]">Prepared By</TableHead>
+                <TableHead className="min-w-[7rem]">Status</TableHead>
+                <TableHead className="min-w-[7.5rem] text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -162,6 +163,7 @@ export default function SeizureReportPage() {
               )}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
       <PdfExportHost hostRef={pdf.hostRef}>

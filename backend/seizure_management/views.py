@@ -128,7 +128,13 @@ class NoteSheetListAPIView(APIView):
 
     def get(self, request):
         status_filter = (request.query_params.get("status") or "").strip()
-        qs = NoteSheet.objects.prefetch_related("items__images", "attachments").all()
+        qs = NoteSheet.objects.prefetch_related(
+            "items__images",
+            "items__located_camera__nvr__site",
+            "items__located_camera__ml_server",
+            "items__detection_event",
+            "attachments",
+        ).all()
         if status_filter:
             qs = qs.filter(status=status_filter)
         available = request.query_params.get("available") == "1"
@@ -345,7 +351,7 @@ class NoteSheetCreateAPIView(APIView):
             apply_note_sheet(obj, ser.validated_data, username=_username(request))
             save_note_sheet_uploads(request, obj)
             save_note_sheet_goods_images(request, obj, ser.validated_data.get("items"))
-            obj = NoteSheet.objects.prefetch_related("items__images", "attachments").get(pk=obj.pk)
+            obj = NoteSheet.objects.prefetch_related("items__images", "items__located_camera__nvr__site", "items__located_camera__ml_server", "items__detection_event", "attachments").get(pk=obj.pk)
             return Response(note_sheet_to_dict(obj, request), status=status.HTTP_201_CREATED)
         except Exception as exc:
             # Surface actionable error for note-sheet create failures (validation already raises).
@@ -364,7 +370,7 @@ class NoteSheetReadAPIView(APIView):
 
     def get(self, request, pk):
         obj = get_object_or_404(
-            NoteSheet.objects.prefetch_related("items__images", "attachments"),
+            NoteSheet.objects.prefetch_related("items__images", "items__located_camera__nvr__site", "items__located_camera__ml_server", "items__detection_event", "attachments"),
             pk=pk,
         )
         if obj.status == NoteSheet.STATUS_SUBMITTED and not obj.viewed_at:
@@ -385,7 +391,7 @@ class NoteSheetUpdateAPIView(APIView):
             apply_note_sheet(obj, ser.validated_data, username=_username(request))
             save_note_sheet_uploads(request, obj)
             save_note_sheet_goods_images(request, obj, ser.validated_data.get("items"))
-            obj = NoteSheet.objects.prefetch_related("items__images", "attachments").get(pk=obj.pk)
+            obj = NoteSheet.objects.prefetch_related("items__images", "items__located_camera__nvr__site", "items__located_camera__ml_server", "items__detection_event", "attachments").get(pk=obj.pk)
             return Response(note_sheet_to_dict(obj, request))
         except Exception as exc:
             from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -423,7 +429,7 @@ class NoteSheetApprovalAPIView(APIView):
 
     def post(self, request, pk):
         obj = get_object_or_404(
-            NoteSheet.objects.prefetch_related("items__images", "attachments"),
+            NoteSheet.objects.prefetch_related("items__images", "items__located_camera__nvr__site", "items__located_camera__ml_server", "items__detection_event", "attachments"),
             pk=pk,
         )
         ser = NoteSheetApprovalSerializer(data=request.data)
@@ -551,7 +557,7 @@ class NoteSheetLinkDetentionAPIView(APIView):
 
     def post(self, request, pk):
         obj = get_object_or_404(
-            NoteSheet.objects.prefetch_related("items__images", "attachments"),
+            NoteSheet.objects.prefetch_related("items__images", "items__located_camera__nvr__site", "items__located_camera__ml_server", "items__detection_event", "attachments"),
             pk=pk,
         )
         if obj.status != NoteSheet.STATUS_APPROVED:
@@ -655,10 +661,12 @@ class AssessmentUpdateAPIView(APIView):
             DetentionAssessment.STATUS_DRAFT,
             DetentionAssessment.STATUS_REJECTED,
         ):
-            return Response(
-                {"detail": "Only draft or rejected assessments can be edited."},
-                status=400,
-            )
+            role = (getattr(request.user, "role", None) or "").strip().upper()
+            if role not in {"ADMIN", "LOCATION_ADMIN"}:
+                return Response(
+                    {"detail": "Only draft or rejected assessments can be edited."},
+                    status=400,
+                )
         body = body_from_request(request)
         ser = AssessmentWriteSerializer(data=body, partial=True)
         ser.is_valid(raise_exception=True)

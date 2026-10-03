@@ -30,6 +30,7 @@ class Command(BaseCommand):
 
         from cameras.clip_capture import requeue_pending_clips
         from cameras.detection_worker import run_worker_forever, stop_background_worker
+        from logs.monitor import start_mobile_monitor_thread, stop_mobile_monitor_thread
 
         try:
             limit = int(getattr(settings, "DETECTION_CLIP_REQUEUE_LIMIT", 50))
@@ -40,6 +41,7 @@ class Command(BaseCommand):
         from person_journey.live_worker import start_live_ingest_worker
 
         start_live_ingest_worker()
+        start_mobile_monitor_thread()
 
         if getattr(settings, "PERSON_JOURNEY_WORKER_ENABLED", False):
             from person_journey.journey_worker import start_journey_worker_thread
@@ -56,6 +58,7 @@ class Command(BaseCommand):
         def _shutdown(signum, _frame):
             self.stdout.write(self.style.WARNING(f"Stopping background workers (signal {signum})…"))
             stop_background_worker()
+            stop_mobile_monitor_thread()
             stop.set()
 
         signal.signal(signal.SIGINT, _shutdown)
@@ -63,7 +66,7 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.SUCCESS(
-                "Background workers running (detection + journey + attendance). Ctrl+C to stop."
+                "Background workers running (detection + journey + attendance + CIIS mobile monitor). Ctrl+C to stop."
             )
         )
 

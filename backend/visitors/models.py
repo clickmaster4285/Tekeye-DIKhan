@@ -41,6 +41,7 @@ class Visitor(models.Model):
         ("marketing", "marketing"),
         ("admin", "admin"),
         ("enforcement", "enforcement"),
+        ("appraisement", "appraisement"),
     ]
 
     HOST_DESIGNATION_CHOICES = [

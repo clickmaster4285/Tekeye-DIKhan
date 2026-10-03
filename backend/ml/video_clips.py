@@ -20,6 +20,16 @@ def _ffmpeg() -> str | None:
         return None
 
 
+def _gpu_flags() -> tuple[list[str], list[str]]:
+    """(hwaccel decode flags, video encoder flags) — NVDEC/NVENC when available, CPU fallback."""
+    try:
+        from cameras.stream_utils import hwaccel_input_flags, video_encoder_flags
+
+        return hwaccel_input_flags(), video_encoder_flags(crf=28, preset="veryfast")
+    except Exception:
+        return [], ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28"]
+
+
 def save_job_dir() -> Path:
     job_id = uuid.uuid4().hex[:12]
     folder = Path(settings.MEDIA_ROOT) / "video_search" / job_id
@@ -49,6 +59,7 @@ def cut_clip(source_path: str, dest_path: str, start_sec: float, duration_sec: f
         return False
     duration = max(1.5, min(5.0, float(duration_sec)))
     start = max(0.0, float(start_sec))
+    hwaccel, encoder = _gpu_flags()
     cmd = [
         exe,
         "-nostdin",
@@ -56,18 +67,14 @@ def cut_clip(source_path: str, dest_path: str, start_sec: float, duration_sec: f
         "-loglevel",
         "error",
         "-y",
+        *hwaccel,
         "-ss",
         f"{start:.2f}",
         "-t",
         f"{duration:.2f}",
         "-i",
         source_path,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "28",
+        *encoder,
         "-an",
         "-movflags",
         "+faststart",

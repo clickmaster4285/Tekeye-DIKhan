@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from datetime import timedelta
 from typing import Any
 
@@ -74,6 +75,14 @@ _ALLOWED_COCO_CLASS_NAMES = frozenset(
     }
 )
 _SPECIALIST_MODEL_TAGS = frozenset({"custom", "smoke", "weapon", "plate"})
+
+# Crowd alert state: camera_id → currently in a crowd episode (above threshold).
+_crowd_active: dict[int, bool] = {}
+_crowd_lock = threading.Lock()
+
+# Specialist / class alerts (fire, smoke, weapon, …): (camera_id, alert_key) → active.
+_alert_active: dict[tuple[int, str], bool] = {}
+_alert_lock = threading.Lock()
 
 
 def _coco_max_class_id() -> int:
@@ -212,6 +221,276 @@ def _dedup_seconds() -> int:
         return 5
 
 
+def _crowd_threshold() -> int:
+    try:
+        return max(1, int(getattr(settings, "CROWD_ALERT_THRESHOLD", 10)))
+    except (TypeError, ValueError):
+        return 10
+
+
+def _crowd_min_confidence() -> float:
+    try:
+        return float(getattr(settings, "CROWD_ALERT_MIN_CONFIDENCE", 0.25))
+    except (TypeError, ValueError):
+        return 0.25
+
+
+def _alert_min_confidence() -> float:
+    try:
+        return float(getattr(settings, "ALERT_EPISODE_MIN_CONFIDENCE", 0.25))
+    except (TypeError, ValueError):
+        return 0.25
+
+
+def count_persons(detections: list[dict[str, Any]], *, min_confidence: float | None = None) -> int:
+    """Count YOLO person boxes (class_name=person). Faces are ignored to avoid double-counting."""
+    conf_floor = _crowd_min_confidence() if min_confidence is None else float(min_confidence)
+    total = 0
+    for det in detections or []:
+        cls = str(det.get("class_name") or "").strip().lower()
+        if cls != "person":
+            continue
+        try:
+            confidence = float(det.get("confidence", 0))
+        except (TypeError, ValueError):
+            continue
+        if confidence < conf_floor:
+            continue
+        total += 1
+    return total
+
+
+def _classify_alert_key(det: dict[str, Any]) -> str | None:
+    """Map a detection to an episode alert key, or None if not an alert class.
+
+    Only covers specialist fire/smoke/weapon (excluded from identity saves) and
+    other detections already flagged alert from custom/smoke/weapon models —
+    so existing COCO object saves (e.g. knife) stay unchanged.
+    """
+    cls = str(det.get("class_name") or det.get("label") or "").strip().lower()
+    tag = _model_tag(det)
+
+    if tag == "smoke" or cls in _SMOKE_FIRE_NAMES or "fire" in cls or "smoke" in cls or "flame" in cls:
+        if cls == "smoke" or "smoke" in cls:
+            return "smoke"
+        return "fire"
+
+    if tag == "weapon" or cls in {"weapon", "gun", "pistol", "rifle", "firearm", "knife_weapon", "heavy-weapon"}:
+        return "weapon"
+
+    # Custom-model alert flags (not COCO identity path)
+    if bool(det.get("alert")) and tag in ("custom", "smoke", "weapon"):
+        if cls and cls not in ("person", "face", "crowd"):
+            return f"alert:{cls[:40]}"
+    return None
+
+
+def _create_alert_detection_event(
+    camera: Camera,
+    *,
+    class_name: str,
+    label: str,
+    confidence: float,
+    bbox: list[Any] | None = None,
+    track_event: str = "alert",
+) -> DetectionEvent:
+    clip_enabled = bool(getattr(settings, "DETECTION_CLIP_ENABLED", True))
+    event = DetectionEvent.objects.create(
+        camera=camera,
+        class_name=class_name[:80],
+        label=label[:120],
+        employee_name="",
+        personal_number="",
+        confidence=float(confidence),
+        bbox=bbox or [],
+        is_alert=True,
+        clip_status=ClipStatus.PENDING if clip_enabled else ClipStatus.SKIPPED,
+        track_event=track_event[:16],
+    )
+    if clip_enabled:
+        schedule_detection_clip(camera.pk, event.pk)
+    try:
+        from realtime.sio_app import emit_invalidate
+
+        emit_invalidate(["cameras", "detections", "alerts"], throttle_sec=0.5)
+    except Exception:
+        logger.debug("Alert realtime emit failed", exc_info=True)
+    return event
+
+
+def maybe_emit_crowd_alert(camera: Camera, detections: list[dict[str, Any]]) -> int:
+    """Create one Crowd DetectionEvent + realtime notify when person_count > threshold.
+
+    State machine (per camera):
+      > threshold and not active → SAVE + notify, mark active
+      > threshold and active     → no-op (same crowd episode)
+      ≤ threshold and active     → clear episode (no row)
+      ≤ threshold and not active → no-op
+
+    Next time count goes above threshold again → SAVE + notify again.
+    """
+    if not bool(getattr(settings, "CROWD_ALERT_ENABLED", True)):
+        return 0
+
+    threshold = _crowd_threshold()
+    person_count = count_persons(detections)
+    cam_id = int(camera.pk)
+    should_create = False
+
+    with _crowd_lock:
+        active = bool(_crowd_active.get(cam_id, False))
+        if person_count > threshold:
+            if not active:
+                _crowd_active[cam_id] = True
+                should_create = True
+        elif active:
+            _crowd_active[cam_id] = False
+            logger.info(
+                "Crowd cleared camera=%s name=%s zone=%s people=%s threshold=%s",
+                cam_id,
+                camera.name,
+                camera.zone or "",
+                person_count,
+                threshold,
+            )
+
+    if not should_create:
+        return 0
+
+    zone = (camera.zone or "").strip() or "—"
+    cam_name = (camera.name or camera.code or f"cam-{cam_id}").strip()
+    label = f"Crowd Detected: {person_count} people @ {cam_name} / {zone}"[:120]
+
+    event = _create_alert_detection_event(
+        camera,
+        class_name="crowd",
+        label=label,
+        confidence=1.0,
+        bbox=[],
+        track_event="crowd",
+    )
+
+    logger.warning(
+        "Crowd alert saved event=%s camera=%s zone=%s people=%s threshold=%s",
+        event.pk,
+        cam_name,
+        zone,
+        person_count,
+        threshold,
+    )
+    return 1
+
+
+def maybe_emit_specialist_alerts(camera: Camera, detections: list[dict[str, Any]]) -> int:
+    """Same episode technique as crowd for fire / smoke / weapon / other alert flags.
+
+    Does not change the normal person/object save loop. Smoke & weapon stay excluded
+    from ReID identity capture; this only writes one alert DetectionEvent per episode.
+    """
+    if not bool(getattr(settings, "ALERT_EPISODE_ENABLED", True)):
+        return 0
+
+    conf_floor = _alert_min_confidence()
+    cam_id = int(camera.pk)
+    zone = (camera.zone or "").strip() or "—"
+    cam_name = (camera.name or camera.code or f"cam-{cam_id}").strip()
+
+    # Best detection per alert key this frame (highest confidence).
+    present: dict[str, dict[str, Any]] = {}
+    for det in detections or []:
+        key = _classify_alert_key(det)
+        if not key:
+            continue
+        try:
+            confidence = float(det.get("confidence", 0))
+        except (TypeError, ValueError):
+            continue
+        if confidence < conf_floor:
+            continue
+        prev = present.get(key)
+        if prev is None or confidence >= float(prev.get("confidence") or 0):
+            present[key] = det
+
+    saved = 0
+    # Keys that were active but are gone this frame → clear episode.
+    with _alert_lock:
+        previously_active = [k for (cid, k), on in _alert_active.items() if cid == cam_id and on]
+
+    for key in previously_active:
+        if key in present:
+            continue
+        with _alert_lock:
+            _alert_active[(cam_id, key)] = False
+        logger.info(
+            "Alert cleared key=%s camera=%s name=%s zone=%s",
+            key,
+            cam_id,
+            cam_name,
+            zone,
+        )
+
+    for key, det in present.items():
+        should_create = False
+        with _alert_lock:
+            state_key = (cam_id, key)
+            if not _alert_active.get(state_key, False):
+                _alert_active[state_key] = True
+                should_create = True
+        if not should_create:
+            continue
+
+        cls = str(det.get("class_name") or det.get("label") or key).strip() or key
+        try:
+            confidence = float(det.get("confidence", 0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        title = {
+            "fire": "Fire Detected",
+            "smoke": "Smoke Detected",
+            "weapon": "Weapon Detected",
+        }.get(key, f"Alert: {cls}")
+        label = f"{title} @ {cam_name} / {zone}"[:120]
+        class_name = {
+            "fire": "fire",
+            "smoke": "smoke",
+            "weapon": "weapon",
+        }.get(key, cls[:80])
+
+        event = _create_alert_detection_event(
+            camera,
+            class_name=class_name,
+            label=label,
+            confidence=confidence,
+            bbox=det.get("bbox") or [],
+            track_event="alert",
+        )
+        logger.warning(
+            "Alert saved key=%s event=%s camera=%s zone=%s conf=%.3f",
+            key,
+            event.pk,
+            cam_name,
+            zone,
+            confidence,
+        )
+        saved += 1
+
+    return saved
+
+
+def evaluate_camera_alerts(camera: Camera, detections: list[dict[str, Any]]) -> int:
+    """Run all episode-based alerts (crowd + fire/smoke/weapon). Additive only."""
+    total = 0
+    try:
+        total += maybe_emit_crowd_alert(camera, detections)
+    except Exception:
+        logger.exception("Crowd alert evaluation failed for camera %s", camera.pk)
+    try:
+        total += maybe_emit_specialist_alerts(camera, detections)
+    except Exception:
+        logger.exception("Specialist alert evaluation failed for camera %s", camera.pk)
+    return total
+
+
 def save_detection_batch(
     camera: Camera,
     detections: list[dict[str, Any]],
@@ -224,9 +503,12 @@ def save_detection_batch(
     Uses ByteTrack local track id + ReID global object id so the same object is
     captured once (smoke/fire/weapon are excluded from this identity flow).
     """
-    detections = filter_detections_for_camera(camera, detections)
+    detections = filter_detections_for_camera(camera, detections or [])
+
+    alert_saved = evaluate_camera_alerts(camera, detections)
+
     if not detections:
-        return 0
+        return alert_saved
 
     from object_tracking.services import (
         finalize_missing_tracks,
@@ -238,7 +520,7 @@ def save_detection_batch(
 
     dedup_window = _dedup_seconds() if dedup_seconds is None else max(0, dedup_seconds)
     since = timezone.now() - timedelta(seconds=max(1, dedup_window)) if dedup_window > 0 else None
-    saved = 0
+    saved = alert_saved
     active_track_ids: set[int] = set()
 
     for det in detections:
@@ -325,6 +607,15 @@ def save_detection_batch(
 
         global_code = (global_obj.code if global_obj is not None else str(det.get("global_object_id") or ""))[:32]
 
+        try:
+            infer_w = int(det.get("frame_width") or 0) or None
+        except (TypeError, ValueError):
+            infer_w = None
+        try:
+            infer_h = int(det.get("frame_height") or 0) or None
+        except (TypeError, ValueError):
+            infer_h = None
+
         event = DetectionEvent.objects.create(
             camera=camera,
             class_name=class_name[:80],
@@ -333,6 +624,8 @@ def save_detection_batch(
             personal_number=personal_number,
             confidence=confidence,
             bbox=det.get("bbox") or [],
+            infer_frame_width=infer_w,
+            infer_frame_height=infer_h,
             is_alert=bool(det.get("alert")),
             clip_status=ClipStatus.PENDING if clip_enabled else ClipStatus.SKIPPED,
             local_track_id=track_id_i,

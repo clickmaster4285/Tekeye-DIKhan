@@ -11,6 +11,18 @@ export function roleLabel(role: string): string {
   return (role || "").replace(/_/g, " ") || "—"
 }
 
+/** Google Maps link for a GPS fix (opens exact pin). */
+export function mapsLinkForCoords(lat: number, lng: number): string {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return ""
+  return `https://www.google.com/maps?q=${encodeURIComponent(`${lat},${lng}`)}`
+}
+
+/** Round key matching backend gps_tracking.geocode.coord_key (4 decimal places). */
+export function gpsCoordKey(lat: number, lng: number): string {
+  const r = (n: number) => (Math.round(n * 1e4) / 1e4).toFixed(4)
+  return `${r(lat)},${r(lng)}`
+}
+
 export function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean)
   if (parts.length === 0) return "?"
@@ -54,6 +66,76 @@ export function formatClock(iso: string | null | undefined): string {
   } catch {
     return iso
   }
+}
+
+export function formatClockWithSeconds(iso: string | null | undefined): string {
+  if (!iso) return "—"
+  try {
+    return new Date(iso).toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    })
+  } catch {
+    return iso
+  }
+}
+
+export function formatReportDate(isoOrYmd: string | null | undefined): string {
+  if (!isoOrYmd) return "—"
+  try {
+    const d = /^\d{4}-\d{2}-\d{2}$/.test(isoOrYmd)
+      ? new Date(`${isoOrYmd}T12:00:00`)
+      : new Date(isoOrYmd)
+    if (Number.isNaN(d.getTime())) return isoOrYmd
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })
+  } catch {
+    return isoOrYmd
+  }
+}
+
+export function localDateInputValue(d = new Date()): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+/** Monday-start ISO week range for a YYYY-MM-DD date. */
+export function getWeekRange(dateStr: string): { start: string; end: string } {
+  const d = new Date(`${dateStr}T12:00:00`)
+  const day = d.getDay()
+  const diffToMon = day === 0 ? -6 : 1 - day
+  const start = new Date(d)
+  start.setDate(d.getDate() + diffToMon)
+  const end = new Date(start)
+  end.setDate(start.getDate() + 6)
+  const iso = (x: Date) => {
+    const y = x.getFullYear()
+    const m = String(x.getMonth() + 1).padStart(2, "0")
+    const dd = String(x.getDate()).padStart(2, "0")
+    return `${y}-${m}-${dd}`
+  }
+  return { start: iso(start), end: iso(end) }
+}
+
+export function getMonthRange(dateStr: string): { start: string; end: string } {
+  const [y, m] = dateStr.split("-").map(Number)
+  const start = `${y}-${String(m).padStart(2, "0")}-01`
+  const lastDay = new Date(y, m, 0).getDate()
+  const end = `${y}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`
+  return { start, end }
+}
+
+export function gpsPeriodLabel(period: "day" | "week" | "month", anchorDate: string): string {
+  if (period === "day") return `Daily report — ${formatReportDate(anchorDate)}`
+  if (period === "week") {
+    const { start, end } = getWeekRange(anchorDate)
+    return `Weekly report — ${formatReportDate(start)} to ${formatReportDate(end)}`
+  }
+  const { start, end } = getMonthRange(anchorDate)
+  return `Monthly report — ${formatReportDate(start)} to ${formatReportDate(end)}`
 }
 
 export function formatWhen(iso: string | null | undefined): string {
@@ -146,7 +228,7 @@ export function deriveGpsAlerts(officers: GpsOfficer[], fences: GpsGeofence[]): 
         id: `geo-${officer.userId}`,
         severity: "critical",
         title: `${officer.name} left assigned geofence`,
-        detail: officer.employeeId ? `Officer ${officer.employeeId} is outside the station compound.` : "Outside the station compound.",
+        detail: officer.employeeId ? `Staff ${officer.employeeId} is outside the station compound.` : "Outside the station compound.",
         at: officer.recordedAt,
       })
     }

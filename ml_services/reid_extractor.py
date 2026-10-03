@@ -143,12 +143,23 @@ def _try_osnet_embedding(person_crop: np.ndarray) -> list[float]:
             state = torch.load(str(weights), map_location="cpu")
             if isinstance(state, dict) and "state_dict" in state:
                 state = state["state_dict"]
-            model.load_state_dict(state, strict=False)
+            # strict=False only skips missing/unexpected keys — it still raises on a
+            # shape mismatch for a key present in both. The checkpoint's classifier
+            # head is sized for its own training classes (e.g. 751 for Market1501),
+            # which never matches num_classes=1 here; we only need the 512-d backbone
+            # embedding anyway, so drop any tensor whose shape doesn't match ours.
+            model_state = model.state_dict()
+            filtered = {k: v for k, v in state.items() if k in model_state and v.shape == model_state[k].shape}
+            skipped = [k for k in state if k not in filtered]
+            model.load_state_dict(filtered, strict=False)
             model.eval()
             model = model.to(device)
             _osnet_model = model
             _osnet_device = device
-            print(f"[reid] OSNet loaded from {weights} ({device})")
+            print(
+                f"[reid] OSNet loaded from {weights} ({device}); "
+                f"matched {len(filtered)}/{len(model_state)} tensors (skipped {skipped or 'none'})"
+            )
         except Exception as exc:
             print(f"[reid] OSNet unavailable ({exc}) — using part-based ReID")
             _osnet_failed = True
@@ -191,4 +202,8 @@ def extract_reid_embedding(person_crop: np.ndarray) -> list[float]:
         vec = _try_osnet_embedding(person_crop)
         if vec:
             return vec
+        if _osnet_model is not None:
+            # OSNet is loaded but this crop failed: skip it. A handcrafted vector lives in a different
+            # space and would corrupt the person's gallery (cosine between the two is meaningless).
+            return []
     return _part_embedding(person_crop)

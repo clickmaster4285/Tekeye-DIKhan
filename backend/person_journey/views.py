@@ -14,6 +14,7 @@ from .serializers import (
     JourneyEventSerializer,
     JourneyPersonDetailSerializer,
     JourneyPersonListSerializer,
+    JourneyPersonNameUpdateSerializer,
     MergeVisitorSerializer,
 )
 from .services import ingest_track_observation, merge_person_to_visitor
@@ -22,6 +23,15 @@ from .snapshot_utils import person_camera_captures, serializer_context_for_event
 
 def _clip_context_for_events(events, person=None) -> dict:
     return serializer_context_for_events(list(events), person=person)
+
+
+def _surviving_person(person: JourneyPerson) -> JourneyPerson:
+    """A merged duplicate's events live on the person it was merged into — show that journey."""
+    for _ in range(10):
+        if person.status != PersonStatus.MERGED or not person.merged_into_id:
+            break
+        person = JourneyPerson.objects.get(pk=person.merged_into_id)
+    return person
 
 
 class JourneyIngestAPIView(APIView):
@@ -52,12 +62,16 @@ class JourneyIngestAPIView(APIView):
 
 
 class JourneyPersonListAPIView(generics.ListAPIView):
+    """List all journey persons (paginated). Default excludes merged duplicates."""
+
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = JourneyPersonListSerializer
 
     def get_queryset(self):
-        qs = JourneyPerson.objects.select_related("staff", "visitor", "latest_camera").filter(
-            person_type__in=[PersonType.STAFF, PersonType.VISITOR, PersonType.UNKNOWN]
+        qs = (
+            JourneyPerson.objects.select_related("staff", "visitor", "latest_camera")
+            .prefetch_related("tracks")
+            .filter(person_type__in=[PersonType.STAFF, PersonType.VISITOR, PersonType.UNKNOWN])
         )
         person_type = self.request.query_params.get("person_type")
         if person_type:
@@ -65,6 +79,9 @@ class JourneyPersonListAPIView(generics.ListAPIView):
         status_param = self.request.query_params.get("status")
         if status_param:
             qs = qs.filter(status=status_param.strip())
+        else:
+            # Hide merged duplicates unless explicitly requested.
+            qs = qs.exclude(status=PersonStatus.MERGED)
         active_only = self.request.query_params.get("active_only")
         if active_only and str(active_only).lower() in ("1", "true", "yes"):
             qs = qs.filter(status=PersonStatus.ACTIVE)
@@ -74,8 +91,36 @@ class JourneyPersonListAPIView(generics.ListAPIView):
                 Q(code__icontains=q)
                 | Q(display_name__icontains=q)
                 | Q(latest_zone__icontains=q)
+                | Q(latest_camera__name__icontains=q)
             )
         return qs.order_by("-latest_seen_at", "-created_at")
+
+    def list(self, request, *args, **kwargs):
+        qs = self.filter_queryset(self.get_queryset())
+        try:
+            page = max(1, int(request.query_params.get("page") or 1))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(request.query_params.get("page_size") or 20)
+        except (TypeError, ValueError):
+            page_size = 20
+        page_size = max(5, min(100, page_size))
+
+        total = qs.count()
+        start = (page - 1) * page_size
+        end = start + page_size
+        items = list(qs[start:end])
+        serializer = self.get_serializer(items, many=True)
+        return Response(
+            {
+                "count": total,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": max(1, (total + page_size - 1) // page_size) if total else 1,
+                "results": serializer.data,
+            }
+        )
 
 
 class JourneyPersonDetailAPIView(generics.RetrieveAPIView):
@@ -90,11 +135,30 @@ class JourneyPersonDetailAPIView(generics.RetrieveAPIView):
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
+        survivor = _surviving_person(instance)
+        if survivor.pk != instance.pk:
+            instance = self.get_queryset().get(pk=survivor.pk)
         events = list(instance.events.all())
         context = self.get_serializer_context()
         context.update(_clip_context_for_events(events, person=instance))
         serializer = self.get_serializer(instance, context=context)
         return Response(serializer.data)
+
+    def patch(self, request, *args, **kwargs):
+        """Let operators give this journey person a clear name."""
+        instance = _surviving_person(self.get_object())
+        ser = JourneyPersonNameUpdateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        name = ser.validated_data["display_name"].strip()
+        if not name:
+            return Response({"display_name": ["Name cannot be empty."]}, status=status.HTTP_400_BAD_REQUEST)
+        meta = dict(instance.metadata or {}) if isinstance(instance.metadata, dict) else {}
+        meta["name_locked"] = True
+        meta["named_at"] = timezone.now().isoformat()
+        instance.display_name = name[:200]
+        instance.metadata = meta
+        instance.save(update_fields=["display_name", "metadata", "updated_at"])
+        return Response(JourneyPersonListSerializer(instance, context=self.get_serializer_context()).data)
 
 
 class JourneyPersonTimelineAPIView(APIView):
@@ -102,7 +166,7 @@ class JourneyPersonTimelineAPIView(APIView):
 
     def get(self, request, uuid):
         try:
-            person = JourneyPerson.objects.get(uuid=uuid)
+            person = _surviving_person(JourneyPerson.objects.get(uuid=uuid))
         except JourneyPerson.DoesNotExist:
             return Response({"detail": "Person not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -153,6 +217,7 @@ class JourneyLiveAPIView(APIView):
                 person_type__in=[PersonType.STAFF, PersonType.VISITOR, PersonType.UNKNOWN],
             )
             .select_related("latest_camera", "staff", "visitor")
+            .prefetch_related("tracks")
             .order_by("-latest_seen_at")[:100]
         )
         results = list(qs)
@@ -229,16 +294,20 @@ class JourneyPersonCameraCapturesAPIView(APIView):
 
     def get(self, request, uuid):
         try:
-            person = JourneyPerson.objects.get(uuid=uuid)
+            person = _surviving_person(JourneyPerson.objects.get(uuid=uuid))
         except JourneyPerson.DoesNotExist:
             return Response({"detail": "Person not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        hours = 48
+        hours = 0  # 0 = all history
         try:
-            hours = int(request.query_params.get("hours", 48))
+            raw_hours = request.query_params.get("hours")
+            if raw_hours is not None and str(raw_hours).strip() != "":
+                hours = int(raw_hours)
         except (TypeError, ValueError):
-            pass
-        since = timezone.now() - timedelta(hours=max(1, hours))
+            hours = 0
+        since = None
+        if hours > 0:
+            since = timezone.now() - timedelta(hours=hours)
 
         from .snapshot_utils import backfill_snapshot_paths_for_person
 
@@ -267,24 +336,24 @@ class JourneyCameraSightingsAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        hours = 2
+        # hours=0 (default) = all history; positive hours = lookback window
+        hours = 0
         try:
-            hours = int(request.query_params.get("hours", 2))
+            raw_hours = request.query_params.get("hours")
+            if raw_hours is not None and str(raw_hours).strip() != "":
+                hours = int(raw_hours)
         except (TypeError, ValueError):
-            pass
-        since = timezone.now() - timedelta(hours=max(1, hours))
-        events = (
-            JourneyEvent.objects.filter(
-                created_at__gte=since,
-                camera__isnull=False,
-                detection_event_id__isnull=False,
-            )
-            .select_related("camera", "journey_person")
-            .order_by("camera_id", "-created_at")
-        )
+            hours = 0
+        events = JourneyEvent.objects.filter(
+            camera__isnull=False,
+        ).select_related("camera", "journey_person")
+        if hours > 0:
+            since = timezone.now() - timedelta(hours=hours)
+            events = events.filter(created_at__gte=since)
+        events = events.order_by("camera_id", "-created_at")
         seen: set[int] = set()
         latest_per_camera: list[JourneyEvent] = []
-        for ev in events:
+        for ev in events.iterator(chunk_size=500):
             if ev.camera_id in seen:
                 continue
             seen.add(ev.camera_id)

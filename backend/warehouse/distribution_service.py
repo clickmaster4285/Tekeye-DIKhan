@@ -19,7 +19,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from cameras.models import Camera
-from cameras.stream_utils import ffmpeg_path
+from cameras.stream_utils import ffmpeg_path, hwaccel_input_flags, video_encoder_flags
 from detentions.models import DepositAccountEntry, DetentionMemo, DetentionMemoGoodsLine
 
 from .models import DestructionAlert, FireSmokeDetectionLog, MemoDistribution, WarehouseStockItem
@@ -341,15 +341,17 @@ def _load_recording_manifest(session_id: str) -> list[dict[str, Any]]:
 
 def _recording_input_for_camera(camera: Camera) -> tuple[str, str, list[str]]:
     """Return stream URL, source label, and extra ffmpeg input args."""
-    from ml.client import ml_live_mjpeg_url, ml_service_enabled
+    from ml.client import MLServiceError, ml_live_mjpeg_url_for_camera, ml_service_enabled
 
-    if camera.nvr_id and ml_service_enabled():
-        stream_url = camera.effective_stream_url()
-        return (
-            ml_live_mjpeg_url(camera.stream_key, rtsp_url=stream_url),
-            "ml_annotated",
-            ["-f", "mpjpeg", "-fflags", "nobuffer", "-flags", "low_delay"],
-        )
+    if camera.nvr_id and getattr(camera, "ml_server_id", None) and ml_service_enabled():
+        try:
+            return (
+                ml_live_mjpeg_url_for_camera(camera),
+                "ml_annotated",
+                ["-f", "mpjpeg", "-fflags", "nobuffer", "-flags", "low_delay"],
+            )
+        except MLServiceError:
+            pass
     url = camera.effective_stream_url()
     if not url:
         raise ValueError(f"Camera {camera.name} has no stream URL.")
@@ -493,14 +495,10 @@ def _finalize_recording_file(src_path: str, dest_mp4: str) -> bool:
             "-loglevel",
             "error",
             "-y",
+            *hwaccel_input_flags(),
             "-i",
             src_path,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "fast",
-            "-crf",
-            "23",
+            *video_encoder_flags(crf=23, preset="fast"),
             "-an",
             "-movflags",
             "+faststart",
@@ -609,6 +607,12 @@ def _start_camera_recording(
         "-hide_banner",
         "-loglevel",
         "error",
+    ]
+    # NVDEC decode only for raw RTSP (H.264/H.265); the ml_annotated source is an
+    # MJPEG multipart HTTP stream, which ffmpeg does not hardware-decode reliably.
+    if source == "rtsp":
+        cmd += hwaccel_input_flags()
+    cmd += [
         *input_extra,
         "-i",
         stream_url,
@@ -617,12 +621,7 @@ def _start_camera_recording(
         "-an",
         "-r",
         str(record_fps),
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-crf",
-        "23",
+        *video_encoder_flags(crf=23, preset="ultrafast"),
         "-g",
         str(record_fps * 2),
     ]

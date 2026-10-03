@@ -7,6 +7,13 @@ from django.apps import AppConfig
 
 logger = logging.getLogger(__name__)
 
+# ML service state (which cameras it should serve) lives only in that process's
+# memory — a restart/reload of ml_services wipes it silently, leaving Django
+# thinking a camera is "allocated" while the ML node has no idea. Re-pushing on
+# this interval means any such drift self-heals within one cycle instead of
+# needing a manual `sync_ml_cameras` run.
+_CAMERA_SYNC_INTERVAL_SEC = max(15, int(os.getenv("ML_CAMERA_SYNC_INTERVAL_SEC", "45")))
+
 
 class MlConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
@@ -18,6 +25,30 @@ class MlConfig(AppConfig):
             return
         if "migrate" in sys.argv or "makemigrations" in sys.argv:
             return
+
+        def _periodic_camera_sync() -> None:
+            try:
+                from django.db import close_old_connections
+
+                close_old_connections()
+                from .camera_sync import sync_cameras_to_ml
+
+                sync_cameras_to_ml()
+            except Exception:
+                logger.exception("[camera-sync] Periodic re-sync failed")
+            finally:
+                from config.db import release_db
+
+                release_db()
+                _schedule_periodic_camera_sync()
+
+        def _schedule_periodic_camera_sync() -> None:
+            try:
+                timer = threading.Timer(_CAMERA_SYNC_INTERVAL_SEC, _periodic_camera_sync)
+                timer.daemon = True
+                timer.start()
+            except Exception:
+                logger.exception("[camera-sync] Could not schedule periodic camera sync")
 
         def _deferred_face_reload() -> None:
             try:
@@ -32,9 +63,11 @@ class MlConfig(AppConfig):
                 result = push_face_embeddings_to_ml()
                 if result:
                     logger.info(
-                        "[face-sync] ML known faces loaded: %s (%s from DB)",
-                        result.get("known_faces", 0),
-                        result.get("db_embeddings", 0),
+                        "[face-sync] ML known faces loaded on %s/%s node(s) (%s embeddings): %s",
+                        result.get("ok_count", 0),
+                        result.get("total", 0),
+                        result.get("db_embeddings", result.get("known_faces", 0)),
+                        list((result.get("by_server") or {}).keys()),
                     )
                 from .camera_sync import sync_cameras_to_ml
 
@@ -45,6 +78,7 @@ class MlConfig(AppConfig):
                 from config.db import release_db
 
                 release_db()
+                _schedule_periodic_camera_sync()
 
         try:
             from config.runtime import skip_embedded_background_workers

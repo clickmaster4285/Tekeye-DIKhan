@@ -47,6 +47,11 @@ class OfficerGpsHistory(models.Model):
     altitude_m = models.FloatField(null=True, blank=True)
     recorded_at = models.DateTimeField(db_index=True)
     battery_pct = models.PositiveSmallIntegerField(null=True, blank=True)
+    event_id = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    device_uuid = models.CharField(max_length=64, blank=True, default="")
+    session_id = models.CharField(max_length=64, blank=True, default="")
+    client_timestamp = models.DateTimeField(null=True, blank=True)
+    server_timestamp = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-recorded_at"]

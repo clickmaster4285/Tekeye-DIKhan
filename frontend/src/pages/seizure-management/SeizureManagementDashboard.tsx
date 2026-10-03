@@ -82,8 +82,7 @@ function kindLabel(kind: SeizureMgmtActivity["kind"]): string {
 export default function SeizureManagementDashboardPage() {
   const { data, isLoading, isError, error, dataUpdatedAt, refetch, isFetching } = useQuery({
     queryKey: ["seizure-mgmt", "overview"],
-    queryFn: fetchSeizureMgmtOverview,
-    refetchInterval: 15_000,
+    queryFn: fetchSeizureMgmtOverview
   })
 
   const overview: SeizureMgmtOverview = data ?? emptySeizureMgmtOverview

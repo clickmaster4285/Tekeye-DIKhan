@@ -65,7 +65,7 @@ class User(AbstractUser):
     effective_date = models.DateField(null=True, blank=True)
     we_boc_role = models.CharField(max_length=150, blank=True, default="")
     is_deleted = models.BooleanField(default=False)
-    # Top-level sidebar module labels the user may access (empty = use role defaults).
+    # Top-level sidebar module labels the user may access (empty = no module access).
     # Super Admin (ADMIN) always has full access regardless of this field.
     allowed_modules = models.JSONField(default=list, blank=True)
 
@@ -74,7 +74,7 @@ class User(AbstractUser):
 
 
 class Staff(models.Model):
-    """Full HR staff template. Required: full_name, cnic, address, department, designation, joining_date, emergency_contact."""
+    """Full HR staff template. Only full_name is required; all other fields are optional."""
     user = models.OneToOneField(
         User,
         on_delete=models.CASCADE,
@@ -89,7 +89,7 @@ class Staff(models.Model):
     last_name = models.CharField(max_length=80, null=True, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
     gender = models.CharField(max_length=20, null=True, blank=True)
-    cnic = models.CharField(max_length=15, unique=True)
+    cnic = models.CharField(max_length=15, unique=True, null=True, blank=True)
     national_id = models.CharField(max_length=30, null=True, blank=True)  # passport etc.
     marital_status = models.CharField(max_length=30, null=True, blank=True)
     blood_group = models.CharField(max_length=10, null=True, blank=True)
@@ -113,12 +113,12 @@ class Staff(models.Model):
     collector_name = models.CharField(max_length=200, null=True, blank=True)
     transferred_from = models.CharField(max_length=300, null=True, blank=True)
     transferred_to = models.CharField(max_length=300, null=True, blank=True)
-    designation = models.CharField(max_length=100)
-    department = models.CharField(max_length=100)
+    designation = models.CharField(max_length=100, null=True, blank=True, default="")
+    department = models.CharField(max_length=100, null=True, blank=True, default="")
     branch_location = models.CharField(max_length=200, null=True, blank=True)
     manager = models.CharField(max_length=150, null=True, blank=True)
     employment_type = models.CharField(max_length=50, null=True, blank=True)
-    joining_date = models.DateField(default=timezone.now)
+    joining_date = models.DateField(null=True, blank=True)
     probation_end_date = models.DateField(null=True, blank=True)
     work_shift_start = models.TimeField(null=True, blank=True)
     work_shift_end = models.TimeField(null=True, blank=True)
@@ -201,7 +201,8 @@ class Staff(models.Model):
     )
 
     def __str__(self):
-        return f"{self.full_name} ({self.designation})"
+        desig = (self.designation or "").strip()
+        return f"{self.full_name} ({desig})" if desig else self.full_name
 
 
 class Attendance(models.Model):
@@ -264,7 +265,7 @@ class Attendance(models.Model):
         upload_to="attendance/videos/",
         null=True,
         blank=True,
-        help_text="Short camera clip captured when attendance was marked.",
+        help_text="Deprecated: attendance proof is image-only; kept for old records.",
     )
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, null=True)

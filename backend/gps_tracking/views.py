@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, time, timedelta
+from math import asin, cos, radians, sin, sqrt
 
 from django.db import transaction
 from django.utils import timezone
@@ -12,10 +13,129 @@ from users.permissions import can_view_all_staff, get_effective_location, get_lo
 
 from .models import OfficerGpsHistory, OfficerGpsLatest
 from .serializers import GpsDutySerializer, GpsPingSerializer, latest_to_dict, me_payload
+from .geocode import coord_key, reverse_geocode_batch
 
 MAX_ACCURACY_M = 500
-HISTORY_KEEP_DAYS = 14
-MAX_HISTORY_POINTS = 400
+HISTORY_KEEP_DAYS = 45
+MAX_HISTORY_POINTS = 800
+MOVING_SPEED_KMH = 1.5
+MOVING_DISTANCE_M = 25
+
+
+def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    r = 6_371_000.0
+    p1, p2 = radians(lat1), radians(lat2)
+    dphi = radians(lat2 - lat1)
+    dlmb = radians(lng2 - lng1)
+    a = sin(dphi / 2) ** 2 + cos(p1) * cos(p2) * sin(dlmb / 2) ** 2
+    return 2 * r * asin(sqrt(a))
+
+
+def _motion_label(speed_kmh, prev, cur) -> str:
+    if speed_kmh is not None:
+        return "Moving" if float(speed_kmh) >= MOVING_SPEED_KMH else "Stationary"
+    if prev and cur:
+        dist = _haversine_m(prev["latitude"], prev["longitude"], cur["latitude"], cur["longitude"])
+        dt = (cur["recorded_at"] - prev["recorded_at"]).total_seconds() if prev.get("recorded_at") and cur.get("recorded_at") else 0
+        if dt > 0 and dist >= MOVING_DISTANCE_M:
+            return "Moving"
+    return "Stationary"
+
+
+def _point_dict(p: dict, *, motion: str | None = None) -> dict:
+    lat = p["latitude"]
+    lng = p["longitude"]
+    return {
+        "latitude": lat,
+        "longitude": lng,
+        "accuracy": p.get("accuracy_m"),
+        "speedKmh": p.get("speed_kmh"),
+        "recordedAt": p["recorded_at"].isoformat() if p.get("recorded_at") else None,
+        "status": motion or "Stationary",
+        "locationName": "",
+        "mapsUrl": f"https://www.google.com/maps?q={lat},{lng}",
+    }
+
+
+def _attach_location_names(points: list[dict]) -> None:
+    """Fill locationName on each history point via cached reverse-geocode."""
+    if not points:
+        return
+    try:
+        results = reverse_geocode_batch(points)
+    except Exception:
+        return
+    by_key = {
+        r["key"]: (r.get("locationName") or "").strip()
+        for r in results
+        if r.get("key")
+    }
+    for point in points:
+        try:
+            key = coord_key(float(point["latitude"]), float(point["longitude"]))
+        except (TypeError, ValueError, KeyError):
+            continue
+        point["locationName"] = by_key.get(key) or ""
+
+
+def _parse_report_date(raw: str):
+    try:
+        return datetime.strptime(raw.strip(), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_at_time(raw: str):
+    text = (raw or "").strip()
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(text, fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def _day_bounds(day):
+    tz = timezone.get_current_timezone()
+    start = timezone.make_aware(datetime.combine(day, time.min), tz)
+    end = start + timedelta(days=1)
+    return start, end
+
+
+def _week_bounds(day):
+    """Monday-start week containing `day`."""
+    monday = day - timedelta(days=day.weekday())
+    sunday = monday + timedelta(days=6)
+    start, _ = _day_bounds(monday)
+    _, end = _day_bounds(sunday)
+    return start, end, monday, sunday
+
+
+def _month_bounds(day):
+    first = day.replace(day=1)
+    if first.month == 12:
+        next_month = first.replace(year=first.year + 1, month=1, day=1)
+    else:
+        next_month = first.replace(month=first.month + 1, day=1)
+    last = next_month - timedelta(days=1)
+    start, _ = _day_bounds(first)
+    _, end = _day_bounds(last)
+    return start, end, first, last
+
+
+def _downsample_rows(rows: list, max_points: int) -> list:
+    n = len(rows)
+    if n <= max_points:
+        return rows
+    if max_points < 2:
+        return rows[:max_points]
+    # Always keep first and last; spread the rest evenly.
+    indexes = {0, n - 1}
+    inner = max_points - 2
+    for i in range(inner):
+        idx = 1 + int(round(i * (n - 3) / max(1, inner - 1))) if inner > 1 else n // 2
+        indexes.add(min(n - 2, max(1, idx)))
+    return [rows[i] for i in sorted(indexes)][:max_points]
 
 
 def _user_location(user) -> str:
@@ -83,6 +203,39 @@ class GpsPingAPIView(APIView):
         if not ser.is_valid():
             return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
         data = ser.validated_data
+
+        from logs.enforcement import (
+            DeviceRevoked,
+            SessionRevoked,
+            remember_event_id,
+            require_active_mobile_session,
+            touch_gps,
+        )
+        from logs.models import MobileAccessSession
+
+        event_id = (data.get("event_id") or request.data.get("event_id") or "").strip() or None
+        if event_id and not remember_event_id(request.user, event_id, "gps"):
+            row = OfficerGpsLatest.objects.filter(user=request.user).first()
+            return Response({**me_payload(request.user, row), "duplicate": True})
+
+        session_id = (data.get("session_id") or "").strip() or None
+        device_uuid = (data.get("device_uuid") or "").strip() or None
+        has_sessions = MobileAccessSession.objects.filter(user=request.user).exists()
+        session = None
+        if session_id or device_uuid or has_sessions:
+            try:
+                session = require_active_mobile_session(request.user, session_id, device_uuid)
+            except SessionRevoked as exc:
+                return Response(
+                    {"detail": str(exc), "code": "SESSION_REVOKED"},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+            except DeviceRevoked as exc:
+                return Response(
+                    {"detail": str(exc), "code": "DEVICE_REVOKED"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         accuracy = data.get("accuracy")
         if accuracy is not None and accuracy > MAX_ACCURACY_M:
             return Response(
@@ -101,12 +254,19 @@ class GpsPingAPIView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        recorded_at = data.get("recordedAt") or timezone.now()
+        recorded_at = data.get("recordedAt") or data.get("client_timestamp") or timezone.now()
         battery = data.get("batteryPct")
+        if battery is None:
+            battery = data.get("battery_level")
         speed = data.get("speedKmh")
+        if speed is None:
+            speed = data.get("speed")
         heading = data.get("headingDeg")
+        if heading is None:
+            heading = data.get("heading")
         altitude = data.get("altitudeM")
         loc = _user_location(request.user)
+        server_now = timezone.now()
 
         with transaction.atomic():
             row, _created = OfficerGpsLatest.objects.select_for_update().get_or_create(
@@ -159,9 +319,17 @@ class GpsPingAPIView(APIView):
                 altitude_m=altitude,
                 recorded_at=recorded_at,
                 battery_pct=battery,
+                event_id=event_id,
+                device_uuid=device_uuid or "",
+                session_id=session_id or (session.session_id if session else ""),
+                client_timestamp=data.get("client_timestamp") or recorded_at,
+                server_timestamp=server_now,
             )
             cutoff = timezone.now() - timedelta(days=HISTORY_KEEP_DAYS)
             OfficerGpsHistory.objects.filter(user=request.user, recorded_at__lt=cutoff).delete()
+
+        if session:
+            touch_gps(session, lat, lng, accuracy, battery)
 
         return Response(me_payload(request.user, row))
 
@@ -170,7 +338,7 @@ class GpsLiveAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        qs = OfficerGpsLatest.objects.select_related("user")
+        qs = OfficerGpsLatest.objects.select_related("user", "user__staff_profile")
         if not can_view_all_staff(request.user):
             qs = qs.filter(user=request.user)
         else:
@@ -205,22 +373,170 @@ class GpsHistoryAPIView(APIView):
             if not latest or (latest.location or "") != scope:
                 if request.user.pk != user_id:
                     return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        hours = int(request.query_params.get("hours") or 24)
-        hours = max(1, min(hours, 72))
-        since = timezone.now() - timedelta(hours=hours)
-        points = list(
-            qs.filter(recorded_at__gte=since)
-            .order_by("-recorded_at")
-            .values("latitude", "longitude", "accuracy_m", "recorded_at")[:MAX_HISTORY_POINTS]
-        )
-        points.reverse()
-        payload = [
+
+        date_raw = (request.query_params.get("date") or "").strip()
+        date_from_raw = (request.query_params.get("date_from") or "").strip()
+        date_to_raw = (request.query_params.get("date_to") or "").strip()
+        at_raw = (request.query_params.get("at") or "").strip()
+        period_raw = (request.query_params.get("period") or "").strip().lower()
+        report_day = _parse_report_date(date_raw) if date_raw else None
+        date_from = _parse_report_date(date_from_raw) if date_from_raw else None
+        date_to = _parse_report_date(date_to_raw) if date_to_raw else None
+        at_time = _parse_at_time(at_raw) if at_raw else None
+        period = period_raw if period_raw in ("day", "week", "month") else None
+
+        if date_raw and report_day is None:
+            return Response({"detail": "Invalid date. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+        if date_from_raw and date_from is None:
+            return Response({"detail": "Invalid date_from. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+        if date_to_raw and date_to is None:
+            return Response({"detail": "Invalid date_to. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+        if at_raw and at_time is None:
+            return Response({"detail": "Invalid time. Use HH:MM or HH:MM:SS."}, status=status.HTTP_400_BAD_REQUEST)
+        if period_raw and period is None:
+            return Response(
+                {"detail": "Invalid period. Use day, week, or month."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if at_time is not None and report_day is None and date_from is None:
+            report_day = timezone.localdate()
+        if period and report_day is None and date_from is None:
+            report_day = timezone.localdate()
+
+        sampled = False
+        total_count = 0
+
+        if date_from is not None or date_to is not None or period or report_day is not None:
+            if date_from is not None or date_to is not None:
+                start_day = date_from or date_to
+                end_day = date_to or date_from
+                if start_day > end_day:
+                    start_day, end_day = end_day, start_day
+                start, _ = _day_bounds(start_day)
+                _, end = _day_bounds(end_day)
+                period_meta = {
+                    "period": period or "custom",
+                    "dateFrom": start_day.isoformat(),
+                    "dateTo": end_day.isoformat(),
+                    "start": start.isoformat(),
+                    "end": (end - timedelta(seconds=1)).isoformat(),
+                }
+            elif period == "week":
+                start, end, monday, sunday = _week_bounds(report_day)
+                period_meta = {
+                    "period": "week",
+                    "date": report_day.isoformat(),
+                    "dateFrom": monday.isoformat(),
+                    "dateTo": sunday.isoformat(),
+                    "start": start.isoformat(),
+                    "end": (end - timedelta(seconds=1)).isoformat(),
+                }
+            elif period == "month":
+                start, end, first, last = _month_bounds(report_day)
+                period_meta = {
+                    "period": "month",
+                    "date": report_day.isoformat(),
+                    "dateFrom": first.isoformat(),
+                    "dateTo": last.isoformat(),
+                    "start": start.isoformat(),
+                    "end": (end - timedelta(seconds=1)).isoformat(),
+                }
+            else:
+                start, end = _day_bounds(report_day)
+                period_meta = {
+                    "period": "day",
+                    "date": report_day.isoformat(),
+                    "dateFrom": report_day.isoformat(),
+                    "dateTo": report_day.isoformat(),
+                    "start": start.isoformat(),
+                    "end": (end - timedelta(seconds=1)).isoformat(),
+                }
+
+            full_rows = list(
+                qs.filter(recorded_at__gte=start, recorded_at__lt=end)
+                .order_by("recorded_at")
+                .values("latitude", "longitude", "accuracy_m", "speed_kmh", "recorded_at")
+            )
+            total_count = len(full_rows)
+            rows = _downsample_rows(full_rows, MAX_HISTORY_POINTS)
+            sampled = total_count > len(rows)
+            period = period_meta
+        else:
+            try:
+                hours = int(request.query_params.get("hours") or 24)
+            except (TypeError, ValueError):
+                hours = 24
+            hours = max(1, min(hours, 72))
+            since = timezone.now() - timedelta(hours=hours)
+            rows = list(
+                qs.filter(recorded_at__gte=since)
+                .order_by("-recorded_at")
+                .values("latitude", "longitude", "accuracy_m", "speed_kmh", "recorded_at")[:MAX_HISTORY_POINTS]
+            )
+            rows.reverse()
+            total_count = len(rows)
+            period = {"hours": hours, "since": since.isoformat()}
+
+        payload = []
+        for i, row in enumerate(rows):
+            prev = rows[i - 1] if i > 0 else None
+            motion = _motion_label(row.get("speed_kmh"), prev, row)
+            payload.append(_point_dict(row, motion=motion))
+
+        closest = None
+        closest_day = report_day
+        if at_time is not None:
+            if closest_day is None and date_from is not None:
+                closest_day = date_from
+            if closest_day is not None:
+                tz = timezone.get_current_timezone()
+                target = timezone.make_aware(datetime.combine(closest_day, at_time), tz)
+                best = None
+                best_delta = None
+                for row in rows:
+                    recorded = row.get("recorded_at")
+                    if not recorded:
+                        continue
+                    delta = abs((recorded - target).total_seconds())
+                    if best_delta is None or delta < best_delta:
+                        best_delta = delta
+                        best = row
+                if best is not None:
+                    idx = rows.index(best)
+                    prev = rows[idx - 1] if idx > 0 else None
+                    closest = {
+                        **_point_dict(best, motion=_motion_label(best.get("speed_kmh"), prev, best)),
+                        "requestedAt": target.isoformat(),
+                        "deltaSeconds": int(best_delta or 0),
+                    }
+
+        # Resolve street/area names once for the report (cached after first hit).
+        to_name = list(payload)
+        if closest is not None:
+            to_name.append(closest)
+        _attach_location_names(to_name)
+
+        return Response(
             {
-                "latitude": p["latitude"],
-                "longitude": p["longitude"],
-                "accuracy": p["accuracy_m"],
-                "recordedAt": p["recorded_at"].isoformat() if p["recorded_at"] else None,
+                "userId": user_id,
+                "period": period,
+                "points": payload,
+                "closest": closest,
+                "count": len(payload),
+                "totalCount": total_count,
+                "sampled": sampled,
             }
-            for p in points
-        ]
-        return Response({"userId": user_id, "points": payload})
+        )
+
+
+class GpsReverseGeocodeAPIView(APIView):
+    """Batch reverse-geocode for GPS history location names (OSM via Photon)."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        raw = request.data.get("points")
+        if not isinstance(raw, list):
+            return Response({"detail": "points must be a list of {latitude, longitude}."}, status=status.HTTP_400_BAD_REQUEST)
+        results = reverse_geocode_batch(raw)
+        return Response({"results": results, "count": len(results)})

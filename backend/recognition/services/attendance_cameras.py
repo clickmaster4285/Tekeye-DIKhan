@@ -56,6 +56,8 @@ def camera_rtsp_payload(cam) -> dict[str, Any] | None:
         "id": cam.id,
         "name": cam.name or cam.code or f"Camera {cam.id}",
         "rtsp_url": url,
+        "stream_key": getattr(cam, "stream_key", None) or f"cam-{cam.id}",
+        "ml_server_id": getattr(cam, "ml_server_id", None),
     }
 
 
@@ -74,10 +76,21 @@ def is_attendance_capable(cam) -> bool:
 
 
 def sync_camera_attendance_worker(cam, *, created: bool = False) -> None:
-    """Start the InsightFace worker when a camera is created/updated (active)."""
+    """Start the InsightFace worker when a camera is created/updated (active).
+
+    When ATTENDANCE_CCTV_AUTOSTART is False, attendance is marked from the shared
+    ML Camera Session (face_recognition purpose) — do not open a second RTSP.
+    """
+    from django.conf import settings
+
     from recognition.services.cctv_worker import get_cctv_manager
 
     manager = get_cctv_manager()
+    if not getattr(settings, "ATTENDANCE_CCTV_AUTOSTART", True):
+        # Shared-session architecture: stop any leftover independent RTSP workers.
+        manager.stop_camera(cam.id)
+        return
+
     if not is_attendance_capable(cam):
         manager.stop_camera(cam.id)
         return
@@ -91,7 +104,12 @@ def sync_camera_attendance_worker(cam, *, created: bool = False) -> None:
     if existing and existing.get("running"):
         # Already running — leave it (avoid reconnect storm on unrelated saves)
         return
-    manager.start_camera(payload["id"], payload["name"], payload["rtsp_url"])
+    manager.start_camera(
+        payload["id"],
+        payload["name"],
+        payload["rtsp_url"],
+        stream_key=payload.get("stream_key") or "",
+    )
     logger.info(
         "Attendance CCTV worker %s for camera %s (%s)",
         "started" if created else "synced",

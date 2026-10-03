@@ -55,7 +55,7 @@ export function ModulePermissionsDialog({
         title: "Permissions saved",
         description:
           selected.length === 0
-            ? "Using role default modules."
+            ? "No modules granted."
             : `${selected.length} module(s) granted.`,
       })
       onSaved?.(updated)
@@ -82,8 +82,8 @@ export function ModulePermissionsDialog({
               : "Select a user."}
             {" "}
             Only checked modules appear in that user&apos;s sidebar. Super Admin always has all
-            modules. Empty selection uses the role&apos;s default menu (or Dashboard only if the
-            role has no template). Custom grants override the role until cleared.
+            modules. Empty selection grants no modules; the dashboard remains available while
+            permissions are being assigned.
           </DialogDescription>
         </DialogHeader>
 
@@ -99,7 +99,7 @@ export function ModulePermissionsDialog({
                 Select all
               </Button>
               <Button type="button" variant="outline" size="sm" onClick={clearAll}>
-                Clear (role defaults)
+                Clear all
               </Button>
             </div>
             <div className="space-y-2 rounded-lg border p-3">

@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import time
+from collections import defaultdict
 
 from django.conf import settings
 
@@ -19,18 +20,55 @@ def _interval() -> int:
     return max(10, int(getattr(settings, "PERSON_JOURNEY_SYNC_INTERVAL_SEC", 60)))
 
 
+def _journey_ingest_payload(entries: list[dict]) -> dict:
+    backend_url = getattr(settings, "PERSON_JOURNEY_BACKEND_URL", "http://127.0.0.1:8000")
+    ingest_token = getattr(settings, "PERSON_JOURNEY_INGEST_TOKEN", "")
+    return {
+        "cameras": entries,
+        "backend_ingest_url": f"{backend_url.rstrip('/')}/api/person-journey/ingest/",
+        "ingest_token": ingest_token,
+    }
+
+
+def _known_ml_urls() -> set[str]:
+    """All active ML node URLs (hub + RemoteServer). Prefer shared client helper."""
+    from ml.client import known_ml_base_urls
+
+    return set(known_ml_base_urls())
+
+
+def _post_journey_bulk(base_url: str, entries: list[dict]) -> dict:
+    import requests
+
+    res = requests.post(
+        f"{base_url.rstrip('/')}/journey/register/bulk",
+        json=_journey_ingest_payload(entries),
+        timeout=30,
+    )
+    res.raise_for_status()
+    return res.json()
+
+
 def sync_cameras_to_journey_ml() -> dict:
     from cameras.models import Camera
-    from ml.client import ml_service_enabled
+    from ml.client import camera_ml_base_url, ml_service_enabled
 
     if not ml_service_enabled():
         return {"synced": 0, "reason": "ml_disabled"}
 
-    cameras = Camera.objects.filter(is_active=True, nvr__isnull=False).select_related("nvr", "nvr__site")
-    entries = []
+    cameras = Camera.objects.filter(
+        is_active=True,
+        nvr__isnull=False,
+        ml_server_id__isnull=False,
+    ).select_related("nvr", "nvr__site", "ml_server")
+
+    by_url: dict[str, list[dict]] = defaultdict(list)
     for cam in cameras:
         try:
-            entries.append(
+            base = camera_ml_base_url(cam)
+            if not base:
+                continue
+            by_url[base].append(
                 {
                     "key": cam.stream_key,
                     "rtsp_url": cam.effective_stream_url(),
@@ -42,52 +80,31 @@ def sync_cameras_to_journey_ml() -> dict:
         except Exception as exc:
             logger.warning("Journey sync skip camera %s: %s", cam.pk, exc)
 
-    if not entries:
-        # Empty camera list — tell ML to stop all journey pipelines.
-        import requests
+    targets = _known_ml_urls() | set(by_url.keys())
+    totals = {"synced": 0, "by_server": {}, "cleared": []}
 
-        base = getattr(settings, "ML_SERVICE_URL", "").rstrip("/")
-        backend_url = getattr(settings, "PERSON_JOURNEY_BACKEND_URL", "http://127.0.0.1:8000")
-        ingest_token = getattr(settings, "PERSON_JOURNEY_INGEST_TOKEN", "")
+    for base in sorted(targets):
+        entries = by_url.get(base, [])
         try:
-            res = requests.post(
-                f"{base}/journey/register/bulk",
-                json={
-                    "cameras": [],
-                    "backend_ingest_url": f"{backend_url.rstrip('/')}/api/person-journey/ingest/",
-                    "ingest_token": ingest_token,
-                },
-                timeout=30,
-            )
-            res.raise_for_status()
-            data = res.json()
-            data["synced"] = 0
-            data["cleared"] = True
-            return data
+            data = _post_journey_bulk(base, entries)
+            registered = int(data.get("registered") or data.get("synced") or len(entries) or 0)
+            totals["synced"] += len(entries)
+            totals["by_server"][base] = {
+                "cameras": len(entries),
+                "result": data,
+                "registered": registered,
+            }
+            if not entries:
+                totals["cleared"].append(base)
         except Exception as exc:
-            logger.warning("Journey ML clear failed: %s", exc)
-            return {"synced": 0, "cleared": False, "error": str(exc)}
+            logger.warning(
+                "Journey ML sync failed at %s (restart ml_services api_server.py): %s",
+                base,
+                exc,
+            )
+            totals["by_server"][base] = {"cameras": len(entries), "error": str(exc)}
 
-    import requests
-
-    base = getattr(settings, "ML_SERVICE_URL", "").rstrip("/")
-    backend_url = getattr(settings, "PERSON_JOURNEY_BACKEND_URL", "http://127.0.0.1:8000")
-    ingest_token = getattr(settings, "PERSON_JOURNEY_INGEST_TOKEN", "")
-    try:
-        res = requests.post(
-            f"{base}/journey/register/bulk",
-            json={
-                "cameras": entries,
-                "backend_ingest_url": f"{backend_url.rstrip('/')}/api/person-journey/ingest/",
-                "ingest_token": ingest_token,
-            },
-            timeout=30,
-        )
-        res.raise_for_status()
-        return res.json()
-    except Exception as exc:
-        logger.warning("Journey ML camera sync failed (restart ml_services api_server.py): %s", exc)
-        return {"synced": 0, "error": str(exc), "hint": "Restart ML server to enable /journey/register/bulk"}
+    return totals
 
 
 def _worker_loop():
@@ -101,6 +118,14 @@ def _worker_loop():
             sync_cameras_to_journey_ml()
         except Exception:
             logger.exception("Journey sync worker iteration failed")
+        try:
+            from .identity import consolidate_recent_persons
+
+            merged = consolidate_recent_persons()
+            if merged:
+                logger.info("Person journey: merged %s split identities", merged)
+        except Exception:
+            logger.exception("Person journey identity consolidation failed")
         finally:
             release_db()
         from config.worker_throttle import maybe_pause_for_cpu

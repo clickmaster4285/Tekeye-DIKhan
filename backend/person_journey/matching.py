@@ -29,10 +29,12 @@ def _env_int(key: str, default: int) -> int:
 
 
 FACE_MATCH_THRESHOLD = _env_float("JOURNEY_FACE_MATCH_THRESHOLD", 0.72)
-REID_MATCH_THRESHOLD = _env_float("JOURNEY_REID_MATCH_THRESHOLD", 0.68)
-COMBINED_MATCH_THRESHOLD = _env_float("JOURNEY_COMBINED_MATCH_THRESHOLD", 0.75)
-MAX_TRAVEL_SECONDS = _env_int("JOURNEY_MAX_TRAVEL_SECONDS", 120)
-RECENT_WINDOW_SECONDS = _env_int("JOURNEY_RECENT_WINDOW_SECONDS", 600)
+REID_MATCH_THRESHOLD = _env_float("JOURNEY_REID_MATCH_THRESHOLD", 0.80)
+# Legacy name; cross-camera hops now use the same calibrated bar (see identity.py).
+REID_CROSS_CAMERA_THRESHOLD = _env_float("JOURNEY_REID_CROSS_CAMERA_THRESHOLD", 0.80)
+COMBINED_MATCH_THRESHOLD = _env_float("JOURNEY_COMBINED_MATCH_THRESHOLD", 0.70)
+MAX_TRAVEL_SECONDS = _env_int("JOURNEY_MAX_TRAVEL_SECONDS", 300)
+RECENT_WINDOW_SECONDS = _env_int("JOURNEY_RECENT_WINDOW_SECONDS", 900)
 
 
 def cosine_similarity(a: list[float] | None, b: list[float] | None) -> float:
@@ -145,47 +147,26 @@ def find_best_match(
     staff_id: int | None = None,
     visitor_id: int | None = None,
 ) -> MatchCandidate | None:
-    now = timezone.now()
-    since = now - timedelta(seconds=RECENT_WINDOW_SECONDS)
+    """Legacy entry point — delegates to the single calibrated engine in identity.identify()."""
+    from .association import find_best_global_match
 
-    qs = JourneyPerson.objects.filter(
-        status=PersonStatus.ACTIVE,
-        latest_seen_at__gte=since,
-    ).select_related("staff", "visitor", "latest_camera")
-
-    if staff_id:
-        qs = qs.filter(Q(staff_id=staff_id) | Q(person_type=PersonType.STAFF))
-    elif visitor_id:
-        qs = qs.filter(Q(visitor_id=visitor_id) | Q(person_type=PersonType.VISITOR))
-    elif person_type_hint:
-        qs = qs.filter(person_type=person_type_hint)
-
-    candidates: list[MatchCandidate] = []
-    for person in qs[:200]:
-        scored = score_candidate(
-            person,
-            face_embedding=face_embedding,
-            reid_embedding=reid_embedding,
-            camera_id=camera_id,
-            now=now,
-        )
-        if scored is None:
-            continue
-        if scored.combined_score >= COMBINED_MATCH_THRESHOLD:
-            candidates.append(scored)
-        elif face_embedding and scored.face_score >= FACE_MATCH_THRESHOLD:
-            candidates.append(scored)
-        elif reid_embedding and scored.reid_score >= REID_MATCH_THRESHOLD:
-            candidates.append(scored)
-
-    if not candidates:
+    person, detail = find_best_global_match(
+        face_embedding=face_embedding,
+        reid_embedding=reid_embedding,
+        camera_id=camera_id,
+        person_type_hint=person_type_hint,
+        staff_id=staff_id,
+        visitor_id=visitor_id,
+    )
+    if person is None or detail.get("decision") != "match":
         return None
-    best = max(candidates, key=lambda c: c.combined_score)
-    # Without face/ReID, travel-time alone must not merge distinct unknown persons.
-    if not face_embedding and not reid_embedding:
-        if best.face_score < 0.01 and best.reid_score < 0.01:
-            return None
-    return best
+    return MatchCandidate(
+        person=person,
+        face_score=float(detail.get("face_score") or 0.0),
+        reid_score=float(detail.get("reid_score") or 0.0),
+        travel_score=float(detail.get("topology_score") or 0.0),
+        combined_score=float(detail.get("combined") or 0.0),
+    )
 
 
 def resolve_staff_from_face_label(label: str) -> tuple[int | None, str]:

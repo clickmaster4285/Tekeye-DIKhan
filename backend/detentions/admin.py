@@ -11,6 +11,19 @@ from .models import (
 class DetentionMemoGoodsLineInline(admin.TabularInline):
     model = DetentionMemoGoodsLine
     extra = 0
+    raw_id_fields = ("located_camera", "detection_event")
+    readonly_fields = ()
+    fields = (
+        "client_line_id",
+        "qr_code_number",
+        "description",
+        "quantity",
+        "unit",
+        "located_camera",
+        "detected_at",
+        "detection_event",
+        "perishable",
+    )
 
 
 class DetentionMemoAttachmentInline(admin.TabularInline):

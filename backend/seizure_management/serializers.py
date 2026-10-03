@@ -6,10 +6,12 @@ from typing import Any
 
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework import serializers
 
 from detentions.models import DepositAccountEntry, DetentionMemo, DetentionMemoGoodsLine
-from detentions.serializers import create_deposit_account_entry
+from detentions.serializers import _located_camera_payload, create_deposit_account_entry
+from cameras.models import Camera, DetectionEvent
 
 from .models import (
     DetentionAssessment,
@@ -61,6 +63,28 @@ def _iso(dt) -> str:
     return dt.isoformat() if dt else ""
 
 
+def _optional_int(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_detected_at(value):
+    if value is None or value == "":
+        return None
+    if hasattr(value, "isoformat"):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    if " " in text and "T" not in text:
+        text = text.replace(" ", "T", 1)
+    return parse_datetime(text)
+
+
 def _note_sheet_item_to_dict(item: NoteSheetItem, request=None) -> dict:
     images = []
     for img in item.images.all():
@@ -68,6 +92,16 @@ def _note_sheet_item_to_dict(item: NoteSheetItem, request=None) -> dict:
         if url:
             images.append(url)
     description = item.product or ""
+
+    evidence_url = ""
+    det = getattr(item, "detection_event", None)
+    if det is not None and getattr(det, "clip", None) and getattr(det.clip, "name", None):
+        evidence_url = _absolute_media_url(request, det.clip)
+    if not evidence_url and images:
+        evidence_url = images[0]
+
+    cam = getattr(item, "located_camera", None)
+    detected = item.detected_at
     return {
         "id": str(item.id),
         "clientLineId": item.client_line_id or str(item.id),
@@ -86,6 +120,11 @@ def _note_sheet_item_to_dict(item: NoteSheetItem, request=None) -> dict:
         "itemNotes": item.remarks or "",
         "images": images,
         "sortOrder": item.sort_order,
+        "locatedCameraId": item.located_camera_id,
+        "locatedCamera": _located_camera_payload(cam, request),
+        "detectedAt": detected.isoformat() if detected else "",
+        "detectionEventId": item.detection_event_id,
+        "evidenceUrl": evidence_url,
     }
 
 
@@ -350,6 +389,9 @@ class NoteSheetItemWriteSerializer(serializers.Serializer):
     remarks = serializers.CharField(required=False, allow_blank=True)
     itemNotes = serializers.CharField(required=False, allow_blank=True)
     sortOrder = serializers.IntegerField(required=False, min_value=0)
+    locatedCameraId = serializers.IntegerField(required=False, allow_null=True)
+    detectedAt = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    detectionEventId = serializers.IntegerField(required=False, allow_null=True)
 
 
 class NoteSheetWriteSerializer(serializers.Serializer):
@@ -638,6 +680,24 @@ def apply_note_sheet(obj: NoteSheet, data: dict, username: str = "") -> NoteShee
 
     if "items" in data:
         items = data.get("items") or []
+        camera_ids = {
+            _optional_int(row.get("locatedCameraId") if isinstance(row, dict) else None)
+            for row in items
+        }
+        camera_ids.discard(None)
+        valid_cameras = set(
+            Camera.objects.filter(pk__in=camera_ids).values_list("pk", flat=True)
+        ) if camera_ids else set()
+
+        event_ids = {
+            _optional_int(row.get("detectionEventId") if isinstance(row, dict) else None)
+            for row in items
+        }
+        event_ids.discard(None)
+        valid_events = set(
+            DetectionEvent.objects.filter(pk__in=event_ids).values_list("pk", flat=True)
+        ) if event_ids else set()
+
         keep_ids: list = []
         for idx, row in enumerate(items):
             if not isinstance(row, dict):
@@ -647,6 +707,19 @@ def apply_note_sheet(obj: NoteSheet, data: dict, username: str = "") -> NoteShee
             notes = (row.get("itemNotes") or row.get("remarks") or "").strip()
             client_line_id = (row.get("clientLineId") or row.get("id") or "").strip()
             existing = _find_note_sheet_item(obj, client_line_id)
+            cam_id = _optional_int(row.get("locatedCameraId"))
+            if cam_id not in valid_cameras:
+                cam_id = None
+            event_id = _optional_int(row.get("detectionEventId"))
+            if event_id not in valid_events:
+                event_id = None
+            if event_id and not cam_id:
+                try:
+                    cam_id = DetectionEvent.objects.filter(pk=event_id).values_list(
+                        "camera_id", flat=True
+                    ).first()
+                except Exception:
+                    cam_id = None
             fields = {
                 "client_line_id": client_line_id,
                 "qr_code_number": row.get("qrCodeNumber") or "",
@@ -660,6 +733,9 @@ def apply_note_sheet(obj: NoteSheet, data: dict, username: str = "") -> NoteShee
                 "identification_ref": row.get("identificationRef") or "",
                 "remarks": notes,
                 "sort_order": row.get("sortOrder") if row.get("sortOrder") is not None else idx,
+                "located_camera_id": cam_id,
+                "detected_at": _parse_detected_at(row.get("detectedAt")),
+                "detection_event_id": event_id,
             }
             if existing:
                 for attr, value in fields.items():

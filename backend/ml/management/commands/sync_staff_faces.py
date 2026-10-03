@@ -43,12 +43,13 @@ class Command(BaseCommand):
                 result = push_face_embeddings_to_ml() or {}
                 self.stdout.write(
                     self.style.SUCCESS(
-                        f"ML service reloaded from database: {result.get('known_faces', 0)} face(s)."
+                        f"Reloaded faces on {result.get('ok_count', 0)}/{result.get('total', 0)} ML node(s) "
+                        f"({result.get('known_faces', 0)} embedding(s))."
                     )
                 )
             except MLServiceError as exc:
-                self.stdout.write(self.style.WARNING(f"Could not reload ML service: {exc}"))
+                self.stdout.write(self.style.WARNING(f"Could not reload ML service(s): {exc}"))
         else:
             self.stdout.write(
-                "ML_SERVICE_URL not set — restart ML API or call POST /api/ml/reload-faces/ after starting it."
+                "No ML servers configured — set ML_SERVICE_URL or add an active ML RemoteServer."
             )

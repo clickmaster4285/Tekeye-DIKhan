@@ -29,11 +29,13 @@ class FaceQualityChecker:
         det_score = float(getattr(face, "det_score", 0.0))
         crop = image[y1:y2, x1:x2]
         blur_score = cls.laplacian_blur_score(crop)
+        exposure = float(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).mean()) if crop.size else 0.0
 
         checks = {
             "det_score_ok": det_score >= cls.MIN_DET_SCORE,
             "face_size_ok": face_area_ratio >= cls.MIN_FACE_AREA_RATIO,
             "blur_ok": blur_score >= cls.MIN_BLUR_VARIANCE,
+            "exposure_ok": 40.0 <= exposure <= 220.0,
         }
         passed = all(checks.values())
 
@@ -42,6 +44,7 @@ class FaceQualityChecker:
             "det_score": round(det_score, 4),
             "face_area_ratio": round(face_area_ratio, 4),
             "blur_score": round(blur_score, 2),
+            "exposure": round(exposure, 2),
             "checks": checks,
             "message": cls._message(checks),
         }
@@ -56,4 +59,6 @@ class FaceQualityChecker:
             return "Face too small — move closer to the camera"
         if not checks["blur_ok"]:
             return "Image too blurry — hold still and improve lighting"
+        if not checks.get("exposure_ok", True):
+            return "Face is too dark or too bright — adjust the light"
         return "Face quality check failed"

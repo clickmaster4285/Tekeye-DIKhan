@@ -38,7 +38,7 @@ def _annotate_frame(
 
     stamp = timezone.localtime().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
-        f"Camera #{camera_id}  {camera_name}",
+        f"{(camera_name or 'Camera').strip()}",
         f"{staff_label}  {confidence * 100:.0f}%",
         stamp,
     ]
@@ -130,7 +130,7 @@ def snapshot_to_dict(snapshot: DetectionSnapshot) -> dict:
         "employee_name": staff.full_name if staff else "",
         "camera_id": snapshot.camera_id,
         "camera_name": snapshot.camera_name,
-        "camera_label": f"Camera #{snapshot.camera_id or '?'} · {snapshot.camera_name}",
+        "camera_label": (snapshot.camera_name or "").strip() or "Camera",
         "image_url": image_url,
         "confidence": snapshot.confidence,
         "attendance_action": snapshot.attendance_action,

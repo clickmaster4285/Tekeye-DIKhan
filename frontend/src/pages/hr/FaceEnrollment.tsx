@@ -1,17 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
+import ReactSelect, { type SingleValue, type StylesConfig } from "react-select"
 import { Camera, CheckCircle2, ImagePlus, Loader2, Sparkles, Upload, X } from "lucide-react"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useToast } from "@/hooks/use-toast"
@@ -20,6 +14,37 @@ import { fetchStaff, type StaffRecord } from "@/lib/staff-api"
 import { recognitionApi, type FaceEnrollment } from "@/lib/recognition-api"
 import { ROUTES } from "@/routes/config"
 import { cn } from "@/lib/utils"
+
+type StaffOption = {
+  value: string
+  label: string
+  staff: StaffRecord
+}
+
+const staffSelectStyles: StylesConfig<StaffOption, false> = {
+  container: (base) => ({ ...base, width: "100%" }),
+  control: (base, state) => ({
+    ...base,
+    minHeight: "40px",
+    borderRadius: "calc(var(--radius) - 2px)",
+    backgroundColor: "#ffffff",
+    borderColor: state.isFocused || state.menuIsOpen ? "#bfdbfe" : "#e5e7eb",
+    boxShadow:
+      state.isFocused || state.menuIsOpen ? "0 0 0 2px rgba(191, 219, 254, 0.9)" : "none",
+    "&:hover": { borderColor: "#bfdbfe" },
+  }),
+  menuPortal: (base) => ({ ...base, zIndex: 60 }),
+  option: (base, state) => ({
+    ...base,
+    backgroundColor: state.isSelected
+      ? "#1d4ed8"
+      : state.isFocused
+        ? "#eff6ff"
+        : "#ffffff",
+    color: state.isSelected ? "#ffffff" : "#101727",
+    cursor: "pointer",
+  }),
+}
 
 type PendingImage = {
   id: string
@@ -69,6 +94,29 @@ export default function FaceEnrollmentPage() {
     () => staffList.find((s) => String(s.id) === staffId),
     [staffList, staffId]
   )
+
+  const staffOptions = useMemo<StaffOption[]>(
+    () =>
+      staffList.map((s) => ({
+        value: String(s.id),
+        label: s.employee_id
+          ? `${s.full_name} (${s.employee_id})`
+          : s.full_name,
+        staff: s,
+      })),
+    [staffList]
+  )
+
+  const selectedStaffOption = useMemo(
+    () => staffOptions.find((opt) => opt.value === staffId) ?? null,
+    [staffOptions, staffId]
+  )
+
+  const menuPortalTarget = typeof document !== "undefined" ? document.body : null
+
+  const handleStaffChange = (option: SingleValue<StaffOption>) => {
+    setStaffId(option?.value ?? "")
+  }
 
   useEffect(() => {
     fetchStaff()
@@ -298,19 +346,41 @@ export default function FaceEnrollmentPage() {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label>Staff member</Label>
-              <Select value={staffId} onValueChange={setStaffId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select staff" />
-                </SelectTrigger>
-                <SelectContent>
-                  {staffList.map((s) => (
-                    <SelectItem key={s.id} value={String(s.id)}>
-                      {s.full_name}
-                      {s.employee_id ? ` (${s.employee_id})` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <ReactSelect<StaffOption, false>
+                inputId="face-enrollment-staff"
+                options={staffOptions}
+                value={selectedStaffOption}
+                onChange={handleStaffChange}
+                placeholder="Search employee by name or ID..."
+                isClearable
+                isSearchable
+                className="react-select-container"
+                classNamePrefix="react-select"
+                menuPortalTarget={menuPortalTarget ?? undefined}
+                menuPosition={menuPortalTarget ? "fixed" : "absolute"}
+                noOptionsMessage={() => "No matching employees found"}
+                filterOption={(option, rawInput) => {
+                  const q = rawInput.trim().toLowerCase()
+                  if (!q) return true
+                  const s = option.data.staff
+                  const haystack = [
+                    s.full_name,
+                    s.employee_id,
+                    s.department,
+                    s.designation,
+                    s.cnic,
+                    s.email,
+                  ]
+                    .filter(Boolean)
+                    .join(" ")
+                    .toLowerCase()
+                  return haystack.includes(q)
+                }}
+                styles={staffSelectStyles}
+              />
+              <p className="text-xs text-muted-foreground">
+                Type to search by name, employee ID, department, or CNIC
+              </p>
             </div>
 
             {selectedStaff && (

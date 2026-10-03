@@ -1,5 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
+from logs.device_views import LogoutView
 from .views import (
     StaffViewSet,
     AttendanceViewSet,
@@ -20,6 +21,8 @@ router.register(r"payroll-runs", PayrollRunViewSet, basename="payroll-run")
 
 urlpatterns = [
     path("auth/login/", LoginView.as_view(), name="login"),
-    path("auth/login", LoginView.as_view(), name="login-no-slash"), 
+    path("auth/login", LoginView.as_view(), name="login-no-slash"),
+    path("auth/logout/", LogoutView.as_view(), name="logout"),
+    path("auth/logout", LogoutView.as_view(), name="logout-no-slash"),
     path("", include(router.urls)),
 ]

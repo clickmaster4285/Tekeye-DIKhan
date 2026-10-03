@@ -1,4 +1,4 @@
-import { Camera, Loader2, X } from "lucide-react"
+import { Camera, Loader2, UserCircle, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -213,6 +213,10 @@ const collectorateOptions = [
     value: "Collectorate of Customs (Enforcement), Peshawar",
     label: "Collectorate of Customs (Enforcement), Peshawar",
   },
+  {
+    value: "Collectorate of Customs (Appraisement), Peshawar",
+    label: "Collectorate of Customs (Appraisement), Peshawar",
+  },
 ]
 
 // Current Place of Posting options from the provided data
@@ -377,6 +381,8 @@ export function AddStaffStep1PersonalInfo({
   form,
   updateForm,
   staffPhotos,
+  profilePhotoIndex = 0,
+  onSetProfilePhoto,
   cameraOpen,
   onOpenCamera,
   onCaptureFromCamera,
@@ -398,6 +404,8 @@ export function AddStaffStep1PersonalInfo({
   form: AddStaffStep1Form
   updateForm: (patch: Partial<AddStaffStep1Form>) => void
   staffPhotos: UploadValue[]
+  profilePhotoIndex?: number
+  onSetProfilePhoto?: (index: number) => void
   cameraOpen?: boolean
   onOpenCamera: () => void
   onCaptureFromCamera?: (file: File) => void
@@ -417,6 +425,8 @@ export function AddStaffStep1PersonalInfo({
   const maxPhotos = 5
   const filled = staffPhotos.slice(0, maxPhotos)
   const emptySlots = Math.max(0, maxPhotos - filled.length)
+  const activeProfileIndex =
+    filled.length === 0 ? 0 : Math.min(Math.max(0, profilePhotoIndex), filled.length - 1)
   const menuPortalTarget = typeof document !== "undefined" ? document.body : null
   
   // Use provided options or our categorized ones
@@ -471,14 +481,14 @@ export function AddStaffStep1PersonalInfo({
         { value: form.transferred_to, label: form.transferred_to } : null,
     },
     validationSchema: Yup.object({
-      personal_number: Yup.string().trim().required("Personal number is required"),
+      personal_number: Yup.string().trim(),
       full_name: Yup.string().trim().required("Employee name is required"),
-      gender: Yup.string().trim().required("Gender is required"),
-      cnic: Yup.string().trim().required("CNIC is required"),
-      phone: Yup.string().trim().required("Mobile number is required"),
-      department: Yup.string().trim().required("Department is required"),
-      designation: Yup.string().trim().required("Designation is required"),
-      role: Yup.string().trim().required("Role is required"),
+      gender: Yup.string().trim(),
+      cnic: Yup.string().trim(),
+      phone: Yup.string().trim(),
+      department: Yup.string().trim(),
+      designation: Yup.string().trim(),
+      role: Yup.string().trim(),
       date_of_birth: Yup.string().trim(),
       joining_date: Yup.string().trim(),
       address: Yup.string().trim(),
@@ -486,7 +496,7 @@ export function AddStaffStep1PersonalInfo({
       emergency_contact_relationship: Yup.string().trim(),
       emergency_contact_phone: Yup.string().trim(),
       emergency_contact_address: Yup.string().trim(),
-      qualification: Yup.array().min(1, "At least one qualification is required"),
+      qualification: Yup.array(),
       current_posting: Yup.object().nullable(),
       transferred_from: Yup.object().nullable(),
       transferred_to: Yup.object().nullable(),
@@ -749,8 +759,16 @@ export function AddStaffStep1PersonalInfo({
               <p className="text-sm font-medium text-muted-foreground">Captured images</p>
               <div className="overflow-x-auto overflow-y-hidden pb-2">
                 <div className="grid grid-cols-5 gap-3 min-w-[calc(12rem*5+0.75rem*4)] w-max">
-                  {filled.map((img, idx) => (
-                    <div key={idx} className="relative h-[14.5rem] w-48 shrink-0">
+                  {filled.map((img, idx) => {
+                    const isProfile = idx === activeProfileIndex
+                    return (
+                    <div
+                      key={idx}
+                      className={cn(
+                        "group relative h-[14.5rem] w-48 shrink-0",
+                        isProfile && "ring-2 ring-[#3366FF] rounded-md"
+                      )}
+                    >
                       {img.previewUrl ? (
                         <>
                           <img
@@ -765,10 +783,25 @@ export function AddStaffStep1PersonalInfo({
                               <span className="sr-only">Checking face…</span>
                             </div>
                           )}
+                          {isProfile && (
+                            <span className="absolute left-1 top-1 z-[1] rounded bg-[#3366FF] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white shadow">
+                              Profile
+                            </span>
+                          )}
+                          {!img.validating && onSetProfilePhoto && !isProfile && (
+                            <button
+                              type="button"
+                              onClick={() => onSetProfilePhoto(idx)}
+                              className="absolute inset-x-1 bottom-1 z-[1] flex items-center justify-center gap-1 rounded-md bg-black/75 px-2 py-1.5 text-[11px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                            >
+                              <UserCircle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                              Set as profile image
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => onRemovePhoto(idx)}
-                            className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90 shadow"
+                            className="absolute right-1 top-1 z-[2] flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90 shadow"
                             aria-label="Remove photo"
                           >
                             <X className="h-3 w-3" />
@@ -780,7 +813,8 @@ export function AddStaffStep1PersonalInfo({
                         </div>
                       )}
                     </div>
-                  ))}
+                    )
+                  })}
                   
                   {Array.from({ length: emptySlots }).map((_, i) => {
                     const slotNumber = filled.length + i + 1
@@ -795,7 +829,10 @@ export function AddStaffStep1PersonalInfo({
                   })}
                 </div>
               </div>
-              <p className="text-xs text-muted-foreground">{filled.length} / {maxPhotos} images</p>
+              <p className="text-xs text-muted-foreground">
+                {filled.length} / {maxPhotos} images
+                {filled.length > 0 ? " · Hover a photo to set it as the profile image" : ""}
+              </p>
             </div>
           </div>
         </div>
@@ -826,7 +863,7 @@ export function AddStaffStep1PersonalInfo({
           </div>
 
           <div className="space-y-2">
-            <RequiredLabel>Personal Number</RequiredLabel>
+            <RequiredLabel required={false}>Personal Number</RequiredLabel>
             <Input
               placeholder="e.g. 12345"
               name="personal_number"
@@ -859,7 +896,7 @@ export function AddStaffStep1PersonalInfo({
           </div>
 
           <div className="space-y-2">
-            <RequiredLabel>Gender</RequiredLabel>
+            <RequiredLabel required={false}>Gender</RequiredLabel>
             <Select
               value={formik.values.gender || undefined}
               onValueChange={(value) => {
@@ -890,7 +927,7 @@ export function AddStaffStep1PersonalInfo({
           </div>
 
           <div className="space-y-2">
-            <RequiredLabel>CNIC Number</RequiredLabel>
+            <RequiredLabel required={false}>CNIC Number</RequiredLabel>
             <Input
               placeholder="00000-0000000-0"
               name="cnic"
@@ -932,7 +969,7 @@ export function AddStaffStep1PersonalInfo({
           </div>
 
           <div className="space-y-2">
-            <RequiredLabel>Mobile Number</RequiredLabel>
+            <RequiredLabel required={false}>Mobile Number</RequiredLabel>
             <Input
               placeholder="0000-0000000"
               name="phone"
@@ -964,7 +1001,7 @@ export function AddStaffStep1PersonalInfo({
           </div>
 
           <div className="space-y-2 md:col-span-2">
-            <RequiredLabel>Qualification</RequiredLabel>
+            <RequiredLabel required={false}>Qualification</RequiredLabel>
             <div className="space-y-1">
               <ReactSelect
                 components={animatedComponents}
@@ -1041,7 +1078,7 @@ export function AddStaffStep1PersonalInfo({
           </div>
 
           <div className="space-y-2">
-            <RequiredLabel>Department</RequiredLabel>
+            <RequiredLabel required={false}>Department</RequiredLabel>
             <Select
               value={formik.values.department || undefined}
               onValueChange={(value) => {
@@ -1074,7 +1111,7 @@ export function AddStaffStep1PersonalInfo({
           </div>
 
           <div className="space-y-2">
-            <RequiredLabel>Designation</RequiredLabel>
+            <RequiredLabel required={false}>Designation</RequiredLabel>
             <ReactSelect
               name="designation"
               isMulti={false}
@@ -1106,7 +1143,7 @@ export function AddStaffStep1PersonalInfo({
           </div>
 
           <div className="space-y-2">
-            <RequiredLabel>Role</RequiredLabel>
+            <RequiredLabel required={false}>Role</RequiredLabel>
             <Select
               value={formik.values.role || ""}
               onValueChange={(value) => {

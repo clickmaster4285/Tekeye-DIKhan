@@ -15,6 +15,15 @@ from recognition.services.snapshot_saver import snapshot_to_dict
 from users.permissions import IsAdminOrHR
 
 
+def _emit_attendance_runtime() -> None:
+    try:
+        from realtime.sio_app import emit_invalidate
+
+        emit_invalidate(["attendance", "recognition", "hr"])
+    except Exception:
+        pass
+
+
 def _attendance_cameras():
     """All active cameras — shown on Attendance Monitor CCTV grid."""
     return attendance_camera_queryset(for_workers=False)
@@ -65,10 +74,12 @@ class CCTVControlView(APIView):
         if action_name == "start_all":
             cameras = collect_attendance_camera_payloads(for_workers=False)
             statuses = manager.start_all(cameras)
+            _emit_attendance_runtime()
             return Response({"action": "start_all", "statuses": statuses, "count": len(statuses)})
 
         if action_name == "stop_all":
             statuses = manager.stop_all()
+            _emit_attendance_runtime()
             return Response({"action": "stop_all", "statuses": statuses})
 
         return Response(
@@ -100,11 +111,14 @@ class CCTVCameraActionView(APIView):
                 camera.id,
                 camera.name or camera.code or f"Camera {camera.id}",
                 url,
+                stream_key=camera.stream_key or f"cam-{camera.id}",
             )
+            _emit_attendance_runtime()
             return Response({"camera": _camera_payload(camera, manager), "runtime": runtime})
 
         if action_name == "stop":
             runtime = manager.stop_camera(camera.id)
+            _emit_attendance_runtime()
             return Response({"runtime": runtime})
 
         return Response({"error": "Unknown action"}, status=status.HTTP_400_BAD_REQUEST)

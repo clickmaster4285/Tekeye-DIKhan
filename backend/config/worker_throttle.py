@@ -1,7 +1,4 @@
-"""Operational throttling for background workers (cycle sleep, thread caps).
-
-CPU circuit-breaker pauses were removed — workers no longer stop when host CPU is high.
-"""
+"""Operational throttling for background workers (cycle sleep + thread caps)."""
 
 from __future__ import annotations
 
@@ -36,6 +33,6 @@ def min_cycle_sleep_sec() -> float:
 
 
 def maybe_pause_for_cpu(log: logging.Logger | None = None, *, label: str = "worker") -> None:
-    """Short gap between worker cycles only. No CPU-based pause."""
-    _ = (log, label)  # call-site compatibility
+    """Brief inter-cycle sleep only (CPU circuit-breaker removed)."""
+    del log, label  # kept for call-site compatibility
     time.sleep(min_cycle_sleep_sec())

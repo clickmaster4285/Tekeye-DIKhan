@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import time
 from typing import Any
 
 import requests
@@ -16,12 +15,22 @@ from live_stream import get_live_manager
 logger = logging.getLogger(__name__)
 
 
+def _pipeline_identity(
+    *,
+    rtsp_url: str,
+    camera_id: int | None,
+) -> tuple[str, int | None]:
+    """Only RTSP/camera_id require a restart; zone/name can update in place."""
+    return (rtsp_url.strip(), camera_id)
+
+
 class JourneyManager:
     def __init__(self):
         self._lock = threading.Lock()
         self._pipelines: dict[str, JourneyCameraPipeline] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._stop_flags: dict[str, threading.Event] = {}
+        self._configs: dict[str, tuple[str, int | None]] = {}
         self._backend_ingest_url = ""
         self._ingest_token = ""
 
@@ -37,6 +46,8 @@ class JourneyManager:
                 str(payload.get("ingest_token") or ""),
             )
         registered = 0
+        started = 0
+        reused = 0
         desired_keys: set[str] = set()
         live = get_live_manager()
         live.ensure_started()
@@ -52,7 +63,7 @@ class JourneyManager:
                 camera_id = None
             desired_keys.add(key)
             live.ensure_camera(key, url)
-            self._start_pipeline(
+            outcome = self._ensure_pipeline(
                 key=key,
                 rtsp_url=url,
                 camera_id=camera_id,
@@ -60,6 +71,10 @@ class JourneyManager:
                 name=str(item.get("name") or key),
             )
             registered += 1
+            if outcome == "started":
+                started += 1
+            else:
+                reused += 1
 
         # Stop pipelines for cameras removed from DB (empty sync stops all).
         stopped = 0
@@ -75,6 +90,8 @@ class JourneyManager:
 
         return {
             "registered": registered,
+            "started": started,
+            "reused": reused,
             "stopped": stopped,
             "total": len(cameras),
             "running": len(self._pipelines),
@@ -94,8 +111,29 @@ class JourneyManager:
             pass
         return existed
 
-    def _start_pipeline(self, *, key: str, rtsp_url: str, camera_id: int | None, zone: str, name: str):
+    def _ensure_pipeline(
+        self,
+        *,
+        key: str,
+        rtsp_url: str,
+        camera_id: int | None,
+        zone: str,
+        name: str,
+    ) -> str:
+        """Start only when missing/dead/config-changed. Periodic sync must not thrash."""
+        identity = _pipeline_identity(rtsp_url=rtsp_url, camera_id=camera_id)
         with self._lock:
+            existing = self._pipelines.get(key)
+            thread = self._threads.get(key)
+            alive = thread is not None and thread.is_alive()
+            if existing is not None and alive and self._configs.get(key) == identity:
+                # Keep metadata / RTSP handle fresh without tearing down YOLO/track state.
+                existing.rtsp_url = rtsp_url
+                existing.camera_id = camera_id
+                existing.zone = zone
+                existing.name = name
+                return "reused"
+
             self._stop_pipeline_locked(key)
             pipeline = JourneyCameraPipeline(
                 camera_key=key,
@@ -112,10 +150,12 @@ class JourneyManager:
                 name=f"journey-{key}",
             )
             self._pipelines[key] = pipeline
+            self._configs[key] = identity
             self._stop_flags[key] = stop_event
             self._threads[key] = thread
             thread.start()
             logger.info("[journey] Started pipeline for %s (%s)", key, name)
+            return "started"
 
     def _stop_pipeline_locked(self, key: str):
         stop = self._stop_flags.pop(key, None)
@@ -124,6 +164,7 @@ class JourneyManager:
         pipeline = self._pipelines.pop(key, None)
         if pipeline:
             pipeline.stop()
+        self._configs.pop(key, None)
         thread = self._threads.pop(key, None)
         if thread:
             thread.join(timeout=2.0)

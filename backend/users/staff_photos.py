@@ -136,9 +136,17 @@ def apply_staff_photo_uploads(staff: Staff, request) -> bool:
         return False
 
     if keep_paths or new_paths:
+        # When the chosen profile is an existing keep path, put keeps first so
+        # final_paths[0] (profile_image) matches the UI selection.
+        profile_from_keep = str(request.data.get("profile_from_keep") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        ordered_sources = [*keep_paths, *new_paths] if profile_from_keep else [*new_paths, *keep_paths]
         merged: list[str] = []
         seen: set[str] = set()
-        for path in [*new_paths, *keep_paths]:
+        for path in ordered_sources:
             norm = _normalize_path(path)
             if not norm or norm in seen:
                 continue

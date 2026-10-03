@@ -1,5 +1,6 @@
 import React from "react"
 import {
+  Activity,
   ArrowRightLeft,
   BarChart3,
   Bell,
@@ -16,6 +17,7 @@ import {
   FolderOpen,
   Gavel,
   GraduationCap,
+  HardDrive,
   LayoutDashboard,
   LayoutGrid,
   Link2,
@@ -25,6 +27,7 @@ import {
   Lock,
   MapPin,
   Monitor,
+  Network,
   Package,
   Play,
   Scale,
@@ -42,6 +45,7 @@ import {
   UserCog,
   Users,
   Wallet,
+  Zap,
 } from "lucide-react"
 
 export type SidebarIconComponent = React.ComponentType<{ size?: number; className?: string }>
@@ -60,6 +64,7 @@ const PRIMARY_MENU_ICONS: Record<string, SidebarIconComponent> = {
   "AI Monitoring & Analytics": Camera,
   "AI Analytics": Brain,
   "AI Analytics System": Brain,
+  "Infrastructure Monitoring": HardDrive,
   "Human Resource": Users,
   "Human Resource Management": Users,
   "Human Resource Management System": Users,
@@ -132,6 +137,17 @@ const EXPLICIT_SUBMENU_ICONS: Record<string, SidebarIconComponent> = {
   "Alerts & Notifications": Bell,
   "Incident Management": FolderOpen,
   "People Database": Users,
+  // Infrastructure Monitoring
+  Overview: LayoutDashboard,
+  Cameras: Camera,
+  NVRs: Server,
+  "UPS Systems": Zap,
+  Inverters: Zap,
+  "Network Devices": Network,
+  "Device Health": Activity,
+  "Power Monitoring": Zap,
+  Alerts: Bell,
+  Events: ClipboardList,
   "Vehicle Database": Truck,
   "Reports & Analytics": BarChart3,
   Configuration: Cog,
