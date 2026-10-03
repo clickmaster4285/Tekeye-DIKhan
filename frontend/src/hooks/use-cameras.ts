@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useState } from "react"
 import { fetchCameras, type CameraRecord } from "@/lib/cameras-api"
 
-export function useCameras(options?: { activeOnly?: boolean; onlineOnly?: boolean }) {
+export function useCameras(options?: {
+  activeOnly?: boolean
+  onlineOnly?: boolean
+  /** When true, only cameras assigned via Camera Distribution. */
+  allocatedOnly?: boolean
+}) {
   const [cameras, setCameras] = useState<CameraRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -9,7 +14,7 @@ export function useCameras(options?: { activeOnly?: boolean; onlineOnly?: boolea
   const reload = useCallback(() => {
     setLoading(true)
     setError(null)
-    fetchCameras()
+    fetchCameras({ allocatedOnly: options?.allocatedOnly === true })
       .then((rows) => {
         let list = rows
         if (options?.activeOnly) list = list.filter((c) => c.is_active)
@@ -18,16 +23,14 @@ export function useCameras(options?: { activeOnly?: boolean; onlineOnly?: boolea
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load cameras"))
       .finally(() => setLoading(false))
-  }, [options?.activeOnly, options?.onlineOnly])
+  }, [options?.allocatedOnly, options?.activeOnly, options?.onlineOnly])
 
   useEffect(() => {
     reload()
     const onUpdate = () => reload()
     window.addEventListener("camera-integration-updated", onUpdate)
-    window.addEventListener("focus", onUpdate)
     return () => {
       window.removeEventListener("camera-integration-updated", onUpdate)
-      window.removeEventListener("focus", onUpdate)
     }
   }, [reload])
 

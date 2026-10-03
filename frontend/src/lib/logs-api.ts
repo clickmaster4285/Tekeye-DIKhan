@@ -42,6 +42,36 @@ export async function fetchActivityLogs(params?: {
   }
 }
 
+export async function deleteActivityLogs(ids: number[]): Promise<{ deleted: number }> {
+  const res = await fetch(`${API_BASE_URL}/api/activity-logs/bulk-delete/`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ ids }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(
+      typeof data.detail === "string" ? data.detail : "Failed to delete activity logs"
+    )
+  }
+  return { deleted: Number(data.deleted) || 0 }
+}
+
+export async function clearAllActivityLogs(): Promise<{ deleted: number }> {
+  const res = await fetch(`${API_BASE_URL}/api/activity-logs/clear/`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: "{}",
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(
+      typeof data.detail === "string" ? data.detail : "Failed to clear activity logs"
+    )
+  }
+  return { deleted: Number(data.deleted) || 0 }
+}
+
 /** Report an app-level action (e.g. "Viewed /settings/logs") for full-app activity logging. No-op if not authenticated. */
 export async function reportActivityLog(action: string): Promise<void> {
   const token = typeof window !== "undefined" ? window.sessionStorage.getItem("pakistan_customs_token") : null

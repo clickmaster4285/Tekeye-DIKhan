@@ -151,6 +151,12 @@ class Camera(models.Model):
         related_name="assigned_cameras",
         help_text="ML node that should run this camera (set by IT Super Admin).",
     )
+    health_roi = models.JSONField(
+        null=True,
+        blank=True,
+        default=None,
+        help_text="Optional health/visibility ROI: {x1,y1,x2,y2} normalized 0–1 or pixels.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -201,6 +207,22 @@ class Camera(models.Model):
     @property
     def stream_key(self) -> str:
         return f"cam-{self.pk}"
+
+    @property
+    def display_label(self) -> str:
+        """Human-readable location label; does not replace code or cam-{id}."""
+        site = ""
+        nvr_name = ""
+        if self.nvr_id:
+            try:
+                site = (self.nvr.site.code or self.nvr.site.name or "").strip()
+                nvr_name = (self.nvr.name or "").strip()
+            except Exception:
+                site = (self.location or "").strip()
+        else:
+            site = (self.location or "").strip()
+        parts = [p for p in (site, nvr_name, f"Ch {self.channel}") if p]
+        return " · ".join(parts) if parts else (self.name or self.code or f"cam-{self.pk}")
 
     def effective_stream_url(self) -> str:
         """Main-stream RTSP URL (not substream). Used for ML registration."""
@@ -254,6 +276,16 @@ class DetectionEvent(models.Model):
     )
     confidence = models.FloatField()
     bbox = models.JSONField(default=list)
+    infer_frame_width = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Frame width the bbox was measured in (ML infer / scaled RTSP).",
+    )
+    infer_frame_height = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Frame height the bbox was measured in (ML infer / scaled RTSP).",
+    )
     is_alert = models.BooleanField(default=False)
     clip = models.FileField(
         upload_to="detection_clips/%Y/%m/%d/",
@@ -264,6 +296,12 @@ class DetectionEvent(models.Model):
         max_length=16,
         choices=ClipStatus.choices,
         default=ClipStatus.PENDING,
+    )
+    video = models.FileField(
+        upload_to="detection_videos/%Y/%m/%d/",
+        blank=True,
+        null=True,
+        help_text="Optional alert video clip attached to this detection event.",
     )
     # Journey / tracking columns (required by DB schema for cross-camera person linking)
     local_track_id = models.PositiveIntegerField(

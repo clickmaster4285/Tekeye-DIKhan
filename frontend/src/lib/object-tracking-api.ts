@@ -48,7 +48,12 @@ export type GlobalObjectRecord = {
   is_present: boolean
   snapshot_url?: string
   first_detection_event_id?: number | null
-  camera_history?: Array<{ camera_id: number; at: string }>
+  camera_history?: Array<{
+    camera_id: number
+    camera_name?: string
+    camera_code?: string
+    at: string
+  }>
   created_at?: string
   updated_at?: string
 }

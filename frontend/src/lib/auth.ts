@@ -44,7 +44,9 @@ export type AuthUser = {
   collectorate?: string;
   department?: string;
   is_active?: boolean;
-  /** Top-level sidebar modules; empty = role defaults. ADMIN ignores this. */
+  /** Linked staff photo (/media/...) when available. */
+  profile_image?: string | null;
+  /** Top-level sidebar modules; empty = no module access. ADMIN ignores this. */
   allowed_modules?: string[];
 };
 
@@ -61,6 +63,7 @@ export function setAuthenticatedWithToken(token: string, user: AuthUser) {
   window.sessionStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
   window.sessionStorage.setItem(AUTH_SESSION_KEY, "true");
   setAuthTokenCookie(token);
+  window.dispatchEvent(new CustomEvent("tekeye-auth-changed"));
 }
 
 export function getStoredUser(): AuthUser | null {
@@ -99,6 +102,7 @@ export function clearAuth() {
     window.sessionStorage.removeItem(AUTH_TOKEN_KEY);
     window.sessionStorage.removeItem(AUTH_USER_KEY);
     clearAuthTokenCookie();
+    window.dispatchEvent(new CustomEvent("tekeye-auth-changed"));
   }
 }
 
@@ -109,7 +113,12 @@ export function handleSessionExpired() {
   clearAuth();
   window.dispatchEvent(new CustomEvent(AUTH_SESSION_EXPIRED_EVENT));
   if (!window.location.pathname.startsWith("/login")) {
-    window.location.assign("/login");
+    const next = `${window.location.pathname}${window.location.search}`;
+    const loginUrl =
+      next && next !== "/"
+        ? `/login?next=${encodeURIComponent(next)}`
+        : "/login";
+    window.location.assign(loginUrl);
   }
 }
 
@@ -117,8 +126,11 @@ if (typeof window !== "undefined") {
   syncAuthCookieFromSession();
 }
 
-/** Only same-origin /media/... paths (blocks open redirects). */
-export function getSafeMediaNext(raw: string | null | undefined): string | null {
+/**
+ * Normalize a `next` query value to a same-origin path+search.
+ * Rejects open redirects (other origins, protocol-relative, etc.).
+ */
+function normalizeSameOriginPath(raw: string | null | undefined): string | null {
   if (!raw) return null;
   let value = raw.trim();
   if (!value) return null;
@@ -126,13 +138,21 @@ export function getSafeMediaNext(raw: string | null | undefined): string | null 
     if (/^https?:\/\//i.test(value)) {
       const parsed = new URL(value);
       if (typeof window !== "undefined" && parsed.origin !== window.location.origin) return null;
-      value = `${parsed.pathname}${parsed.search}`;
+      value = `${parsed.pathname}${parsed.search}${parsed.hash}`;
     }
   } catch {
     return null;
   }
+  if (!value.startsWith("/") || value.startsWith("//")) return null;
+  if (value.includes("\\") || /:\/\//.test(value)) return null;
+  return value;
+}
+
+/** Only same-origin /media/... paths (blocks open redirects). */
+export function getSafeMediaNext(raw: string | null | undefined): string | null {
+  const value = normalizeSameOriginPath(raw);
+  if (!value) return null;
   if (!value.startsWith("/media/")) return null;
-  if (value.startsWith("//") || value.includes("\\") || /:\/\//.test(value)) return null;
   return value;
 }
 
@@ -140,6 +160,48 @@ export function getSafeMediaNext(raw: string | null | undefined): string | null 
 export function goToSafeMediaNext(raw: string | null | undefined): boolean {
   const path = getSafeMediaNext(raw);
   if (!path || typeof window === "undefined") return false;
+  window.location.replace(path);
+  return true;
+}
+
+/**
+ * Safe in-app path for post-login redirect (QR scan → detail, deep links, etc.).
+ * Strips print-only flags so scanned memo QRs open the interactive detail page.
+ */
+export function getSafeAppNext(raw: string | null | undefined): string | null {
+  const value = normalizeSameOriginPath(raw);
+  if (!value) return null;
+  if (value === "/login" || value.startsWith("/login?")) return null;
+  if (value.startsWith("/media/")) return null;
+
+  try {
+    const url = new URL(value, "http://local.invalid");
+    url.searchParams.delete("print");
+    url.searchParams.delete("autoprint");
+    url.searchParams.delete("savepdf");
+    const search = url.searchParams.toString();
+    return `${url.pathname}${search ? `?${search}` : ""}${url.hash}`;
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Prefer media file next, else in-app SPA next.
+ * Pass react-router `navigate` for app paths; falls back to location.replace.
+ */
+export function goToSafeNext(
+  raw: string | null | undefined,
+  navigate?: (to: string, opts?: { replace?: boolean }) => void
+): boolean {
+  if (goToSafeMediaNext(raw)) return true;
+  const path = getSafeAppNext(raw);
+  if (!path) return false;
+  if (navigate) {
+    navigate(path, { replace: true });
+    return true;
+  }
+  if (typeof window === "undefined") return false;
   window.location.replace(path);
   return true;
 }

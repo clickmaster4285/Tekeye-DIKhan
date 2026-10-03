@@ -4,6 +4,7 @@ from django.conf import settings
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, status
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 
 from recognition.models import DetectionSnapshot, FaceEnrollment
@@ -107,7 +108,8 @@ class DetectionSnapshotSerializer(serializers.ModelSerializer):
         ]
 
     def get_camera_label(self, obj):
-        return f"Camera #{obj.camera_id or '?'} · {obj.camera_name}"
+        name = (obj.camera_name or "").strip()
+        return name or "Camera"
 
     def get_image_url(self, obj):
         return snapshot_to_dict(obj)["image_url"]
@@ -190,37 +192,22 @@ class TrainEmbeddingsView(APIView):
 
         engine = get_face_engine()
         folder = Path(settings.MEDIA_ROOT) / enrollment.dataset_folder
-        embeddings = engine.generate_embeddings_from_folder(folder)
-
-        if len(embeddings) < required:
+        trained = engine.train_enrollment(enrollment, folder, required=required)
+        if not trained.get("trained"):
             return Response(
-                {
-                    "error": (
-                        f"Only {len(embeddings)} valid faces found in dataset. "
-                        "Recapture with better quality."
-                    ),
-                },
+                {"error": trained.get("error") or "Training failed"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        mean_embedding = engine.average_embedding(embeddings)
-        enrollment.embedding = mean_embedding
-        enrollment.is_trained = True
-        enrollment.is_enrolled = True
-        enrollment.model_version = "InsightFace_v1"
-        enrollment.save(
-            update_fields=["embedding", "is_trained", "is_enrolled", "model_version", "updated_at"]
-        )
-
-        # Keep face_identity_label in sync for legacy camera detection labels
         if not staff.face_identity_label:
             staff.face_identity_label = staff.full_name
             staff.save(update_fields=["face_identity_label"])
 
+        enrollment.refresh_from_db()
         return Response({
             "trained": True,
-            "embedding_dim": len(mean_embedding),
-            "images_used": len(embeddings),
+            "embedding_dim": trained["embedding_dim"],
+            "images_used": trained["images_used"],
             "enrollment": FaceEnrollmentDetailSerializer(enrollment).data,
         })
 
@@ -238,20 +225,29 @@ class IdentifyFaceView(APIView):
         except (ValueError, Exception):
             return Response({"error": "Invalid image data"}, status=status.HTTP_400_BAD_REQUEST)
 
-        gallery = build_gallery()
-        result = engine.identify_from_image(image, gallery)
+        source = serializer.validated_data.get("source", Attendance.SOURCE_WEBCAM)
+        result = engine.identify_from_image(image, source=source)
         response = dict(result)
 
         if result.get("matched") and serializer.validated_data.get("mark_attendance"):
+            from recognition.services.match_confirm import CONFIRM_CCTV, CONFIRM_WEBCAM, get_match_confirmer
+
             staff_id = result.get("staff_id")
+            needed = CONFIRM_CCTV if source == Attendance.SOURCE_CCTV else CONFIRM_WEBCAM
+            confirmed = get_match_confirmer().observe(f"{source}:{staff_id}", needed=needed)
+            if not confirmed:
+                response["attendance"] = {
+                    "action": "pending_confirm",
+                    "message": f"Face seen — need {needed} matches before attendance is written",
+                }
+                return Response(response)
+
             staff = get_object_or_404(Staff.objects.select_related("user"), pk=staff_id)
             if not staff_is_enrolled_for_attendance(staff):
                 return Response(
                     {"error": "Staff face not trained"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-
-            source = serializer.validated_data.get("source", Attendance.SOURCE_WEBCAM)
             decision = AttendanceDecisionEngine.process_recognition(
                 staff=staff,
                 confidence=result["confidence"],
@@ -300,3 +296,45 @@ class GalleryStatsView(APIView):
             "trained": trained,
             "ready_for_recognition": trained,
         })
+
+
+def selfie_punch(user, image_b64: str) -> dict:
+    """Phone punch. Skips MatchConfirmer. The face must be the logged-in employee."""
+    staff = getattr(user, "staff_profile", None)
+    if staff is None:
+        return {"matched": False, "message": "No staff profile for this user"}
+    engine = get_face_engine()
+    image = engine.decode_base64(image_b64)
+    result = engine.identify_from_image(image, source="webcam")
+    if not result.get("matched") or result.get("staff_id") != staff.pk:
+        return {"matched": False, "message": "Face does not match the logged-in employee", "confidence": result.get("confidence", 0.0)}
+    decision = AttendanceDecisionEngine.process_recognition(
+        staff=staff,
+        confidence=result["confidence"],
+        source=Attendance.SOURCE_WEBCAM,
+    )
+    return {
+        "matched": True,
+        "staff_id": staff.pk,
+        "confidence": result["confidence"],
+        "attendance": {
+            "action": decision["action"],
+            "message": decision["message"],
+            "status": decision["record"].status if decision["record"] else "",
+        },
+    }
+
+
+class SelfiePunchView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        image = (request.data.get("image") or "").strip()
+        if not image:
+            return Response({"error": "image is required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            payload = selfie_punch(request.user, image)
+        except (ValueError, Exception):
+            return Response({"error": "Invalid image data"}, status=status.HTTP_400_BAD_REQUEST)
+        code = status.HTTP_200_OK if payload.get("matched") else status.HTTP_400_BAD_REQUEST
+        return Response(payload, status=code)

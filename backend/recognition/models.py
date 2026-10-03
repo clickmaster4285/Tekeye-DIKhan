@@ -21,6 +21,11 @@ class FaceEnrollment(models.Model):
     is_trained = models.BooleanField(default=False)
     model_version = models.CharField(max_length=50, default="InsightFace_v1")
     embedding = models.JSONField(null=True, blank=True)
+    embeddings = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="ArcFace vectors from the enrollment photos and lighting variants.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -62,3 +67,21 @@ class DetectionSnapshot(models.Model):
 
     def __str__(self):
         return f"{self.staff_id} @ {self.camera_name} ({self.detected_at})"
+
+
+class MatchReview(models.Model):
+    """A live face that was not punched: unknown, soft miss, or spoof."""
+
+    KIND_UNKNOWN = "unknown"
+    KIND_SOFT_MISS = "soft_miss"
+    KIND_SPOOF = "spoof"
+
+    kind = models.CharField(max_length=16)
+    confidence = models.FloatField(default=0.0)
+    source = models.CharField(max_length=16, blank=True, default="")
+    camera_id = models.PositiveIntegerField(null=True, blank=True)
+    message = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]

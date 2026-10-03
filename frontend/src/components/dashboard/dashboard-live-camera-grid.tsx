@@ -24,7 +24,11 @@ function layoutCount(layout: string): number {
 export function DashboardLiveCameraGrid() {
   const [layout, setLayout] = useState<string>("2x2")
   const [showOverlays, setShowOverlays] = useState(true)
-  const { cameras, loading } = useCameras({ activeOnly: true, onlineOnly: true })
+  const { cameras, loading } = useCameras({
+    activeOnly: true,
+    onlineOnly: true,
+    allocatedOnly: true,
+  })
 
   const feeds = useMemo(() => cameras.slice(0, layoutCount(layout)), [cameras, layout])
 
@@ -63,9 +67,9 @@ export function DashboardLiveCameraGrid() {
           <p className="text-sm text-muted-foreground py-8 text-center">Loading cameras…</p>
         ) : feeds.length === 0 ? (
           <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
-            No cameras connected.{" "}
-            <Link to={ROUTES.CAMERA_MANAGEMENT} className="text-[#3b82f6] underline">
-              Add cameras
+            No allocated cameras online.{" "}
+            <Link to={ROUTES.OPS_CAMERA_DISTRIBUTION} className="text-[#3b82f6] underline">
+              Assign in Camera Distribution
             </Link>
           </div>
         ) : (
@@ -80,6 +84,7 @@ export function DashboardLiveCameraGrid() {
               <MlCameraFeed
                 key={cam.id}
                 camera={cam}
+                preferRaw
                 pollMl={false}
                 pollIntervalMs={800}
                 showBrandLogo

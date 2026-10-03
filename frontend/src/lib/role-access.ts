@@ -492,6 +492,8 @@ export function isPathAllowedForRestrictedRole(
   restrictedRole: RestrictedRole
 ): boolean {
   const path = normalizePathname(pathname)
+  // Assistant access is decided by the backend per role (the page explains when it isn't enabled).
+  if (path === ROUTES.ASSISTANT) return true
   const patterns = ROLE_PATH_RULES[restrictedRole].patterns
   if (ROLE_PATH_SETS[restrictedRole].has(path)) return true
   return patterns.some((pattern) => pattern.test(path))
@@ -505,22 +507,25 @@ export function isPathAllowedForRole(
 ): boolean {
   const normalized = normalizeRole(role)
   if (normalized === "ADMIN") return true
+  // Assistant access is decided by the backend per role (the page explains when it isn't enabled).
+  if (normalizePathname(pathname) === ROUTES.ASSISTANT) return true
   if (normalized === "IT_SUPERADMIN") {
     const path = normalizePathname(pathname)
     return (
       path === ROUTES.OPS_CENTRAL ||
       path.startsWith(`${ROUTES.OPS_CENTRAL}/`) ||
       path === ROUTES.ALL_CITIES_CAMERAS ||
-      path.startsWith(`${ROUTES.ALL_CITIES_CAMERAS}/`)
+      path.startsWith(`${ROUTES.ALL_CITIES_CAMERAS}/`) ||
+      path === ROUTES.INFRASTRUCTURE_OVERVIEW ||
+      path.startsWith(`${ROUTES.INFRASTRUCTURE_OVERVIEW}/`)
     )
   }
-
+  // Collectorate officers and location admins may open the live camera wall
   if (
     normalized === "COLLECTOR" ||
     normalized === "DEPUTY_COLLECTOR" ||
     normalized === "ASSISTANT_COLLECTOR" ||
-    normalized === "LOCATION_ADMIN" ||
-    normalized === "OPERATION_MANAGER"
+    normalized === "LOCATION_ADMIN"
   ) {
     const path = normalizePathname(pathname)
     if (
@@ -533,18 +538,9 @@ export function isPathAllowedForRole(
 
   const path = normalizePathname(pathname)
   const modules = (allowedModules ?? []).map((m) => m.trim()).filter(Boolean)
-  const restricted = getRestrictedRole(role)
-
-  if (isSiteFullAccessRole(role)) {
-    if (path === ROUTES.OPS_CENTRAL || path.startsWith(`${ROUTES.OPS_CENTRAL}/`)) return false
-    return true
-  }
-
-  // Main `/` dashboard: Super Admin only (handled above). Restricted / granted users
-  // go to their module home. Unconfigured users (no template, no grants) may use `/`
-  // until Super Admin assigns modules.
+  // Main `/` dashboard remains available while a Super Admin assigns modules.
   if (path === "/" || path === "") {
-    return !restricted && modules.length === 0
+    return true
   }
 
   if (modules.length > 0) {
@@ -553,9 +549,8 @@ export function isPathAllowedForRole(
     return modules.includes(moduleLabel)
   }
 
-  // No custom grants and no role template → only `/` (handled above).
-  if (!restricted) return false
-  return isPathAllowedForRestrictedRole(pathname, restricted)
+  // No custom grants means no module routes are available.
+  return false
 }
 
 /** @deprecated Use isPathAllowedForRole */
@@ -584,7 +579,6 @@ export function getHomeRouteForRole(
   const normalized = normalizeRole(role)
   if (normalized === "ADMIN") return ROUTES.DASHBOARD
   if (normalized === "IT_SUPERADMIN") return ROUTES.OPS_CENTRAL
-  if (isSiteFullAccessRole(role)) return ROUTES.DASHBOARD
 
   const modules = (allowedModules ?? []).map((m) => m.trim()).filter(Boolean)
   if (modules.length > 0) {
@@ -594,25 +588,7 @@ export function getHomeRouteForRole(
     }
   }
 
-  const restricted = getRestrictedRole(role)
-  if (restricted === "RECEPTIONIST" || restricted === "GUARD") {
-    return ROUTES.VISITOR_MANAGEMENT_OVERVIEW
-  }
-  if (
-    restricted === "WAREHOUSE_OFFICER" ||
-    restricted === "WAREHOUSE_SUPERINTENDENT" ||
-    restricted === "WAREHOUSE_IN_CHARGE" ||
-    restricted === "EXAMINATION_OFFICER" ||
-    restricted === "STOCK_CONTROLLER" ||
-    restricted === "AUDITOR"
-  ) {
-    return ROUTES.OPERATIONS_DASHBOARD
-  }
-  if (restricted === "IT_ADMIN") return ROUTES.ATTENDANCE_DASHBOARD
-  if (restricted === "HR") return ROUTES.EMPLOYEES
-  if (restricted === "PRAL") return ROUTES.ASO_PORTAL_SYNC
-
-  // Unconfigured role with no grants — temporary until modules are assigned.
+  // Unconfigured users remain on the dashboard until modules are assigned.
   return ROUTES.DASHBOARD
 }
 

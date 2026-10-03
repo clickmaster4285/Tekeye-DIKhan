@@ -1,6 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { Download, Eye, FileDown, FilePlus, Pencil, Plus, Printer, Search, Trash2, ChevronDown } from "lucide-react"
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Download,
+  Eye,
+  FileDown,
+  FilePlus,
+  Pencil,
+  Plus,
+  Printer,
+  Search,
+  Trash2,
+} from "lucide-react"
 import { TableActionGroup, TableActionIcon } from "@/components/seizure/table-action-icon"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent } from "@/components/ui/card"
@@ -13,6 +28,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Table,
   TableBody,
@@ -28,6 +50,7 @@ import {
 } from "@/routes/config"
 import {
   canUserDeleteNoteSheet,
+  canUserEditNoteSheet,
   deleteNoteSheet,
   fetchNoteSheets,
   type NoteSheetAttachment,
@@ -44,6 +67,9 @@ import NoteSheetReportPrint from "@/components/seizure/NoteSheetReportPrint"
 
 type PeriodPreset = "all" | "today" | "week" | "month" | "custom"
 
+const PAGE_SIZE_OPTIONS = [10, 20, 25, 50, 100]
+const DEFAULT_PAGE_SIZE = 20
+
 const STATUS_META: { id: NoteSheetStatus; label: string; active: string; dot: string }[] = [
   { id: "Draft", label: "Draft", active: "ring-slate-300 bg-slate-50", dot: "bg-slate-400" },
   { id: "Submitted", label: "Submitted", active: "ring-amber-300 bg-amber-50", dot: "bg-amber-500" },
@@ -52,10 +78,50 @@ const STATUS_META: { id: NoteSheetStatus; label: string; active: string; dot: st
 ]
 
 function statusBadge(status: NoteSheetStatus) {
-  if (status === "Approved") return <Badge>Approved</Badge>
-  if (status === "Submitted") return <Badge variant="secondary">Submitted</Badge>
-  if (status === "Rejected") return <Badge variant="destructive">Rejected</Badge>
-  return <Badge variant="outline">Draft</Badge>
+  if (status === "Approved") {
+    return (
+      <Badge className="rounded-md border-0 bg-sky-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-sky-600">
+        Approved
+      </Badge>
+    )
+  }
+  if (status === "Submitted") {
+    return (
+      <Badge className="rounded-md border-0 bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 hover:bg-amber-100">
+        Submitted
+      </Badge>
+    )
+  }
+  if (status === "Rejected") {
+    return (
+      <Badge className="rounded-md border-0 bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-800 hover:bg-red-100">
+        Rejected
+      </Badge>
+    )
+  }
+  return (
+    <Badge
+      variant="outline"
+      className="rounded-md px-2 py-0.5 text-[11px] font-medium text-slate-600"
+    >
+      Draft
+    </Badge>
+  )
+}
+
+function priorityBadge(priority: string | undefined) {
+  const p = (priority || "Normal").trim()
+  if (!p || p === "Normal") {
+    return <span className="text-xs text-muted-foreground">Normal</span>
+  }
+  if (/high|urgent|critical/i.test(p)) {
+    return (
+      <Badge className="rounded-md border-0 bg-orange-100 px-1.5 py-0 text-[10px] font-medium text-orange-800 hover:bg-orange-100">
+        {p}
+      </Badge>
+    )
+  }
+  return <span className="text-xs text-muted-foreground">{p}</span>
 }
 
 function printNoteSheet(id: string) {
@@ -310,6 +376,8 @@ export default function NoteSheetPage() {
   const [error, setError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [pdfRows, setPdfRows] = useState<NoteSheetRecord[] | null>(null)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const pdfHostRef = useRef<HTMLDivElement>(null)
   const currentUser = getStoredUser()
 
@@ -385,6 +453,21 @@ export default function NoteSheetPage() {
       )
     })
   }, [periodRows, search, statusFilter])
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const pageRows = useMemo(
+    () => filtered.slice((page - 1) * pageSize, page * pageSize),
+    [filtered, page, pageSize]
+  )
+  const pageSerial = (index: number) => (page - 1) * pageSize + index + 1
+
+  useEffect(() => {
+    setPage(1)
+  }, [search, statusFilter, period, dateFrom, dateTo, pageSize])
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
 
   const handleDelete = async (row: NoteSheetRecord) => {
     const label = row.noteSheetNo || row.referenceNumber || "this note sheet"
@@ -470,6 +553,7 @@ export default function NoteSheetPage() {
     setDateFrom("")
     setDateTo("")
     setSearch("")
+    setPage(1)
   }
 
   const filtersActive = period !== "all" || statusFilter !== "all" || Boolean(search.trim())
@@ -498,20 +582,27 @@ export default function NoteSheetPage() {
         </Button>
       }
     >
-      <Card className="rounded-[10px] border-gray-200 overflow-hidden">
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 divide-x divide-y lg:divide-y-0 divide-gray-100 border-b">
+      <div className="space-y-4">
+        {/* Summary metrics */}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
           {periodStats.map((stat) => (
             <button
               key={stat.id}
               type="button"
               onClick={() => setPeriod(stat.id)}
               className={cn(
-                "p-3.5 text-left transition-colors",
-                period === stat.id ? "bg-blue-50" : "bg-white hover:bg-gray-50"
+                "rounded-xl border px-3 py-3 text-left transition-all",
+                period === stat.id
+                  ? "border-sky-300 bg-sky-50 shadow-sm ring-1 ring-sky-200"
+                  : "border-border/80 bg-card hover:border-slate-300 hover:bg-slate-50/80"
               )}
             >
-              <p className="text-[11px] text-[#697282]">{stat.label}</p>
-              <p className="text-xl font-bold text-[#101727] tabular-nums">{loading ? "—" : stat.value}</p>
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                {stat.label}
+              </p>
+              <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-foreground">
+                {loading ? "—" : stat.value}
+              </p>
             </button>
           ))}
           {STATUS_META.map((stat) => (
@@ -520,198 +611,326 @@ export default function NoteSheetPage() {
               type="button"
               onClick={() => setStatusFilter((current) => (current === stat.id ? "all" : stat.id))}
               className={cn(
-                "p-3.5 text-left transition-colors",
-                statusFilter === stat.id ? stat.active : "bg-white hover:bg-gray-50"
+                "rounded-xl border px-3 py-3 text-left transition-all",
+                statusFilter === stat.id
+                  ? cn("shadow-sm ring-1", stat.active)
+                  : "border-border/80 bg-card hover:border-slate-300 hover:bg-slate-50/80"
               )}
             >
-              <p className="text-[11px] text-[#697282] flex items-center gap-1.5">
+              <p className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 <span className={cn("h-1.5 w-1.5 rounded-full", stat.dot)} />
                 {stat.label}
               </p>
-              <p className="text-xl font-bold text-[#101727] tabular-nums">{loading ? "—" : counts[stat.id]}</p>
+              <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-foreground">
+                {loading ? "—" : counts[stat.id]}
+              </p>
             </button>
           ))}
         </div>
 
-        <CardContent className="p-4 sm:p-5 space-y-4">
-          <div className="flex flex-col xl:flex-row gap-3 xl:items-center xl:justify-between">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm text-[#697282]">
-                {formatRangeLabel(activeRange.from, activeRange.to)}
-                {statusFilter !== "all" ? ` · ${statusFilter}` : ""}
-                {" · "}
-                {filtered.length} shown
-              </p>
-              {period === "custom" || period === "all" ? (
-                <div className="flex items-center gap-2">
+        <Card className="overflow-hidden rounded-xl border-border/80 shadow-sm">
+          <CardContent className="space-y-0 p-0">
+            {/* Toolbar */}
+            <div className="flex flex-col gap-3 border-b bg-slate-50/60 px-4 py-3 xl:flex-row xl:items-center xl:justify-between">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-md bg-white px-2.5 py-1 text-xs font-medium text-slate-700 ring-1 ring-border/80">
+                  {formatRangeLabel(activeRange.from, activeRange.to)}
+                  {statusFilter !== "all" ? ` · ${statusFilter}` : ""}
+                </span>
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {filtered.length} of {periodRows.length} shown
+                </span>
+                {period === "custom" || period === "all" ? (
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="date"
+                      value={dateFrom}
+                      onChange={(e) => {
+                        setDateFrom(e.target.value)
+                        setPeriod("custom")
+                      }}
+                      className="h-8 w-[9.5rem] bg-white text-xs"
+                      aria-label="From date"
+                    />
+                    <span className="text-[10px] text-muted-foreground">to</span>
+                    <Input
+                      type="date"
+                      value={dateTo}
+                      onChange={(e) => {
+                        setDateTo(e.target.value)
+                        setPeriod("custom")
+                      }}
+                      className="h-8 w-[9.5rem] bg-white text-xs"
+                      aria-label="To date"
+                    />
+                  </div>
+                ) : null}
+                {filtersActive ? (
+                  <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={resetFilters}>
+                    Reset
+                  </Button>
+                ) : null}
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:ml-auto">
+                <div className="relative w-full sm:w-72">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                   <Input
-                    type="date"
-                    value={dateFrom}
-                    onChange={(e) => {
-                      setDateFrom(e.target.value)
-                      setPeriod("custom")
-                    }}
-                    className="h-9 w-[10.5rem]"
-                    aria-label="From date"
-                  />
-                  <span className="text-xs text-muted-foreground">to</span>
-                  <Input
-                    type="date"
-                    value={dateTo}
-                    onChange={(e) => {
-                      setDateTo(e.target.value)
-                      setPeriod("custom")
-                    }}
-                    className="h-9 w-[10.5rem]"
-                    aria-label="To date"
+                    className="h-8 bg-white pl-8 text-sm"
+                    placeholder="Search number, subject, case…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
                   />
                 </div>
-              ) : null}
-              {filtersActive ? (
-                <Button type="button" variant="ghost" size="sm" onClick={resetFilters}>
-                  Reset
-                </Button>
-              ) : null}
-            </div>
-            <div className="flex flex-col sm:flex-row gap-2 sm:items-center sm:ml-auto">
-              <div className="relative w-full sm:w-72">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  className="pl-9 h-9"
-                  placeholder="Search number, subject, case…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" className="h-8 bg-white" disabled={filtered.length === 0}>
+                      <Download className="mr-1.5 h-3.5 w-3.5" />
+                      Export
+                      <ChevronDown className="ml-1 h-3.5 w-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-0 w-max">
+                    <DropdownMenuItem onClick={exportCsv}>
+                      <Download className="h-4 w-4" />
+                      Export CSV
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={exportPdf}>
+                      <FileDown className="h-4 w-4" />
+                      Export PDF
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
+            </div>
+
+            {error ? <p className="px-4 py-2 text-sm text-destructive">{error}</p> : null}
+
+            {/* Table */}
+            <div className="w-full max-w-full overflow-x-auto">
+              <Table className="min-w-[820px] table-fixed">
+                <TableHeader>
+                  <TableRow className="border-b bg-slate-50/90 hover:bg-slate-50/90">
+                    <TableHead className="sticky left-0 z-20 w-12 bg-slate-50/95 px-1.5 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Sr. No
+                    </TableHead>
+                    <TableHead className="sticky left-12 z-20 w-[10.5rem] bg-slate-50/95 px-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Note Sheet No.
+                    </TableHead>
+                    <TableHead className="w-[12rem] max-w-[14rem] px-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Subject
+                    </TableHead>
+                    <TableHead className="w-[5.5rem] px-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Case No
+                    </TableHead>
+                    <TableHead className="w-[6.5rem] px-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Prepared By
+                    </TableHead>
+                    <TableHead className="w-[4.5rem] px-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Priority
+                    </TableHead>
+                    <TableHead className="w-[5.5rem] px-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Status
+                    </TableHead>
+                    <TableHead className="w-[5.5rem] px-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Detention
+                    </TableHead>
+                    <TableHead className="sticky right-0 z-20 w-[6.5rem] bg-slate-50/95 px-1.5 text-right text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Actions
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {loading ? (
+                    <TableRow>
+                      <TableCell colSpan={9} className="py-14 text-center text-sm text-muted-foreground">
+                        Loading note sheets…
+                      </TableCell>
+                    </TableRow>
+                  ) : filtered.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={9} className="py-14 text-center text-sm text-muted-foreground">
+                        {rows.length === 0 ? "No note sheets yet." : "No note sheets match these filters."}
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    pageRows.map((row, index) => (
+                      <TableRow
+                        key={row.id}
+                        className="group border-b border-slate-100 transition-colors hover:bg-sky-50/40"
+                      >
+                        <TableCell className="sticky left-0 z-10 bg-card px-1.5 py-2 text-center text-xs font-medium tabular-nums text-foreground group-hover:bg-sky-50/40">
+                          {pageSerial(index)}
+                        </TableCell>
+                        <TableCell className="sticky left-12 z-10 bg-card px-1.5 py-2 group-hover:bg-sky-50/40">
+                          <button
+                            type="button"
+                            className="max-w-full truncate text-left font-mono text-[12px] font-semibold text-black hover:underline"
+                            title={row.noteSheetNo || row.referenceNumber || ""}
+                            onClick={() => navigate(getSeizureMgmtNoteSheetDetailPath(row.id))}
+                          >
+                            {row.noteSheetNo || row.referenceNumber || "—"}
+                          </button>
+                          {row.office ? (
+                            <p className="mt-0.5 max-w-full truncate text-[10px] text-muted-foreground" title={row.office}>
+                              {row.office.replace(/^Model Customs Collectorate,?\s*/i, "MCC ")}
+                            </p>
+                          ) : null}
+                        </TableCell>
+                        <TableCell className="w-[12rem] max-w-[14rem] whitespace-normal px-1.5 py-2">
+                          <p
+                            className="line-clamp-2 w-full max-w-[14rem] break-words text-sm leading-snug text-foreground"
+                            title={row.subject || ""}
+                          >
+                            {row.subject || "—"}
+                          </p>
+                        </TableCell>
+                        <TableCell className="px-1.5 py-2">
+                          <span className="font-mono text-xs tabular-nums text-slate-700">
+                            {row.caseNo || "—"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="px-1.5 py-2">
+                          <span className="block max-w-full truncate text-sm" title={row.preparedBy || ""}>
+                            {row.preparedBy || "—"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="px-1.5 py-2">{priorityBadge(row.priority)}</TableCell>
+                        <TableCell className="px-1.5 py-2">{statusBadge(row.status)}</TableCell>
+                        <TableCell className="px-1.5 py-2">
+                          {row.detentionMemoId ? (
+                            <Badge
+                              variant="outline"
+                              className="rounded-md border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800"
+                            >
+                              Issued
+                            </Badge>
+                          ) : row.status === "Approved" ? (
+                            <Button
+                              asChild
+                              variant="outline"
+                              size="sm"
+                              className="h-7 rounded-md border-sky-300 bg-white px-1.5 text-[11px] font-medium text-sky-800 hover:bg-sky-50"
+                            >
+                              <Link
+                                to={`${ROUTES.DETENTION_MEMO_CREATE}?noteSheetId=${encodeURIComponent(row.id)}`}
+                              >
+                                <FilePlus className="mr-1 h-3 w-3" />
+                                Create
+                              </Link>
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="sticky right-0 z-10 overflow-visible bg-card px-1 py-1.5 text-right group-hover:bg-sky-50/40">
+                          <TableActionGroup className="w-auto min-w-0 gap-0">
+                            <TableActionIcon
+                              label="View"
+                              onClick={() => navigate(getSeizureMgmtNoteSheetDetailPath(row.id))}
+                            >
+                              <Eye className="h-4 w-4" />
+                            </TableActionIcon>
+                            <TableActionIcon label="Print" onClick={() => printNoteSheet(row.id)}>
+                              <Printer className="h-4 w-4" />
+                            </TableActionIcon>
+                            {(canUserEditNoteSheet(row, currentUser?.role)) && (
+                              <TableActionIcon label="Edit" to={getSeizureMgmtNoteSheetEditPath(row.id)}>
+                                <Pencil className="h-4 w-4" />
+                              </TableActionIcon>
+                            )}
+                            {canUserDeleteNoteSheet(row, currentUser?.role) && (
+                              <TableActionIcon
+                                label="Delete"
+                                destructive
+                                disabled={deletingId === row.id}
+                                onClick={() => void handleDelete(row)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </TableActionIcon>
+                            )}
+                          </TableActionGroup>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            {filtered.length > 0 ? (
+              <div className="flex flex-col gap-3 border-t bg-slate-50/40 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Rows per page</span>
+                  <Select
+                    value={pageSize.toString()}
+                    onValueChange={(value) => {
+                      setPageSize(Number(value))
+                      setPage(1)
+                    }}
+                  >
+                    <SelectTrigger className="h-8 w-[72px] bg-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PAGE_SIZE_OPTIONS.map((size) => (
+                        <SelectItem key={size} value={size.toString()}>
+                          {size}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, filtered.length)} of{" "}
+                    {filtered.length}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-1 lg:justify-end">
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={filtered.length === 0}
+                    onClick={() => setPage(1)}
+                    disabled={page === 1}
+                    className="h-8 w-8 bg-white p-0"
                   >
-                    <Download className="h-4 w-4 mr-2" />
-                    Export
-                    <ChevronDown className="h-4 w-4 ml-1" />
+                    <ChevronsLeft className="h-4 w-4" />
                   </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-0 w-max">
-                  <DropdownMenuItem onClick={exportCsv}>
-                    <Download className="h-4 w-4" />
-                    Export CSV
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={exportPdf}>
-                    <FileDown className="h-4 w-4" />
-                    Export PDF
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+                    disabled={page === 1}
+                    className="h-8 w-8 bg-white p-0"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <span className="px-2 text-xs tabular-nums text-muted-foreground">
+                    {page} / {totalPages}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+                    disabled={page === totalPages}
+                    className="h-8 w-8 bg-white p-0"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage(totalPages)}
+                    disabled={page === totalPages}
+                    className="h-8 w-8 bg-white p-0"
+                  >
+                    <ChevronsRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      </div>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
-
-          <Table className="table-fixed w-full" containerClassName="overflow-x-hidden">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[4.5rem]">Sr. No</TableHead>
-                <TableHead className="w-[12%]">Note Sheet No.</TableHead>
-                <TableHead className="w-[16%]">Subject</TableHead>
-                <TableHead className="w-[10%]">Case No</TableHead>
-                <TableHead className="w-[14%]">Office</TableHead>
-                <TableHead className="w-[8%]">Priority</TableHead>
-                <TableHead className="w-[12%]">Prepared By</TableHead>
-                <TableHead className="w-[8%]">Status</TableHead>
-                <TableHead className="w-[8%]">Detention Memo</TableHead>
-                <TableHead className="w-[7.5rem] text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading ? (
-                <TableRow>
-                  <TableCell colSpan={10} className="text-center py-8 text-muted-foreground">
-                    Loading...
-                  </TableCell>
-                </TableRow>
-              ) : filtered.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={10} className="text-center py-8 text-muted-foreground">
-                    {rows.length === 0 ? "No note sheets yet." : "No note sheets match these filters."}
-                  </TableCell>
-                </TableRow>
-              ) : (
-                filtered.map((row, index) => (
-                  <TableRow key={row.id}>
-                    <TableCell className="text-muted-foreground tabular-nums">{index + 1}</TableCell>
-                    <TableCell className="font-medium font-mono text-sm truncate" title={row.noteSheetNo || row.referenceNumber || ""}>
-                      {row.noteSheetNo || row.referenceNumber || "—"}
-                    </TableCell>
-                    <TableCell className="truncate" title={row.subject || ""}>
-                      {row.subject || "—"}
-                    </TableCell>
-                    <TableCell className="truncate" title={row.caseNo || ""}>
-                      {row.caseNo || "—"}
-                    </TableCell>
-                    <TableCell className="truncate" title={row.office || ""}>
-                      {row.office || "—"}
-                    </TableCell>
-                    <TableCell className="truncate">{row.priority || "—"}</TableCell>
-                    <TableCell className="truncate" title={row.preparedBy || ""}>
-                      {row.preparedBy || "—"}
-                    </TableCell>
-                    <TableCell>{statusBadge(row.status)}</TableCell>
-                    <TableCell>
-                      {row.detentionMemoId ? (
-                        <Badge variant="outline">Linked</Badge>
-                      ) : row.status === "Approved" ? (
-                        <Badge className="bg-green-100 text-green-800 hover:bg-green-100">Ready</Badge>
-                      ) : (
-                        "—"
-                      )}
-                    </TableCell>
-                    <TableCell className="overflow-visible p-2 text-right align-middle">
-                      <TableActionGroup>
-                        <TableActionIcon
-                          label="View"
-                          onClick={() => navigate(getSeizureMgmtNoteSheetDetailPath(row.id))}
-                        >
-                          <Eye className="h-4 w-4" />
-                        </TableActionIcon>
-                        <TableActionIcon label="Print" onClick={() => printNoteSheet(row.id)}>
-                          <Printer className="h-4 w-4" />
-                        </TableActionIcon>
-                        {(row.status === "Draft" || row.status === "Rejected") && (
-                          <TableActionIcon label="Edit" to={getSeizureMgmtNoteSheetEditPath(row.id)}>
-                            <Pencil className="h-4 w-4" />
-                          </TableActionIcon>
-                        )}
-                        {canUserDeleteNoteSheet(row, currentUser?.role) && (
-                          <TableActionIcon
-                            label="Delete"
-                            destructive
-                            disabled={deletingId === row.id}
-                            onClick={() => void handleDelete(row)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </TableActionIcon>
-                        )}
-                        {row.status === "Approved" && !row.detentionMemoId && (
-                          <TableActionIcon
-                            label="Create Detention Memo"
-                            to={`${ROUTES.DETENTION_MEMO_CREATE}?noteSheetId=${encodeURIComponent(row.id)}`}
-                          >
-                            <FilePlus className="h-4 w-4" />
-                          </TableActionIcon>
-                        )}
-                      </TableActionGroup>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
       <div
         ref={pdfHostRef}
         aria-hidden

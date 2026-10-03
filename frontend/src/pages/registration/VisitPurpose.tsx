@@ -176,6 +176,8 @@ export default function VisitPurposePage() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All Departments</SelectItem>
+                        <SelectItem value="appraisement">Appraisement</SelectItem>
+                        <SelectItem value="enforcement">Enforcement</SelectItem>
                         <SelectItem value="hr">Human Resources</SelectItem>
                         <SelectItem value="it">IT Department</SelectItem>
                         <SelectItem value="finance">Finance</SelectItem>

@@ -3,10 +3,11 @@ import { getStoredToken } from "@/lib/api"
 import { getStoredUser, updateStoredUser } from "@/lib/auth"
 import { isGlobalAdmin } from "@/lib/location-access"
 import { fetchCurrentUser } from "@/lib/users-api"
+import { REALTIME_INVALIDATE_EVENT } from "@/lib/realtime-socket"
 
 /**
- * Soft-refresh session profile on tab focus so module grant changes apply
- * without a full page reload. Super Admin skips (always full nav).
+ * Soft-refresh session profile when users/hr realtime events arrive so module
+ * grant changes apply without a full page reload. Super Admin skips (always full nav).
  */
 export function SessionPermissionSync() {
   useEffect(() => {
@@ -41,15 +42,15 @@ export function SessionPermissionSync() {
       }
     }
 
-    const onVis = () => {
-      if (document.visibilityState === "visible") void refresh()
+    const onRealtime = (e: Event) => {
+      const domains = (e as CustomEvent<{ domains?: string[] }>).detail?.domains || []
+      if (domains.some((d) => ["users", "hr"].includes(d))) void refresh()
     }
-    window.addEventListener("focus", refresh)
-    document.addEventListener("visibilitychange", onVis)
+
+    window.addEventListener(REALTIME_INVALIDATE_EVENT, onRealtime)
     void refresh()
     return () => {
-      window.removeEventListener("focus", refresh)
-      document.removeEventListener("visibilitychange", onVis)
+      window.removeEventListener(REALTIME_INVALIDATE_EVENT, onRealtime)
     }
   }, [])
 

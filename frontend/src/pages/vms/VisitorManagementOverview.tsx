@@ -32,8 +32,7 @@ export function VisitorManagementOverview() {
   const [deleteTarget, setDeleteTarget] = useState<VmsOverviewVisitorRow | null>(null)
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["vms", "overview"],
-    queryFn: fetchVmsOverview,
-    refetchInterval: 60_000,
+    queryFn: fetchVmsOverview
   })
 
   const statsRow1 = data

@@ -11,8 +11,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-
-const CUSTOMS_LOGO_SRC = "/custom-logo.jpeg"
+import { CUSTOMS_LOGO_SRC } from "@/lib/brand"
 
 function getQrCodeUrl(data: string, size = 120) {
   return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(data)}`
@@ -32,8 +31,11 @@ function dash(value?: string | null): string {
 
 function logoUrl(): string {
   if (typeof window === "undefined") return CUSTOMS_LOGO_SRC
-  if (CUSTOMS_LOGO_SRC.startsWith("http")) return CUSTOMS_LOGO_SRC
-  return `${window.location.origin}${CUSTOMS_LOGO_SRC}`
+  if (CUSTOMS_LOGO_SRC.startsWith("http") || CUSTOMS_LOGO_SRC.startsWith("data:")) {
+    return CUSTOMS_LOGO_SRC
+  }
+  const path = CUSTOMS_LOGO_SRC.startsWith("/") ? CUSTOMS_LOGO_SRC : `/${CUSTOMS_LOGO_SRC}`
+  return `${window.location.origin}${path}`
 }
 
 function NoteSheetLetterhead({

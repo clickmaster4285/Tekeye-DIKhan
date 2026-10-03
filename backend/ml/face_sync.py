@@ -161,7 +161,11 @@ def enroll_staff_faces(staff: Staff, *, push_ml: bool = True, force: bool = Fals
     if not force and not staff_needs_face_enrollment(staff):
         return staff
     if not ml_service_enabled():
-        logger.warning("ML_SERVICE_URL not set — cannot enroll faces for staff %s", staff.pk)
+        logger.warning(
+            "No ML servers configured — cannot enroll faces for staff %s "
+            "(set ML_SERVICE_URL or add an active ML RemoteServer)",
+            staff.pk,
+        )
         return None
 
     stored = _stored_embedding_map(staff)

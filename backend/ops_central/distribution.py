@@ -85,6 +85,7 @@ def server_row(server) -> dict:
         "site_code": server.site.code if server.site_id else "",
         "site_name": server.site.name if server.site_id else "",
         "gpu": server.gpu or "",
+        "gpu_device": server.gpu_device,
         "max_cameras": max_cam,
         "assigned_count": assigned,
         "available_slots": max(0, max_cam - assigned) if max_cam else None,
@@ -286,3 +287,42 @@ def apply_auto_distribute(
         "results": results,
         "warnings": warnings,
     }
+
+
+def unassign_all_cameras_from_server(ml_server_id: int) -> dict:
+    """Unassign every active camera currently routed to this ML server."""
+    from cameras.models import Camera
+    from ops_central.models import RemoteServer
+
+    server = RemoteServer.objects.filter(pk=ml_server_id).first()
+    if not server:
+        raise ValueError("ML server not found.")
+
+    camera_ids = list(
+        Camera.objects.filter(is_active=True, ml_server_id=ml_server_id)
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    moved = 0
+    warnings: list[str] = []
+    results = []
+    for cam_id in camera_ids:
+        try:
+            result = assign_camera_to_server(cam_id, None, enforce_capacity=False)
+            moved += 1
+            results.append({"camera_id": cam_id, "routing": result.get("routing")})
+            for w in (result.get("routing") or {}).get("warnings") or []:
+                warnings.append(w)
+        except Exception as exc:
+            warnings.append(f"camera {cam_id}: {exc}")
+            logger.exception("[distribution] Failed unassigning camera %s", cam_id)
+
+    return {
+        "ml_server_id": server.id,
+        "ml_server_name": server.name,
+        "total": len(camera_ids),
+        "unassigned": moved,
+        "results": results,
+        "warnings": warnings,
+    }
+

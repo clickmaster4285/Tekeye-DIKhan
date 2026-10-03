@@ -1641,7 +1641,7 @@ export default function JcpTollPlazaEntryPage() {
                   <h3 className="font-medium text-sm text-gray-700 mb-2">Camera Capture Info</h3>
                   <div className="space-y-1 text-sm">
                     <div className="flex justify-between">
-                      <span className="text-gray-500">Camera ID:</span>
+                      <span className="text-gray-500">Camera:</span>
                       <span className="font-mono">{selectedEntry.imageMetadata.cameraId}</span>
                     </div>
                     <div className="flex justify-between">

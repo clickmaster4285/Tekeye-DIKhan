@@ -161,8 +161,10 @@ def ingest_camera_detections(camera, detections: list[dict]) -> int:
             if person is None:
                 continue
             if visitor_name and person.display_name != visitor_name:
-                person.display_name = visitor_name
-                person.save(update_fields=["display_name", "updated_at"])
+                name_locked = bool((person.metadata or {}).get("name_locked")) if isinstance(person.metadata, dict) else False
+                if not name_locked:
+                    person.display_name = visitor_name
+                    person.save(update_fields=["display_name", "updated_at"])
         elif is_generic_unknown:
             person, created = resolve_unknown_person(
                 camera=camera,

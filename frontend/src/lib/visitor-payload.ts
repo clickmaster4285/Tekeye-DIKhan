@@ -50,6 +50,7 @@ const departmentEnum = z.enum([
   "marketing",
   "admin",
   "enforcement",
+  "appraisement",
 ])
 const hostDesignationEnum = z.enum([
   "manager",
@@ -301,6 +302,9 @@ export function buildWalkInPayload(formData: Record<string, unknown>): VisitorCr
     engineering: "it",
     sales: "marketing",
     enforcement: "enforcement",
+    appraisement: "appraisement",
+    appraisal: "appraisement",
+    APPRAISEMENT: "appraisement",
   }
   const allowedVisitPurpose = new Set([
     "meeting",

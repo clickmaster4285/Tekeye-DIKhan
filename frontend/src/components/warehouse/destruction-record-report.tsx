@@ -230,7 +230,7 @@ export function DestructionRecordReport({
                   return (
                     <div key={`${v.camera_id}-${v.filename}`} className="space-y-2 rounded-md border p-4">
                       <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <p className="text-sm font-medium">{cam?.name || `Camera ${v.camera_id}`}</p>
+                        <p className="text-sm font-medium">{cam?.name || cam?.code || "Camera"}</p>
                         {v.duration_seconds != null && v.duration_seconds > 0 && (
                           <Badge variant="outline" className="text-[10px]">
                             {Math.floor(v.duration_seconds / 60)}m {v.duration_seconds % 60}s

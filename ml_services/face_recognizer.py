@@ -87,19 +87,31 @@ def _download(url: str, dest: Path):
 
 
 def _configure_opencv_dnn_gpu() -> None:
+    """Intentionally a no-op for face nets.
+
+    Global ``cv2.dnn.setPreferableBackend(CUDA)`` makes FaceDetectorYN/SFace share the
+    CUDA BlobManager with concurrent live streams and video-search jobs. OpenCV 4.11
+    then asserts ``mapIt != reuseMap.end()``. Face models are created with an explicit
+    CPU backend in ``KnownFaceDB`` instead; YOLO stays on its own CUDA path.
+    """
+    return
+
+
+def _face_dnn_backend_target() -> tuple[int, int]:
+    """Backend/target for YuNet + SFace. Default CPU — CUDA is opt-in and fragile."""
+    prefer = os.getenv("ML_FACE_USE_CUDA", "0").strip().lower() in ("1", "true", "yes")
+    if not prefer:
+        return cv2.dnn.DNN_BACKEND_OPENCV, cv2.dnn.DNN_TARGET_CPU
     if os.getenv("ML_PREFER_GPU", "true").strip().lower() not in ("1", "true", "yes"):
-        return
+        return cv2.dnn.DNN_BACKEND_OPENCV, cv2.dnn.DNN_TARGET_CPU
     if os.getenv("ML_DEVICE", "0").strip().lower() == "cpu":
-        return
+        return cv2.dnn.DNN_BACKEND_OPENCV, cv2.dnn.DNN_TARGET_CPU
     try:
         if cv2.cuda.getCudaEnabledDeviceCount() < 1:
-            print("[face] OpenCV built without CUDA — face models stay on CPU")
-            return
-        cv2.dnn.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-        cv2.dnn.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-        print("[face] OpenCV DNN prefer CUDA for YuNet/SFace")
-    except Exception as exc:
-        print(f"[face] OpenCV DNN CUDA setup skipped: {exc}")
+            return cv2.dnn.DNN_BACKEND_OPENCV, cv2.dnn.DNN_TARGET_CPU
+        return cv2.dnn.DNN_BACKEND_CUDA, cv2.dnn.DNN_TARGET_CUDA
+    except Exception:
+        return cv2.dnn.DNN_BACKEND_OPENCV, cv2.dnn.DNN_TARGET_CPU
 
 
 def _normalize_rows(matrix: np.ndarray) -> np.ndarray:
@@ -343,27 +355,59 @@ class KnownFaceDB:
         self.faiss_min_embeddings = FAISS_MIN_EMBEDDINGS
         self.faiss_top_k = FAISS_TOP_K
 
-        _configure_opencv_dnn_gpu()
-
         yunet_path = MODEL_DIR / "face_detection_yunet_2023mar.onnx"
         sface_path = MODEL_DIR / "face_recognition_sface_2021dec.onnx"
         _download(YUNET_URL, yunet_path)
         _download(SFACE_URL, sface_path)
 
+        backend_id, target_id = _face_dnn_backend_target()
+        self._dnn_backend = backend_id
+        self._dnn_target = target_id
+        self._yunet_path = str(yunet_path)
+        self._sface_path = str(sface_path)
         self.detector = cv2.FaceDetectorYN.create(
-            str(yunet_path),
+            self._yunet_path,
             "",
             (320, 320),
             0.45,
             0.3,
             5000,
+            backend_id,
+            target_id,
         )
-        self._face_detection_disabled = False
-        self.recognizer = cv2.FaceRecognizerSF.create(str(sface_path), "")
+        self.recognizer = cv2.FaceRecognizerSF.create(
+            self._sface_path,
+            "",
+            backend_id,
+            target_id,
+        )
+        backend_name = "CUDA" if backend_id == cv2.dnn.DNN_BACKEND_CUDA else "CPU"
+        print(f"[face] YuNet/SFace backend={backend_name}")
         self._lock = threading.Lock()
         self._faiss = _FaissGallery()
         self.unknown_cache = UnknownFaceCache()
         self.track_cache = TrackRecognitionCache()
+
+    def _recreate_face_nets(self) -> None:
+        """Recover from OpenCV DNN BlobManager corruption by rebuilding the nets."""
+        backend_id, target_id = self._dnn_backend, self._dnn_target
+        self.detector = cv2.FaceDetectorYN.create(
+            self._yunet_path,
+            "",
+            (320, 320),
+            0.45,
+            0.3,
+            5000,
+            backend_id,
+            target_id,
+        )
+        self.recognizer = cv2.FaceRecognizerSF.create(
+            self._sface_path,
+            "",
+            backend_id,
+            target_id,
+        )
+        print("[face] Recreated YuNet/SFace nets after DNN failure")
 
     def reload(self):
         """Clear in-memory enrolled faces (database reload supplies new vectors)."""
@@ -465,18 +509,38 @@ class KnownFaceDB:
 
     def _detect_faces(self, image: np.ndarray):
         h, w = image.shape[:2]
-        if self._face_detection_disabled or h < 10 or w < 10:
+        if h < 10 or w < 10:
             return None
         try:
             self.detector.setInputSize((w, h))
             _, faces = self.detector.detect(image)
         except cv2.error as exc:
-            self._face_detection_disabled = True
-            print(f"[face] YuNet detection disabled after OpenCV DNN error: {exc}")
-            return None
+            # OpenCV DNN CUDA BlobManager race — rebuild nets and retry once on CPU path.
+            print(f"[face] detect failed ({exc}); recreating nets")
+            self._recreate_face_nets()
+            # Fall back to CPU if CUDA caused the assert.
+            if self._dnn_backend == cv2.dnn.DNN_BACKEND_CUDA:
+                self._dnn_backend = cv2.dnn.DNN_BACKEND_OPENCV
+                self._dnn_target = cv2.dnn.DNN_TARGET_CPU
+                self._recreate_face_nets()
+            self.detector.setInputSize((w, h))
+            _, faces = self.detector.detect(image)
         if faces is None or len(faces) == 0:
             return None
         return faces
+
+    def largest_face(self, image: np.ndarray):
+        """Thread-safe largest YuNet face (or None)."""
+        if image is None or image.size == 0:
+            return None
+        with self._lock:
+            return self._largest_face(image)
+
+    def face_crop(self, image: np.ndarray, face) -> np.ndarray | None:
+        if image is None or image.size == 0 or face is None:
+            return None
+        crop = self._face_crop(image, face)
+        return crop if crop is not None and crop.size else None
 
     def _largest_face(self, image: np.ndarray):
         faces = self._detect_faces(image)
@@ -668,12 +732,27 @@ class KnownFaceDB:
             return None
 
         _, face, metrics = chosen
-        aligned = self.recognizer.alignCrop(image, face)
-        feature = self.recognizer.feature(aligned)
+        aligned, feature = self._align_and_feature(image, face)
         return {
             "feature": feature,
             "quality": metrics["quality"],
         }
+
+    def _align_and_feature(self, image: np.ndarray, face) -> tuple[np.ndarray, np.ndarray]:
+        try:
+            aligned = self.recognizer.alignCrop(image, face)
+            feature = self.recognizer.feature(aligned)
+            return aligned, feature
+        except cv2.error as exc:
+            print(f"[face] feature failed ({exc}); recreating nets")
+            self._recreate_face_nets()
+            if self._dnn_backend == cv2.dnn.DNN_BACKEND_CUDA:
+                self._dnn_backend = cv2.dnn.DNN_BACKEND_OPENCV
+                self._dnn_target = cv2.dnn.DNN_TARGET_CPU
+                self._recreate_face_nets()
+            aligned = self.recognizer.alignCrop(image, face)
+            feature = self.recognizer.feature(aligned)
+            return aligned, feature
 
     def _extract_feature_with_meta(self, image: np.ndarray) -> dict | None:
         image = self._upscale_if_small(image)
@@ -683,8 +762,7 @@ class KnownFaceDB:
         passed, metrics = self._passes_face_quality(image, face)
         if not passed:
             return None
-        aligned = self.recognizer.alignCrop(image, face)
-        feature = self.recognizer.feature(aligned)
+        _aligned, feature = self._align_and_feature(image, face)
         return {
             "feature": feature,
             "quality": metrics["quality"],

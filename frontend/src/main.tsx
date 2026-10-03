@@ -25,14 +25,11 @@ async function setupServiceWorker() {
   registerSW({
     immediate: true,
     onRegisteredSW(_swUrl, registration) {
+      // Check for updates quietly; do not auto-reload pages (was causing login/dashboard refreshes).
       if (!registration) return
-      const check = () => {
+      window.setInterval(() => {
         void registration.update()
-      }
-      window.setInterval(check, 30 * 60 * 1000)
-      window.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible") check()
-      })
+      }, 6 * 60 * 60 * 1000)
     },
   })
 }

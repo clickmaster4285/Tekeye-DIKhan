@@ -142,14 +142,12 @@ export default function ObjectTrackingPage() {
 
   const summaryQuery = useQuery({
     queryKey: ["object-tracking-summary"],
-    queryFn: fetchObjectTrackingSummary,
-    refetchInterval: 10000,
+    queryFn: fetchObjectTrackingSummary
   })
 
   const liveQuery = useQuery({
     queryKey: ["object-tracking-live", livePage, LIVE_PAGE_SIZE],
     queryFn: () => fetchObjectTrackingLive({ page: livePage, page_size: LIVE_PAGE_SIZE }),
-    refetchInterval: 5000,
     placeholderData: (prev) => prev,
   })
 
@@ -164,7 +162,6 @@ export default function ObjectTrackingPage() {
         page: objectsPage,
         page_size: OBJECTS_PAGE_SIZE,
       }),
-    refetchInterval: 10000,
     placeholderData: (prev) => prev,
   })
 
@@ -178,7 +175,6 @@ export default function ObjectTrackingPage() {
         page: visitsPage,
         page_size: VISITS_PAGE_SIZE,
       }),
-    refetchInterval: 10000,
     placeholderData: (prev) => prev,
   })
 

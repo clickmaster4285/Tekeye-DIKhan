@@ -2,6 +2,7 @@ import type { CSSProperties, RefObject } from "react"
 import type { AttendanceRecord } from "@/lib/attendance-api"
 import { resolveMediaUrl } from "@/lib/cameras-api"
 import { resolveStaffProfileImageUrl, type StaffRecord } from "@/lib/staff-api"
+import { CUSTOMS_LOGO_SRC } from "@/lib/brand"
 
 export type AttendancePeriod = "day" | "week" | "month"
 
@@ -213,7 +214,7 @@ const GOLD = "#b8860b"
 const MUTED = "#5b6b7c"
 const LINE = "#d8dee6"
 const SOFT = "#f4f7fb"
-const TEKEYE_LOGO_SRC = "/custom-logo.jpeg"
+const TEKEYE_LOGO_SRC = CUSTOMS_LOGO_SRC
 
 function absoluteAssetUrl(path: string): string {
   if (typeof window === "undefined") return path

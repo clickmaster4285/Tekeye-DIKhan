@@ -1,22 +1,32 @@
 from rest_framework import serializers
 
 from .models import CameraTrack, JourneyEvent, JourneyPerson
-from .snapshot_utils import journey_event_snapshot_url, journey_person_latest_snapshot_url
+from .snapshot_utils import journey_person_latest_snapshot_url
 
 
 class JourneyPersonListSerializer(serializers.ModelSerializer):
+    """Global person only — never expose camera track ids as person identity."""
+
+    person_id = serializers.CharField(source="code", read_only=True)
+    identity_state = serializers.CharField(read_only=True)
     latest_camera_name = serializers.CharField(source="latest_camera.name", read_only=True, default="")
     staff_name = serializers.CharField(source="staff.full_name", read_only=True, default="")
     visitor_name = serializers.CharField(source="visitor.full_name", read_only=True, default="")
     latest_snapshot_url = serializers.SerializerMethodField()
+    active_tracklet_count = serializers.SerializerMethodField()
+    tracklet_ids = serializers.SerializerMethodField()
+    name_locked = serializers.SerializerMethodField()
 
     class Meta:
         model = JourneyPerson
         fields = [
             "uuid",
+            "person_id",
             "code",
             "person_type",
+            "identity_state",
             "display_name",
+            "name_locked",
             "staff_name",
             "visitor_name",
             "latest_camera_name",
@@ -25,7 +35,14 @@ class JourneyPersonListSerializer(serializers.ModelSerializer):
             "latest_snapshot_url",
             "status",
             "created_at",
+            "active_tracklet_count",
+            "tracklet_ids",
         ]
+
+    def get_name_locked(self, obj: JourneyPerson) -> bool:
+        meta = obj.metadata if isinstance(obj.metadata, dict) else {}
+        return bool(meta.get("name_locked"))
+
 
     def get_latest_snapshot_url(self, obj: JourneyPerson) -> str:
         cached = getattr(obj, "_latest_snapshot_url", None)
@@ -33,13 +50,42 @@ class JourneyPersonListSerializer(serializers.ModelSerializer):
             return cached
         return journey_person_latest_snapshot_url(obj)
 
+    def get_active_tracklet_count(self, obj: JourneyPerson) -> int:
+        cached = getattr(obj, "_active_tracklet_count", None)
+        if cached is not None:
+            return cached
+        prefetched = getattr(obj, "_prefetched_objects_cache", {})
+        if "tracks" in prefetched:
+            return sum(1 for t in obj.tracks.all() if t.status == "active")
+        return obj.tracks.filter(status="active").count()
+
+    def get_tracklet_ids(self, obj: JourneyPerson) -> list[str]:
+        cached = getattr(obj, "_tracklet_ids", None)
+        if cached is not None:
+            return cached
+        ids: list[str] = []
+        for t in obj.tracks.all()[:40]:
+            label = (t.tracklet_id or "").strip()
+            if label and label not in ids:
+                ids.append(label)
+        return ids
+
+
+class JourneyPersonNameUpdateSerializer(serializers.Serializer):
+    """Operator-assigned name for a journey person."""
+
+    display_name = serializers.CharField(max_length=200, allow_blank=False, trim_whitespace=True)
+
 
 class JourneyEventSerializer(serializers.ModelSerializer):
     camera_name = serializers.CharField(source="camera.name", read_only=True, default="")
     camera_code = serializers.CharField(source="camera.code", read_only=True, default="")
     snapshot_url = serializers.SerializerMethodField()
+    person_id = serializers.CharField(source="journey_person.code", read_only=True, default="")
     person_code = serializers.CharField(source="journey_person.code", read_only=True, default="")
     person_name = serializers.CharField(source="journey_person.display_name", read_only=True, default="")
+    tracklet_id = serializers.SerializerMethodField()
+    local_track_id = serializers.SerializerMethodField()
 
     class Meta:
         model = JourneyEvent
@@ -58,8 +104,11 @@ class JourneyEventSerializer(serializers.ModelSerializer):
             "bbox",
             "snapshot_path",
             "snapshot_url",
+            "person_id",
             "person_code",
             "person_name",
+            "tracklet_id",
+            "local_track_id",
             "metadata",
             "created_at",
         ]
@@ -73,20 +122,51 @@ class JourneyEventSerializer(serializers.ModelSerializer):
             return clip_map.get(obj.detection_event_id) or ""
         return ""
 
+    def get_tracklet_id(self, obj: JourneyEvent) -> str:
+        track = getattr(obj, "track", None)
+        if track is not None:
+            return (track.tracklet_id or "").strip()
+        meta = obj.metadata or {}
+        return str(meta.get("tracklet_id") or "").strip()
+
+    def get_local_track_id(self, obj: JourneyEvent) -> int | None:
+        track = getattr(obj, "track", None)
+        if track is not None:
+            return track.track_id
+        meta = obj.metadata or {}
+        raw = meta.get("track_id")
+        try:
+            return int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
 
 class CameraTrackSerializer(serializers.ModelSerializer):
+    """Per-camera tracklet — distinct from global person_id."""
+
     camera_name = serializers.CharField(source="camera.name", read_only=True, default="")
+    camera_zone = serializers.CharField(source="camera.zone", read_only=True, default="")
+    person_id = serializers.CharField(source="journey_person.code", read_only=True, default="")
 
     class Meta:
         model = CameraTrack
         fields = [
             "id",
+            "tracklet_id",
             "track_id",
+            "person_id",
             "camera_name",
+            "camera_zone",
             "status",
             "started_at",
             "ended_at",
+            "start_bbox",
+            "end_bbox",
             "last_bbox",
+            "movement_direction",
+            "entry_zone",
+            "exit_zone",
+            "quality",
         ]
 
 

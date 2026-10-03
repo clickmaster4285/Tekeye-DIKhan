@@ -31,6 +31,10 @@ export const RECOVERY_CATEGORIES = ["Dangerous/Chemical", "Perishable", "Other"]
 export type RecoveryCategory = (typeof RECOVERY_CATEGORIES)[number]
 
 export type NoteSheetStatus = "Draft" | "Submitted" | "Approved" | "Rejected"
+export type ApprovalStatus = "Draft" | "Pending Approval" | "Approved" | "Rejected"
+export type AssessmentStatus = "Draft" | "Submitted" | "Approved" | "Rejected"
+export type DocumentRelevance = "Pending" | "Relevant" | "Not Relevant"
+export type SeizureReportStatus = "Draft" | "Submitted"
 
 const NOTE_SHEET_HIGHER_OFFICIAL_ROLES = new Set([
   "ADMIN",
@@ -39,6 +43,35 @@ const NOTE_SHEET_HIGHER_OFFICIAL_ROLES = new Set([
   "ASSISTANT_COLLECTOR",
 ])
 
+/** Super Admin + Location Admin may edit note sheets / assessments regardless of status. */
+export const FULL_EDIT_ROLES = new Set(["ADMIN", "LOCATION_ADMIN"])
+
+export function normalizeAppRole(role?: string | null): string {
+  return (role ?? "").trim().replace(/[\s-]+/g, "_").toUpperCase()
+}
+
+export function canUserFullyEditSeizureDocs(role?: string | null): boolean {
+  return FULL_EDIT_ROLES.has(normalizeAppRole(role))
+}
+
+/** Draft/Rejected for everyone; ADMIN + LOCATION_ADMIN for any status. */
+export function canUserEditNoteSheet(
+  row: { status: NoteSheetStatus },
+  role?: string | null
+): boolean {
+  if (canUserFullyEditSeizureDocs(role)) return true
+  return row.status === "Draft" || row.status === "Rejected"
+}
+
+/** Draft/Rejected for everyone; ADMIN + LOCATION_ADMIN for any status. */
+export function canUserEditAssessment(
+  row: { status: AssessmentStatus },
+  role?: string | null
+): boolean {
+  if (canUserFullyEditSeizureDocs(role)) return true
+  return row.status === "Draft" || row.status === "Rejected"
+}
+
 /** Before approval any user may delete; after approval only higher officials. Linked sheets cannot be deleted. */
 export function canUserDeleteNoteSheet(
   row: { status: NoteSheetStatus; detentionMemoId?: string },
@@ -46,13 +79,8 @@ export function canUserDeleteNoteSheet(
 ): boolean {
   if (row.detentionMemoId) return false
   if (row.status !== "Approved") return true
-  const normalized = (role ?? "").trim().replace(/[\s-]+/g, "_").toUpperCase()
-  return NOTE_SHEET_HIGHER_OFFICIAL_ROLES.has(normalized)
+  return NOTE_SHEET_HIGHER_OFFICIAL_ROLES.has(normalizeAppRole(role))
 }
-export type ApprovalStatus = "Draft" | "Pending Approval" | "Approved" | "Rejected"
-export type AssessmentStatus = "Draft" | "Submitted" | "Approved" | "Rejected"
-export type DocumentRelevance = "Pending" | "Relevant" | "Not Relevant"
-export type SeizureReportStatus = "Draft" | "Submitted"
 
 export const EVIDENCE_OPTIONS = [
   "Photographs",
@@ -72,6 +100,21 @@ export const RECOMMENDATION_OPTIONS = [
   "Release Goods",
 ] as const
 
+export type NoteSheetLocatedCamera = {
+  id: number
+  code: string
+  name: string
+  zone: string
+  location: string
+  siteName?: string
+  nvrName?: string
+  nvrIp?: string
+  channel?: number
+  mlServerId?: number | null
+  mlServerName?: string
+  displayLabel?: string
+}
+
 export type NoteSheetItem = {
   id?: string
   clientLineId?: string
@@ -90,6 +133,13 @@ export type NoteSheetItem = {
   itemNotes?: string
   images?: string[]
   imageFiles?: File[]
+  /** UI-only until save — zone filter for located camera dropdown */
+  locatedZone?: string
+  locatedCameraId?: number | null
+  locatedCamera?: NoteSheetLocatedCamera | null
+  detectedAt?: string
+  detectionEventId?: number | null
+  evidenceUrl?: string
 }
 
 export type NoteSheetAttachment = {
@@ -490,6 +540,9 @@ function serializeNoteSheetItems(items?: NoteSheetItem[]) {
     remarks: it.remarks || it.itemNotes || "",
     itemNotes: it.itemNotes || it.remarks || "",
     sortOrder: idx,
+    locatedCameraId: it.locatedCameraId ?? null,
+    detectedAt: it.detectedAt || "",
+    detectionEventId: it.detectionEventId ?? null,
   }))
 }
 

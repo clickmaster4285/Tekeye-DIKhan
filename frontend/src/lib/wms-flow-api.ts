@@ -12,6 +12,23 @@ function errorMessage(res: Response, body: unknown): string {
   return `Request failed (${res.status})`
 }
 
+/** Build path + query without requiring an absolute API_BASE_URL (same-origin ok). */
+function withQuery(
+  path: string,
+  params?: Record<string, string | undefined | null>
+): string {
+  const qs = new URLSearchParams()
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      if (value != null && String(value).trim() !== "") {
+        qs.set(key, String(value))
+      }
+    }
+  }
+  const q = qs.toString()
+  return q ? `${path}?${q}` : path
+}
+
 export type WmsStockApiRow = {
   id: string
   detention_memo_id?: string
@@ -160,10 +177,11 @@ export async function fetchWarehouseStock(params?: {
   detentionMemoId?: string
   caseRef?: string
 }): Promise<WmsStockApiRow[]> {
-  const url = new URL(`${BASE}/stock/`)
-  if (params?.detentionMemoId) url.searchParams.set("detention_memo_id", params.detentionMemoId)
-  if (params?.caseRef) url.searchParams.set("case_ref", params.caseRef)
-  const res = await fetch(url.toString(), { headers: getAuthHeaders(), cache: "no-store" })
+  const url = withQuery(`${BASE}/stock/`, {
+    detention_memo_id: params?.detentionMemoId,
+    case_ref: params?.caseRef,
+  })
+  const res = await fetch(url, { headers: getAuthHeaders(), cache: "no-store" })
   let body: unknown = null
   try {
     body = await res.json()
@@ -337,10 +355,11 @@ export async function fetchWmsOverview(params: {
   detentionMemoId?: string
   caseNo?: string
 }): Promise<WmsOverview> {
-  const url = new URL(`${BASE}/overview/`)
-  if (params.detentionMemoId) url.searchParams.set("detention_memo_id", params.detentionMemoId)
-  if (params.caseNo) url.searchParams.set("case_no", params.caseNo)
-  const res = await fetch(url.toString(), { headers: getAuthHeaders(), cache: "no-store" })
+  const url = withQuery(`${BASE}/overview/`, {
+    detention_memo_id: params.detentionMemoId,
+    case_no: params.caseNo,
+  })
+  const res = await fetch(url, { headers: getAuthHeaders(), cache: "no-store" })
   let body: unknown = null
   try {
     body = await res.json()
@@ -355,10 +374,11 @@ export async function fetchSeizureRecords(params?: {
   detentionMemoId?: string
   caseNo?: string
 }): Promise<SeizureRecordApi[]> {
-  const url = new URL(`${BASE}/seizures/`)
-  if (params?.detentionMemoId) url.searchParams.set("detention_memo_id", params.detentionMemoId)
-  if (params?.caseNo) url.searchParams.set("case_no", params.caseNo)
-  const res = await fetch(url.toString(), { headers: getAuthHeaders(), cache: "no-store" })
+  const url = withQuery(`${BASE}/seizures/`, {
+    detention_memo_id: params?.detentionMemoId,
+    case_no: params?.caseNo,
+  })
+  const res = await fetch(url, { headers: getAuthHeaders(), cache: "no-store" })
   let body: unknown = null
   try {
     body = await res.json()
@@ -370,9 +390,10 @@ export async function fetchSeizureRecords(params?: {
 }
 
 export async function fetchReleaseRecords(detentionMemoId?: string): Promise<ReleaseRecordApi[]> {
-  const url = new URL(`${BASE}/releases/`)
-  if (detentionMemoId) url.searchParams.set("detention_memo_id", detentionMemoId)
-  const res = await fetch(url.toString(), { headers: getAuthHeaders(), cache: "no-store" })
+  const url = withQuery(`${BASE}/releases/`, {
+    detention_memo_id: detentionMemoId,
+  })
+  const res = await fetch(url, { headers: getAuthHeaders(), cache: "no-store" })
   let body: unknown = null
   try {
     body = await res.json()

@@ -33,6 +33,7 @@ export const STAFF_DEPARTMENT_OPTIONS = [
   { value: "LEGAL", label: "Legal" },
   { value: "PROCUREMENT", label: "Procurement" },
   { value: "ENFORCEMENT", label: "Enforcement" },
+  { value: "APPRAISEMENT", label: "Appraisement" },
   { value: "CUSTOMS", label: "Customs" },
 ]
 

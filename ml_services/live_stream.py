@@ -2,12 +2,12 @@
 Live RTSP streams with purpose-gated multi-model YOLO inference + optional plate OCR.
 Only models relevant to each camera's purpose run on that feed.
 
-Pipeline (decoupled — capture / infer / render never block each other):
-  NVR main stream (4K) ──► FFmpeg NVDEC (native, no downscale)
-         ▼
-  Latest Frame Buffer
-         ├─► Partitioned Inference Workers → Result Buffer
-         └─► Render Thread → Browser MJPEG
+Shared Camera Session ingest (one decode per camera):
+  NVR main stream ──► ONE FFmpeg NVDEC ──► SHARED FRAME BUFFER
+         ├─► Partitioned Inference Workers → Result Buffer (AI FPS)
+         ├─► Render Thread → Browser MJPEG (live FPS)
+         ├─► Journey / attendance / evidence consumers
+         └─► Do not open a second FFmpeg for the same camera
 """
 from __future__ import annotations
 
@@ -57,6 +57,7 @@ from inference_engine import (
     get_yolo_custom_model,
     get_yolo_smoke_model,
     get_yolo_weapon_model,
+    gpu_predict_lock,
     keep_custom_classes_only,
     merge_triple_detections,
     parse_yolo_result,
@@ -115,6 +116,12 @@ def _key_may_be_rtsp_host(key: str) -> bool:
     return text in _boot_camera_ips()
 
 
+
+def _require_registered() -> bool:
+    """When true (default), refuse to open streams for keys not in the Django sync registry."""
+    return os.getenv("ML_REQUIRE_REGISTERED", "true").strip().lower() in ("true", "1", "yes")
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
@@ -127,67 +134,6 @@ def _env_int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
-
-
-# --- RTSP reconnect resilience (per-process; avoids NVR stampede / FFmpeg churn) ---
-_reconnect_gate = threading.Lock()
-_reconnect_last_at = 0.0
-
-
-def _rtsp_reconnect_min_interval() -> float:
-    """Minimum seconds between any two FFmpeg open attempts across all cameras."""
-    return max(0.0, _env_float("ML_RTSP_RECONNECT_MIN_INTERVAL", 1.0))
-
-
-def _rtsp_backoff_max_sec() -> float:
-    return max(5.0, _env_float("ML_RTSP_BACKOFF_MAX_SEC", 60.0))
-
-
-def _rtsp_quarantine_after() -> int:
-    """Consecutive fatal (or repeated) failures before pausing reconnect forever."""
-    return max(1, _env_int("ML_RTSP_QUARANTINE_AFTER", 3))
-
-
-def _rtsp_max_cameras() -> int:
-    """Hard cap on concurrent live sessions on this ML node (0 = unlimited)."""
-    return max(0, _env_int("ML_LIVE_MAX_CAMERAS", 20))
-
-
-def _acquire_reconnect_slot() -> None:
-    global _reconnect_last_at
-    min_gap = _rtsp_reconnect_min_interval()
-    with _reconnect_gate:
-        now = time.monotonic()
-        wait = (_reconnect_last_at + min_gap) - now
-        if wait > 0:
-            time.sleep(wait)
-        _reconnect_last_at = time.monotonic()
-
-
-def _is_fatal_rtsp_error(err: str) -> bool:
-    e = (err or "").lower()
-    markers = (
-        "404 not found",
-        "server returned 404",
-        "401 unauthorized",
-        "403 forbidden",
-        "400 bad request",
-        "405 method not allowed",
-        "invalid data found when processing input",
-        "error number -10054",
-        "connection refused",
-    )
-    return any(m in e for m in markers)
-
-
-def _next_backoff_delay(base_sec: float, attempt: int) -> float:
-    """Exponential backoff with light jitter; caps at ML_RTSP_BACKOFF_MAX_SEC."""
-    base = max(0.5, float(base_sec))
-    exp = min(max(0, int(attempt) - 1), 5)
-    delay = min(_rtsp_backoff_max_sec(), base * (2 ** exp))
-    jitter = 0.85 + 0.3 * ((time.monotonic() * 17.0) % 1.0)
-    return max(0.5, delay * jitter)
-
 
 
 def _resolve_ffmpeg_path() -> str | None:
@@ -266,11 +212,33 @@ def _use_nvdec(ffmpeg_path: str) -> bool:
 def _rtsp_scale_size() -> tuple[int, int]:
     """
     Live AI/view capture size after FFmpeg scale (NVR keeps original 4K recording).
-    Default 0x0 = native 3840x2160 main-stream passthrough.
+
+    Defaults to 1280x720 — missing env must NOT open native 4K MJPEG for multi-cam.
+    Set both width/height to 0 AND ML_RTSP_ALLOW_NATIVE=true to keep native.
     """
-    w = max(0, _env_int("ML_RTSP_SCALE_WIDTH", 0))
-    h = max(0, _env_int("ML_RTSP_SCALE_HEIGHT", 0))
+    w = max(0, _env_int("ML_RTSP_SCALE_WIDTH", 1280))
+    h = max(0, _env_int("ML_RTSP_SCALE_HEIGHT", 720))
     return w, h
+
+
+def _force_rtsp_scale() -> bool:
+    """Default ON: always scale unless explicitly disabled."""
+    return str(os.getenv("ML_RTSP_FORCE_SCALE", "true") or "true").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _allow_native_rtsp() -> bool:
+    """Native 4K live path is opt-in only (dangerous at 24+ cameras)."""
+    return str(os.getenv("ML_RTSP_ALLOW_NATIVE", "false") or "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _ffmpeg_threads() -> str:
@@ -288,9 +256,10 @@ def _ffmpeg_timeout_cli_flag() -> str:
 
 
 def _mjpeg_quality(*, keep_native: bool) -> str:
+    # Higher -q:v = cheaper JPEG. Avoid q:v 2 on live (was crushing 24-cam servers).
     if keep_native:
-        return os.getenv("ML_MJPEG_QUALITY_NATIVE", "2").strip() or "2"
-    return os.getenv("ML_MJPEG_QUALITY", "8").strip() or "8"
+        return os.getenv("ML_MJPEG_QUALITY_NATIVE", "5").strip() or "5"
+    return os.getenv("ML_MJPEG_QUALITY", "7").strip() or "7"
 
 
 def _rtsp_stream_input_flags() -> list[str]:
@@ -307,10 +276,14 @@ def _rtsp_stream_input_flags() -> list[str]:
 
 
 def _rtsp_scale_filter(use_cuda_scale: bool) -> str | None:
-    """FFmpeg -vf string to downscale to ~1080p before MJPEG pipe / YOLO."""
+    """FFmpeg -vf string to downscale before MJPEG pipe / YOLO."""
     w, h = _rtsp_scale_size()
     if w <= 0 and h <= 0:
-        return None
+        # Safety net: never return None when force-scale is on.
+        if _force_rtsp_scale() or not _allow_native_rtsp():
+            w, h = 1280, 720
+        else:
+            return None
     if w <= 0:
         w = -2
     if h <= 0:
@@ -340,13 +313,10 @@ class CameraStream:
         self.connected = False
         self.cap: cv2.VideoCapture | None = None
         self._fail_streak = 0
-        self._max_fail_before_reconnect = max(5, _env_int("ML_RTSP_MAX_FAILS", 60))
-        self._reconnect_delay = max(0.5, _env_float("ML_RTSP_RECONNECT_SEC", 8.0))
-        self._open_retry_delay = max(0.5, _env_float("ML_RTSP_OPEN_RETRY_SEC", 12.0))
+        self._max_fail_before_reconnect = max(5, _env_int("ML_RTSP_MAX_FAILS", 30))
+        self._reconnect_delay = max(0.5, _env_float("ML_RTSP_RECONNECT_SEC", 2.0))
+        self._open_retry_delay = max(0.5, _env_float("ML_RTSP_OPEN_RETRY_SEC", 3.0))
         self._logged_res = False
-        self._reconnect_attempt = 0
-        self.quarantined = False
-        self.quarantine_reason = ""
         self.thread = threading.Thread(target=self._run, daemon=True, name=f"cam-{label}")
 
     @staticmethod
@@ -411,19 +381,9 @@ class CameraStream:
 
     def _run(self):
         while self.running:
-            if self.quarantined:
-                time.sleep(5.0)
-                continue
             if self.cap is None:
-                _acquire_reconnect_slot()
                 if not self._open_cap():
-                    self._reconnect_attempt += 1
-                    if self._reconnect_attempt >= _rtsp_quarantine_after():
-                        self.quarantined = True
-                        self.quarantine_reason = "repeated open failures"
-                        print(f"[live] Quarantined {self.label}: {self.quarantine_reason}")
-                        continue
-                    time.sleep(_next_backoff_delay(self._open_retry_delay, self._reconnect_attempt))
+                    time.sleep(self._open_retry_delay)
                     continue
 
             frame = self._read_frame()
@@ -437,26 +397,18 @@ class CameraStream:
                     self.frame_seq += 1
                     self.connected = True
                 self._fail_streak = 0
-                self._reconnect_attempt = 0
                 continue
 
             self._fail_streak += 1
             self.connected = False
             if self._fail_streak >= self._max_fail_before_reconnect:
-                self._reconnect_attempt += 1
                 print(
                     f"[live] Reconnecting {self.label} after "
-                    f"{self._fail_streak} failed frame read(s) "
-                    f"(attempt {self._reconnect_attempt})"
+                    f"{self._fail_streak} failed frame read(s)"
                 )
                 self._release_cap()
                 self._fail_streak = 0
-                if self._reconnect_attempt >= max(8, _rtsp_quarantine_after() * 3):
-                    self.quarantined = True
-                    self.quarantine_reason = "repeated frame read failures"
-                    print(f"[live] Quarantined {self.label}: {self.quarantine_reason}")
-                    continue
-                time.sleep(_next_backoff_delay(self._reconnect_delay, self._reconnect_attempt))
+                time.sleep(self._reconnect_delay)
             else:
                 time.sleep(0.02)
 
@@ -498,13 +450,10 @@ class FfmpegCameraStream:
         self.connected = False
         self._proc: subprocess.Popen | None = None
         self._fail_streak = 0
-        self._max_fail_before_reconnect = max(5, _env_int("ML_RTSP_MAX_FAILS", 60))
-        self._reconnect_delay = max(0.5, _env_float("ML_RTSP_RECONNECT_SEC", 8.0))
-        self._open_retry_delay = max(0.5, _env_float("ML_RTSP_OPEN_RETRY_SEC", 12.0))
+        self._max_fail_before_reconnect = max(5, _env_int("ML_RTSP_MAX_FAILS", 30))
+        self._reconnect_delay = max(0.5, _env_float("ML_RTSP_RECONNECT_SEC", 2.0))
+        self._open_retry_delay = max(0.5, _env_float("ML_RTSP_OPEN_RETRY_SEC", 3.0))
         self._logged_res = False
-        self._reconnect_attempt = 0
-        self.quarantined = False
-        self.quarantine_reason = ""
         self._use_nvdec = _use_nvdec(ffmpeg_path)
         # Prefer GPU scale when NVDEC is on; fall back to CPU scale on ffmpeg errors.
         # Native/4K ANPR path skips FFmpeg scale entirely.
@@ -556,6 +505,9 @@ class FfmpegCameraStream:
         vf = None
         if not self.keep_native:
             vf = _rtsp_scale_filter(use_cuda_scale=bool(self._use_nvdec and self._use_cuda_scale))
+            if not vf:
+                # Last-resort CPU scale — never pipe native 4K MJPEG by accident.
+                vf = "scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2"
         if vf:
             cmd += ["-vf", vf]
 
@@ -645,7 +597,9 @@ class FfmpegCameraStream:
         if self.keep_native:
             scale_note = "native-4K"
         else:
-            scale_note = f"scale={sw}x{sh}" if (sw or sh) else "native"
+            if not (sw or sh):
+                sw, sh = 1280, 720
+            scale_note = f"scale={sw}x{sh}"
         if self._use_nvdec:
             print(
                 f"[live] {self.label} opening GPU NVDEC + FFmpeg {scale_note} "
@@ -657,11 +611,7 @@ class FfmpegCameraStream:
             print(f"[live] {self.label} opening FFmpeg {scale_note}")
 
         while self.running:
-            if self.quarantined:
-                time.sleep(5.0)
-                continue
             self._stop_proc()
-            _acquire_reconnect_slot()
             # Re-check CUDA availability; keep CPU-scale fallback once chosen.
             self._use_nvdec = _use_nvdec(self.ffmpeg_path)
             if not self._use_nvdec:
@@ -690,19 +640,12 @@ class FfmpegCameraStream:
             except OSError as exc:
                 print(f"[live] Failed to open {self.label} ({decode_tag}): {exc}")
                 self.connected = False
-                self._reconnect_attempt += 1
-                if self._reconnect_attempt >= _rtsp_quarantine_after():
-                    self.quarantined = True
-                    self.quarantine_reason = str(exc)
-                    print(f"[live] Quarantined {self.label}: {self.quarantine_reason}")
-                    continue
-                time.sleep(_next_backoff_delay(self._open_retry_delay, self._reconnect_attempt))
+                time.sleep(self._open_retry_delay)
                 continue
 
             if not self._proc.stdout:
                 self._stop_proc()
-                self._reconnect_attempt += 1
-                time.sleep(_next_backoff_delay(self._open_retry_delay, self._reconnect_attempt))
+                time.sleep(self._open_retry_delay)
                 continue
 
             buffer = bytearray()
@@ -736,33 +679,17 @@ class FfmpegCameraStream:
                         self.frame_seq += 1
                         self.connected = True
                     self._fail_streak = 0
-                    self._reconnect_attempt = 0
 
             self.connected = False
             if self.running:
                 err_hint = (self._last_stderr or "").strip()
                 self._maybe_fallback_cpu_scale()
-                self._reconnect_attempt += 1
-                fatal = _is_fatal_rtsp_error(err_hint)
                 if err_hint:
-                    print(
-                        f"[live] Reconnecting {self.label} ({decode_tag}) "
-                        f"attempt={self._reconnect_attempt}: {err_hint}"
-                    )
+                    print(f"[live] Reconnecting {self.label} ({decode_tag}): {err_hint}")
                 else:
-                    print(
-                        f"[live] Reconnecting {self.label} ({decode_tag}) "
-                        f"attempt={self._reconnect_attempt}"
-                    )
+                    print(f"[live] Reconnecting {self.label} ({decode_tag})")
                 self._stop_proc()
-                # Fatal NVR errors (404/401/…) quarantine quickly — stop FFmpeg churn.
-                q_limit = _rtsp_quarantine_after() if fatal else max(8, _rtsp_quarantine_after() * 3)
-                if self._reconnect_attempt >= q_limit:
-                    self.quarantined = True
-                    self.quarantine_reason = err_hint or "repeated RTSP failures"
-                    print(f"[live] Quarantined {self.label}: {self.quarantine_reason}")
-                    continue
-                time.sleep(_next_backoff_delay(self._reconnect_delay, self._reconnect_attempt))
+                time.sleep(self._reconnect_delay)
 
     def get_frame(self) -> np.ndarray | None:
         frame, _ = self.get_latest()
@@ -801,6 +728,25 @@ def create_camera_stream(
     return stream
 
 
+def _overlay_name(det: dict[str, Any]) -> str:
+    """Human-readable name/class — never replace this with the global ID alone."""
+    display_id = str(det.get("display_id") or det.get("global_object_id") or "").strip()
+    name = str(det.get("label") or "").strip()
+    cls = str(det.get("class_name") or "").strip()
+    if not name or (display_id and name.lower() == display_id.lower()) or _OBJECT_ID_LABEL.match(name):
+        name = cls or "object"
+    return name
+
+
+def _overlay_text(det: dict[str, Any]) -> str:
+    """Format live box text as '{global_id} {actual_label}' when both exist."""
+    display_id = str(det.get("display_id") or det.get("global_object_id") or "").strip()
+    name = _overlay_name(det)
+    if display_id and name and display_id.lower() not in name.lower():
+        return f"{display_id} {name}".strip()
+    return (display_id or name).strip()
+
+
 def draw_detections(frame: np.ndarray, detections: list[dict[str, Any]], label_scale: float = 0.55) -> np.ndarray:
     if not detections:
         return frame
@@ -812,8 +758,7 @@ def draw_detections(frame: np.ndarray, detections: list[dict[str, Any]], label_s
     font = cv2.FONT_HERSHEY_SIMPLEX
 
     for det in detections:
-        display_id = str(det.get("display_id") or det.get("global_object_id") or "").strip()
-        name = str(det.get("label") or det.get("class_name") or "")
+        name = _overlay_name(det)
         conf = float(det.get("confidence", 0))
         x1, y1, x2, y2 = det.get("bbox", [0, 0, 0, 0])
         is_unknown = (
@@ -830,11 +775,7 @@ def draw_detections(frame: np.ndarray, detections: list[dict[str, Any]], label_s
         else:
             color = (0, 220, 0)
         cv2.rectangle(output, (int(x1), int(y1)), (int(x2), int(y2)), color, box_thickness)
-        if display_id and display_id.lower() not in name.lower():
-            name = f"{display_id} {name}".strip()
-        elif display_id and not name:
-            name = display_id
-        label = f"{name} {conf:.2f}".strip()
+        label = f"{_overlay_text(det)} {conf:.2f}".strip()
         (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
         text_x = int(x1)
         text_y = max(text_h + 4, int(y1) - 4)
@@ -863,7 +804,10 @@ def _is_generic_face_label(label: str) -> bool:
 
 
 def assign_overlay_ids(detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Put a stable ID on every live box: GP/GO/GV from identity, else ByteTrack T#."""
+    """Put a stable ID on every live box: GP/GO/GV from identity, else ByteTrack T#.
+
+    Keeps the real label/class on the detection — never overwrite it with ID-only text.
+    """
     for det in detections or []:
         gid = str(det.get("global_object_id") or "").strip()
         tid = det.get("track_id")
@@ -875,11 +819,12 @@ def assign_overlay_ids(detections: list[dict[str, Any]]) -> list[dict[str, Any]]
         if display_id:
             det["display_id"] = display_id
 
-        cls = str(det.get("class_name") or "").strip().lower()
+        cls = str(det.get("class_name") or "").strip()
         label = str(det.get("label") or "").strip()
-        if cls in ("person", "face") and _is_generic_face_label(label):
+        if cls.lower() in ("person", "face") and _is_generic_face_label(label):
             det["is_unknown"] = True
-            det["label"] = display_id or "Unknown"
+            # Keep a readable class label; global ID stays in display_id only
+            det["label"] = cls or "person"
     return detections
 
 
@@ -1102,7 +1047,8 @@ class LiveStreamManager:
         self._infer_interval = 0.15
         # Partition cameras across workers (e.g. 5 workers → ~5 cams each when 25 cams).
         self._infer_workers = max(1, min(_env_int("ML_LIVE_INFER_WORKERS", 5), 16))
-        self._predict_lock = threading.Lock()
+        self._predict_lock = gpu_predict_lock()
+        self._offline_pause = False
         # Browser preview defaults: smaller/faster JPEGs (override via env).
         self._jpeg_quality = 50
         self._face_threshold = 0.28
@@ -1122,6 +1068,9 @@ class LiveStreamManager:
         self._stream_fps = max(5, min(_env_int("ML_LIVE_STREAM_FPS", 12), 30))
         self._frame_interval = 1.0 / self._stream_fps
         self._detections: dict[str, list[dict[str, Any]]] = {}
+        # Same-frame evidence JPEG (raw infer frame) keyed with detections — for Django snapshots
+        self._evidence_jpeg: dict[str, bytes] = {}
+        self._evidence_wh: dict[str, tuple[int, int]] = {}
         self._det_lock = threading.Lock()
         self._start_lock = threading.Lock()
 
@@ -1188,6 +1137,8 @@ class LiveStreamManager:
     def _close_session(self, key: str) -> None:
         session = self._sessions.pop(key, None)
         self._detections.pop(key, None)
+        self._evidence_jpeg.pop(key, None)
+        self._evidence_wh.pop(key, None)
         self._plate_frame_counters.pop(key, None)
         self._last_plate_dets.pop(key, None)
         if self._plate_engine is not None:
@@ -1198,19 +1149,35 @@ class LiveStreamManager:
         if session is not None:
             with session.infer_lock:
                 session.infer_busy = False
-            session.stream.stop()
+        # Release shared ingest (one FFmpeg per camera) — do not stop stream twice.
+        try:
+            from camera_session import get_camera_session_manager
+
+            get_camera_session_manager().release(key)
+        except Exception:
+            if session is not None:
+                try:
+                    session.stream.stop()
+                except Exception:
+                    pass
+
+    def is_registered(self, key: str) -> bool:
+        return bool(self._registry.get((key or "").strip()))
 
     def resolve_rtsp_url(self, key: str, rtsp_url: str | None = None) -> str | None:
-        key = key.strip()
+        """Resolve RTSP for a key. Registered cameras only when ML_REQUIRE_REGISTERED=true."""
+        key = (key or "").strip()
+        if not key:
+            return None
+        registered = self._registry.get(key, "").strip()
+        if registered:
+            # Ignore client-supplied rtsp_url — assignment registry is authoritative.
+            return registered
+        if _require_registered():
+            return None
         explicit = (rtsp_url or "").strip()
         if explicit:
             return explicit
-        registered = self._registry.get(key, "").strip()
-        if registered:
-            return registered
-        if not key:
-            return None
-        # Never treat Django stream keys (cam-11) as RTSP hostnames.
         if not _key_may_be_rtsp_host(key):
             return None
         cfg = _rtsp_config()
@@ -1229,17 +1196,9 @@ class LiveStreamManager:
             return False
         purpose_list = self._normalize_purpose_list(purposes, primary=purpose)
         with self._lock:
-            max_cams = _rtsp_max_cameras()
-            existing = self._sessions.get(key)
-            if existing is None and max_cams and len(self._sessions) >= max_cams:
-                print(
-                    f"[live] Rejected {key}: at capacity "
-                    f"({len(self._sessions)}/{max_cams}). "
-                    f"Raise ML_LIVE_MAX_CAMERAS or move cameras to another ML node."
-                )
-                return False
             self._registry[key] = url
             self._purposes[key] = purpose_list
+            existing = self._sessions.get(key)
             if existing is not None:
                 native_mismatch = bool(getattr(existing.stream, "keep_native", False)) != self._want_native_frame(key)
                 if existing.rtsp_url != url or native_mismatch:
@@ -1289,18 +1248,33 @@ class LiveStreamManager:
             out.insert(0, primary_code)
         return out
 
-    def register_cameras_bulk(self, entries: list[dict[str, str]]) -> dict[str, int]:
+    def register_cameras_bulk(
+        self,
+        entries: list[dict[str, str]],
+        *,
+        replace: bool = False,
+    ) -> dict[str, int]:
         registered = 0
+        keep: set[str] = set()
         for item in entries:
             key = str(item.get("key") or "").strip()
             url = str(item.get("rtsp_url") or "").strip()
             purpose = str(item.get("purpose") or "").strip()
             raw_purposes = item.get("purposes")
             purposes = raw_purposes if isinstance(raw_purposes, list) else []
+            if not key or not url:
+                continue
+            keep.add(key)
             if self.register_camera(key, url, purpose=purpose, purposes=purposes):
                 registered += 1
+        removed = 0
+        if replace:
+            for key in list(self._registry.keys()):
+                if key not in keep:
+                    if self.unregister_camera(key):
+                        removed += 1
         self.ensure_started()
-        return {"registered": registered, "total": len(entries)}
+        return {"registered": registered, "total": len(entries), "removed": removed}
 
     def get_raw_frame(self, key: str):
         """Latest decoded frame from an existing live RTSP session (no extra connection)."""
@@ -1372,8 +1346,14 @@ class LiveStreamManager:
         return True
 
     def ensure_camera(self, key: str, rtsp_url: str | None = None) -> bool:
-        key = key.strip()
+        key = (key or "").strip()
         if not key:
+            return False
+        if _require_registered() and not self.is_registered(key):
+            print(
+                f"[live] ensure_camera rejected {key}: not registered on this ML node "
+                f"(assign via Django Camera Distribution / sync)"
+            )
             return False
         url = self.resolve_rtsp_url(key, rtsp_url)
         if not url:
@@ -1387,20 +1367,8 @@ class LiveStreamManager:
                     self._registry[key] = url
                 native_mismatch = bool(getattr(existing.stream, "keep_native", False)) != self._want_native_frame(key)
                 if not native_mismatch:
-                    # Clear quarantine if admin re-hit ensure with same cam (manual recovery).
-                    if getattr(existing.stream, "quarantined", False):
-                        existing.stream.quarantined = False
-                        existing.stream.quarantine_reason = ""
-                        existing.stream._reconnect_attempt = 0
                     return True
                 self._close_session(key)
-            max_cams = _rtsp_max_cameras()
-            if max_cams and len(self._sessions) >= max_cams:
-                print(
-                    f"[live] ensure_camera rejected {key}: at capacity "
-                    f"({len(self._sessions)}/{max_cams})"
-                )
-                return False
             self._open_session_locked(key, url)
             return True
 
@@ -1518,11 +1486,6 @@ class LiveStreamManager:
                         det_count = len(session.latest_detections)
                         has_frame = session.latest_jpeg is not None
                     connected = bool(session.stream.connected)
-                quarantined = False
-                quarantine_reason = ""
-                if session is not None:
-                    quarantined = bool(getattr(session.stream, "quarantined", False))
-                    quarantine_reason = str(getattr(session.stream, "quarantine_reason", "") or "")
                 cameras.append(
                     {
                         "ip": key,
@@ -1531,8 +1494,6 @@ class LiveStreamManager:
                         "connected": connected,
                         "has_frame": has_frame,
                         "detections": det_count,
-                        "quarantined": quarantined,
-                        "quarantine_reason": quarantine_reason,
                         "purpose": (self._purposes.get(key) or [""])[0] if self._purposes.get(key) else "",
                         "purposes": list(self._purposes.get(key) or []),
                         "rtsp_url": (self._registry.get(key) or "").strip(),
@@ -1584,24 +1545,48 @@ class LiveStreamManager:
                 "frame_height": 0,
                 "display_width": 0,
                 "display_height": 0,
+                "has_evidence": False,
             }
         with self._det_lock:
             detections = list(self._detections.get(ip, []))
-        raw = session.stream.get_frame()
-        if raw is not None:
-            infer_h, infer_w = raw.shape[:2]
-            limited = self._limit_size(raw)
-            display_h, display_w = limited.shape[:2]
+            evidence_wh = self._evidence_wh.get(ip)
+            has_evidence = bool(self._evidence_jpeg.get(ip))
+        # Prefer dimensions of the frame the detections were computed on
+        if evidence_wh and evidence_wh[0] > 0 and evidence_wh[1] > 0:
+            infer_w, infer_h = int(evidence_wh[0]), int(evidence_wh[1])
+            limited_h, limited_w = infer_h, infer_w
+            if self._max_width > 0 or self._max_height > 0:
+                # display size matches _limit_size of that evidence frame
+                max_w = self._max_width if self._max_width > 0 else infer_w
+                max_h = self._max_height if self._max_height > 0 else infer_h
+                if infer_w > max_w or infer_h > max_h:
+                    scale = min(max_w / infer_w, max_h / infer_h)
+                    limited_w = int(infer_w * scale)
+                    limited_h = int(infer_h * scale)
+            display_w, display_h = limited_w, limited_h
         else:
-            infer_w, infer_h = 0, 0
-            display_w, display_h = 0, 0
+            raw = session.stream.get_frame()
+            if raw is not None:
+                infer_h, infer_w = raw.shape[:2]
+                limited = self._limit_size(raw)
+                display_h, display_w = limited.shape[:2]
+            else:
+                infer_w, infer_h = 0, 0
+                display_w, display_h = 0, 0
         return {
             "detections": detections,
             "frame_width": int(infer_w),
             "frame_height": int(infer_h),
             "display_width": int(display_w),
             "display_height": int(display_h),
+            "has_evidence": has_evidence,
         }
+
+    def get_evidence_jpeg(self, ip: str) -> bytes | None:
+        """Raw infer-frame JPEG stored with the current detection buffer (same frame as YOLO)."""
+        with self._det_lock:
+            data = self._evidence_jpeg.get(ip)
+            return data if data else None
 
     def iter_mjpeg(self, key: str) -> Iterator[bytes]:
         boundary = b"--frame\r\n"
@@ -1659,22 +1644,38 @@ class LiveStreamManager:
         return small, w / float(dw), h / float(dh)
 
     def _want_native_frame(self, camera_key: str) -> bool:
-        """Keep native camera resolution (4K) when RTSP scaling is disabled."""
+        """
+        Native 4K live is opt-in only.
+
+        Default: always scale to ML_RTSP_SCALE_* (1280x720) — including ANPR —
+        so 24+ camera MJPEG does not flood CPU/RAM. NVR recording stays 4K.
+        """
+        if _force_rtsp_scale():
+            return False
+        if not _allow_native_rtsp():
+            return False
         w, h = _rtsp_scale_size()
-        if w <= 0 and h <= 0:
-            return True
+        if w > 0 or h > 0:
+            return False
         if self._plate_on_all:
             return True
         return "anpr" in self._purposes_for(camera_key)
 
     def _open_session_locked(self, key: str, url: str) -> None:
+        """Open via CameraSessionManager so every feature shares one decode."""
         keep_native = self._want_native_frame(key)
-        stream = create_camera_stream(url, key, keep_native=keep_native)
-        stream.thread.start()
-        self._sessions[key] = _CameraSession(key, stream, url)
+        from camera_session import get_camera_session_manager
+
+        ingest = get_camera_session_manager().ensure(key, url, keep_native=keep_native)
+        if ingest is None:
+            print(f"[live] Failed to open shared session: {key}")
+            return
+        self._sessions[key] = _CameraSession(key, ingest.stream, url)
         self._detections[key] = []
+        self._evidence_jpeg.pop(key, None)
+        self._evidence_wh.pop(key, None)
         tag = "native-4K" if keep_native else "scaled"
-        print(f"[live] Opening: {key} ({tag})")
+        print(f"[live] Bound shared session: {key} ({tag})")
 
     def _predict(self, model, frame: np.ndarray, *, min_conf: float | None = None, classes=None):
         use_half = self._device != "cpu"
@@ -1685,18 +1686,12 @@ class LiveStreamManager:
             "iou": self._iou,
             "imgsz": self._imgsz,
             "max_det": self._max_det,
+            "half": use_half,
             "verbose": False,
         }
         if classes is not None:
             kwargs["classes"] = list(classes)
-        # Serialize GPU predict across workers; OCR/post-process can overlap.
-        with self._predict_lock:
-            if use_half:
-                try:
-                    # Ultralytics expects quantize='fp16' (not True)
-                    return model.predict(frame, quantize="fp16", **kwargs)
-                except TypeError:
-                    return model.predict(frame, half=True, **kwargs)
+        with gpu_predict_lock():
             return model.predict(frame, **kwargs)
 
     def _purposes_for(self, camera_key: str) -> list[str]:
@@ -1924,10 +1919,30 @@ class LiveStreamManager:
         detections = assign_overlay_ids(detections)
         return detections
 
-    def _publish_results(self, camera_key: str, detections: list[dict[str, Any]]) -> None:
-        """Write Result Buffer (API snapshot + session cache)."""
+    def _publish_results(
+        self,
+        camera_key: str,
+        detections: list[dict[str, Any]],
+        frame: np.ndarray | None = None,
+    ) -> None:
+        """Write Result Buffer (API snapshot + same-frame evidence JPEG)."""
+        evidence: bytes | None = None
+        wh: tuple[int, int] = (0, 0)
+        if frame is not None and getattr(frame, "size", 0):
+            try:
+                h, w = frame.shape[:2]
+                wh = (int(w), int(h))
+                # Slightly higher quality than live preview — used for detection evidence.
+                q = max(75, min(92, int(self._jpeg_quality) + 10))
+                evidence = encode_jpeg(frame, q)
+            except Exception:
+                evidence = None
+                wh = (0, 0)
         with self._det_lock:
             self._detections[camera_key] = detections
+            if evidence:
+                self._evidence_jpeg[camera_key] = evidence
+                self._evidence_wh[camera_key] = wh
         session = self._sessions.get(camera_key)
         if session is not None:
             session.set_results(detections)
@@ -1956,8 +1971,17 @@ class LiveStreamManager:
         size = base + (1 if worker_id < rem else 0)
         return sessions[start : start + size]
 
+    def pause_for_offline(self) -> None:
+        """Stop live YOLO while an offline video job owns the GPU."""
+        self._offline_pause = True
+
+    def resume_after_offline(self) -> None:
+        self._offline_pause = False
+
     def _run_camera_inference(self, session: _CameraSession) -> None:
         """Infer newest frame only for one camera; write Result Buffer. Never encodes JPEG."""
+        if self._offline_pause:
+            return
         now = time.time()
         with session.infer_lock:
             if session.infer_busy:
@@ -1994,7 +2018,7 @@ class LiveStreamManager:
             for det in detections:
                 det["frame_width"] = int(fw)
                 det["frame_height"] = int(fh)
-            self._publish_results(session.ip, detections)
+            self._publish_results(session.ip, detections, frame=frame)
             with session.infer_lock:
                 session.infer_seq_done = seq
         except Exception as exc:

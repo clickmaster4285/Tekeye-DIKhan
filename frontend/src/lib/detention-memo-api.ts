@@ -19,6 +19,21 @@ function errorMessage(res: Response, body: unknown): string {
   return `Request failed (${res.status})`
 }
 
+export type LocatedCameraApi = {
+  id: number
+  code: string
+  name: string
+  zone: string
+  location: string
+  siteName?: string
+  nvrName?: string
+  nvrIp?: string
+  channel?: number
+  mlServerId?: number | null
+  mlServerName?: string
+  displayLabel?: string
+}
+
 export type DetentionMemoGoodsLineApi = {
   id: string
   qrCodeNumber: string
@@ -32,6 +47,12 @@ export type DetentionMemoGoodsLineApi = {
   itemNotes: string
   perishable: boolean
   images: string[]
+  /** Camera DB id where this item was located/detected. */
+  locatedCameraId?: number | null
+  locatedCamera?: LocatedCameraApi | null
+  detectedAt?: string
+  detectionEventId?: number | null
+  evidenceUrl?: string
 }
 
 export type DetentionMemoMediaAttachment = {
@@ -180,6 +201,9 @@ export function memoApiRecordToWritePayload(record: DetentionMemoApiRecord): Rec
       itemNotes: g.itemNotes,
       perishable: g.perishable,
       images: g.images ?? [],
+      locatedCameraId: g.locatedCameraId ?? null,
+      detectedAt: g.detectedAt ?? "",
+      detectionEventId: g.detectionEventId ?? null,
     })),
     seizingOfficerNotes: record.seizingOfficerNotes ?? "",
     examiningOfficerNotes: record.examiningOfficerNotes ?? "",

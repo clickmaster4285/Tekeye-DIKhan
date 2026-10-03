@@ -39,6 +39,7 @@ def _active_camera_ids() -> list[int]:
             is_active=True,
             nvr__is_active=True,
             nvr__site__is_active=True,
+            ml_server_id__isnull=False,
         )
         .order_by("id")
         .values_list("id", flat=True)
@@ -46,7 +47,7 @@ def _active_camera_ids() -> list[int]:
 
 
 def _poll_camera(camera_id: int) -> int:
-    from ml.client import MLServiceError, ml_live_detections, ml_service_enabled
+    from ml.client import MLServiceError, ml_live_detections_for_camera, ml_service_enabled
 
     from .live_ingest import ingest_camera_detections
 
@@ -56,12 +57,15 @@ def _poll_camera(camera_id: int) -> int:
     from cameras.models import Camera
 
     try:
-        camera = Camera.objects.select_related("nvr", "nvr__site").get(pk=camera_id)
+        camera = Camera.objects.select_related("nvr", "nvr__site", "ml_server").get(pk=camera_id)
     except Camera.DoesNotExist:
         return 0
 
+    if not camera.ml_server_id:
+        return 0
+
     try:
-        result = ml_live_detections(camera.stream_key, rtsp_url=camera.effective_stream_url())
+        result = ml_live_detections_for_camera(camera)
     except MLServiceError as exc:
         logger.debug("Journey live poll skipped camera %s: %s", camera_id, exc)
         return 0

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
-import { FileText, Loader2, ChevronLeft, ChevronRight } from "lucide-react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { FileText, Loader2, ChevronLeft, ChevronRight, Trash2 } from "lucide-react"
 import { useNavigate } from "react-router-dom"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -22,7 +22,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { fetchActivityLogs, type ActivityLogRecord } from "@/lib/logs-api"
+import {
+  clearAllActivityLogs,
+  deleteActivityLogs,
+  fetchActivityLogs,
+  type ActivityLogRecord,
+} from "@/lib/logs-api"
+import { getStoredUser } from "@/lib/auth"
+import { normalizeRole } from "@/lib/role-access"
 import { getActivityLogDetailPath } from "@/routes/config"
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
@@ -43,9 +50,15 @@ function cell(value: string | null | undefined) {
 
 export default function ActivityLogsPage() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const user = getStoredUser()
+  const isAdmin = normalizeRole(user?.role) === "ADMIN"
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [deleting, setDeleting] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [filters, setFilters] = useState({
     username: "",
     ipAddress: "",
@@ -115,6 +128,8 @@ export default function ActivityLogsPage() {
   const hasPrev = page > 1
   const from = count === 0 ? 0 : (page - 1) * pageSize + 1
   const to = Math.min(page * pageSize, count)
+  const allPageSelected =
+    pagedLogs.length > 0 && pagedLogs.every((log) => selectedIds.has(log.id))
 
   const openLogDetail = (log: ActivityLogRecord) => {
     const sp = new URLSearchParams()
@@ -123,11 +138,92 @@ export default function ActivityLogsPage() {
     navigate(qs ? `${getActivityLogDetailPath(log.id)}?${qs}` : getActivityLogDetailPath(log.id))
   }
 
+  const refreshLogs = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["activity-logs"] })
+    setSelectedIds(new Set())
+  }
+
+  const onDeleteSelected = async () => {
+    if (!isAdmin || selectedIds.size === 0) return
+    if (
+      !window.confirm(
+        `Delete ${selectedIds.size} selected log${selectedIds.size === 1 ? "" : "s"}? This cannot be undone.`
+      )
+    ) {
+      return
+    }
+    setDeleting(true)
+    setActionError(null)
+    setActionMsg(null)
+    try {
+      const result = await deleteActivityLogs([...selectedIds])
+      setActionMsg(`Deleted ${result.deleted} log${result.deleted === 1 ? "" : "s"}.`)
+      await refreshLogs()
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Delete failed")
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  const onClearAll = async () => {
+    if (!isAdmin) return
+    if (!window.confirm("Delete ALL activity logs permanently? This cannot be undone.")) {
+      return
+    }
+    setDeleting(true)
+    setActionError(null)
+    setActionMsg(null)
+    try {
+      const result = await clearAllActivityLogs()
+      setActionMsg(`Cleared ${result.deleted} log${result.deleted === 1 ? "" : "s"}.`)
+      await refreshLogs()
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Clear failed")
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <ModulePageLayout
       title="Logs"
       description="User activity logs — actions, IP, device, and time. Sorted by newest first."
       breadcrumbs={[{ label: "System configuration" }, { label: "Logs" }]}
+      actions={
+        isAdmin ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={deleting || selectedIds.size === 0}
+              onClick={() => void onDeleteSelected()}
+            >
+              {deleting ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="mr-1.5 h-4 w-4" />
+              )}
+              Delete selected{selectedIds.size ? ` (${selectedIds.size})` : ""}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={deleting || count === 0}
+              onClick={() => void onClearAll()}
+            >
+              {deleting ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="mr-1.5 h-4 w-4" />
+              )}
+              Clear all logs
+            </Button>
+          </div>
+        ) : undefined
+      }
     >
       <Card>
         <CardHeader>
@@ -136,10 +232,23 @@ export default function ActivityLogsPage() {
             Activity logs
           </CardTitle>
           <CardDescription>
-            All user activity recorded by the system. Requires authentication to view.
+            All user activity recorded by the system.
+            {isAdmin
+              ? " Super Admin can delete selected rows or clear all logs."
+              : " Only Super Admin can delete logs."}
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {actionError ? (
+            <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              {actionError}
+            </div>
+          ) : null}
+          {actionMsg ? (
+            <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+              {actionMsg}
+            </div>
+          ) : null}
           {!isLoading && !isError && (
             <div className="mb-4 rounded-md border p-3">
               <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
@@ -236,7 +345,25 @@ export default function ActivityLogsPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead className="w-[50px]">
-                        <span className="sr-only">Select</span>
+                        {isAdmin ? (
+                          <Checkbox
+                            checked={allPageSelected}
+                            onCheckedChange={(checked) => {
+                              setSelectedIds((prev) => {
+                                const next = new Set(prev)
+                                if (checked) {
+                                  for (const log of pagedLogs) next.add(log.id)
+                                } else {
+                                  for (const log of pagedLogs) next.delete(log.id)
+                                }
+                                return next
+                              })
+                            }}
+                            aria-label="Select all on page"
+                          />
+                        ) : (
+                          <span className="sr-only">Select</span>
+                        )}
                       </TableHead>
                       <TableHead className="uppercase text-xs font-semibold">User</TableHead>
                       <TableHead className="uppercase text-xs font-semibold">IP Address</TableHead>
@@ -273,12 +400,14 @@ export default function ActivityLogsPage() {
                           aria-label={`Open details for log ${log.id}`}
                         >
                           <TableCell className="w-[50px]">
-                            <Checkbox
-                              checked={selectedIds.has(log.id)}
-                              onCheckedChange={() => toggleSelect(log.id)}
-                              onClick={(e) => e.stopPropagation()}
-                              aria-label={`Select log ${log.id}`}
-                            />
+                            {isAdmin ? (
+                              <Checkbox
+                                checked={selectedIds.has(log.id)}
+                                onCheckedChange={() => toggleSelect(log.id)}
+                                onClick={(e) => e.stopPropagation()}
+                                aria-label={`Select log ${log.id}`}
+                              />
+                            ) : null}
                           </TableCell>
                           <TableCell>{cell(log.username)}</TableCell>
                           <TableCell className="text-muted-foreground">{cell(log.ip_address)}</TableCell>

@@ -2,6 +2,29 @@ import type { UploadValue } from "@/components/hr/add-staff/step2-documents-uplo
 import { staffMediaPathFromUrl } from "@/lib/staff-api"
 import { preloadHumanFaceModel, validateHumanFaceFile } from "@/lib/human-face-validation"
 
+/** Move the chosen profile photo to index 0 (backend mirrors first path as profile_image). */
+export function photosOrderedForProfile(
+  photos: UploadValue[],
+  profileIndex: number
+): UploadValue[] {
+  if (photos.length === 0) return photos
+  const idx = Math.min(Math.max(0, profileIndex), photos.length - 1)
+  if (idx === 0) return photos
+  const selected = photos[idx]
+  return [selected, ...photos.filter((_, i) => i !== idx)]
+}
+
+/** True when the profile slot is an existing server path (not a new File). */
+export function profileIsExistingPath(
+  photos: UploadValue[],
+  profileIndex: number
+): boolean {
+  if (photos.length === 0) return false
+  const idx = Math.min(Math.max(0, profileIndex), photos.length - 1)
+  const photo = photos[idx]
+  return !(photo.file instanceof File) && Boolean(photo.previewUrl)
+}
+
 /** First newly uploaded file — used as profile_image on save. */
 export function primaryStaffPhotoFile(photos: UploadValue[]): File | undefined {
   const match = photos.find((p) => p.file instanceof File)

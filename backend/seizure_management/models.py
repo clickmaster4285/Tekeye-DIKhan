@@ -184,6 +184,30 @@ class NoteSheetItem(models.Model):
     identification_ref = models.TextField(blank=True)  # ID / Chassis No.
     remarks = models.TextField(blank=True)  # Item Notes
     sort_order = models.PositiveIntegerField(default=0)
+
+    # Where this item was found/detected (Item → Camera → Live View).
+    located_camera = models.ForeignKey(
+        "cameras.Camera",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="note_sheet_goods",
+        help_text="Camera where this note-sheet item was located/detected.",
+    )
+    detected_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the item was detected or found at the located camera.",
+    )
+    detection_event = models.ForeignKey(
+        "cameras.DetectionEvent",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="note_sheet_goods_lines",
+        help_text="Optional AI DetectionEvent that sourced this goods line.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

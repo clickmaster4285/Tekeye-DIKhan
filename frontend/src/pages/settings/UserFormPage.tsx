@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowLeft, Eye, EyeOff, Loader2, Trash2 } from "lucide-react"
+import { ArrowLeft, Check, Copy, Eye, EyeOff, KeyRound, Loader2, Trash2 } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,6 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { CreateEmployeeLoginForm } from "@/components/hr/CreateEmployeeLoginForm"
 import { useToast } from "@/hooks/use-toast"
 import { getStoredToken } from "@/lib/api"
 import { getStoredUser } from "@/lib/auth"
@@ -33,6 +34,8 @@ import {
   isLocationAdmin,
   rolesAvailableToLocationAdmin,
 } from "@/lib/location-access"
+import { THIS_SITE_LOCATION } from "@/lib/locations"
+import { DEFAULT_STAFF_LOGIN_PASSWORD, usernameFromFullName } from "@/lib/staff-api"
 import { ROUTES, getUserDetailPath } from "@/routes/config"
 import {
   COLLECTORATE_OPTIONS,
@@ -70,7 +73,7 @@ type FormState = {
 
 const emptyForm: FormState = {
   username: "",
-  password: "",
+  password: DEFAULT_STAFF_LOGIN_PASSWORD,
   full_name: "",
   cnic: "",
   office_phone_1: "",
@@ -97,9 +100,9 @@ function displayPhone(phone: string | undefined): string {
 
 function resolveLocation(code: string | undefined, role: string): string {
   if (role === "ADMIN") return ""
-  if (!code) return "PESHAWAR"
+  if (!code) return THIS_SITE_LOCATION
   if (LOCATION_OPTIONS.some((o) => o.value === code)) return code
-  return "PESHAWAR"
+  return THIS_SITE_LOCATION
 }
 
 function resolveRole(role: string | undefined): string {
@@ -120,11 +123,16 @@ export default function UserFormPage() {
   const actorIsLocationAdmin = isLocationAdmin(actor?.role)
   const locationLocked = actorIsLocationAdmin
 
-  const [form, setForm] = useState<FormState>(emptyForm)
-  const [saving, setSaving] = useState(false)
-  const [showPassword, setShowPassword] = useState(false)
+  const [fromEmployee, setFromEmployee] = useState(true)
+  const [showPassword, setShowPassword] = useState(true)
+  const [passwordCopied, setPasswordCopied] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState<FormState>(() => ({
+    ...emptyForm,
+    location: actorIsLocationAdmin && actor?.location ? actor.location : "",
+  }))
 
   const availableRoles = useMemo(() => {
     if (actorIsLocationAdmin) {
@@ -362,9 +370,55 @@ export default function UserFormPage() {
         className="w-full space-y-6"
         onSubmit={(e) => {
           e.preventDefault()
+          if (!isEditing && fromEmployee) return
           void onSave()
         }}
       >
+        {!isEditing ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>Create login from employee</CardTitle>
+              <CardDescription>
+                Search the employee by name, then edit the name-based user ID and set a password. Role and location are asked only when they are missing on the employee record.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant={fromEmployee ? "default" : "outline"}
+                  onClick={() => setFromEmployee(true)}
+                >
+                  From employee
+                </Button>
+                <Button
+                  type="button"
+                  variant={!fromEmployee ? "default" : "outline"}
+                  onClick={() => setFromEmployee(false)}
+                >
+                  Standalone user
+                </Button>
+              </div>
+              {fromEmployee ? (
+                <CreateEmployeeLoginForm
+                  allowSelectEmployee
+                  onSuccess={async (loginId, staffName) => {
+                    toast({
+                      title: "Login created",
+                      description: `${staffName} can sign in as ${loginId}.`,
+                    })
+                    await queryClient.invalidateQueries({ queryKey: ["users"] })
+                    await queryClient.invalidateQueries({ queryKey: ["staff"] })
+                    navigate(ROUTES.USER_ROLE_MANAGEMENT)
+                  }}
+                />
+              ) : null}
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {isEditing || !fromEmployee ? (
+        <>
         <Card>
           <CardHeader>
             <CardTitle>Personal Information</CardTitle>
@@ -376,7 +430,16 @@ export default function UserFormPage() {
               <Input
                 id="user-name"
                 value={form.full_name}
-                onChange={(e) => set("full_name", e.target.value)}
+                onChange={(e) => {
+                  const name = e.target.value
+                  setForm((p) => ({
+                    ...p,
+                    full_name: name,
+                    ...(!isEditing
+                      ? { username: usernameFromFullName(name) }
+                      : {}),
+                  }))
+                }}
                 placeholder="Full name"
               />
             </div>
@@ -554,12 +617,20 @@ export default function UserFormPage() {
                 id="user-username"
                 value={form.username}
                 onChange={(e) => set("username", e.target.value)}
-                placeholder="e.g. john.doe"
+                placeholder="e.g. umar.farooq"
                 autoComplete="username"
+                className="font-mono text-sm"
               />
+              {!isEditing ? (
+                <p className="text-xs text-muted-foreground">
+                  Auto-filled from name with dots — e.g. Umar Farooq →{" "}
+                  <span className="font-mono">umar.farooq</span>
+                </p>
+              ) : null}
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="user-password">
+            <div className="space-y-2 sm:col-span-2 lg:col-span-2">
+              <Label htmlFor="user-password" className="flex items-center gap-1.5">
+                <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
                 {isEditing ? "New password" : "Password *"}
               </Label>
               <div className="relative">
@@ -568,20 +639,62 @@ export default function UserFormPage() {
                   type={showPassword ? "text" : "password"}
                   value={form.password}
                   onChange={(e) => set("password", e.target.value)}
-                  placeholder={isEditing ? "Leave blank to keep current" : "At least 6 characters"}
+                  placeholder={
+                    isEditing
+                      ? "Leave blank to keep current"
+                      : DEFAULT_STAFF_LOGIN_PASSWORD
+                  }
                   autoComplete="new-password"
-                  className="pr-10"
+                  className="h-11 pr-20 font-mono text-sm tracking-widest"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:bg-muted"
-                  tabIndex={-1}
-                  aria-label={showPassword ? "Hide password" : "Show password"}
-                >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
+                <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    tabIndex={-1}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                  {form.password ? (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(form.password)
+                          setPasswordCopied(true)
+                          window.setTimeout(() => setPasswordCopied(false), 1500)
+                        } catch {
+                          /* ignore */
+                        }
+                      }}
+                      className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      tabIndex={-1}
+                      aria-label="Copy password"
+                    >
+                      {passwordCopied ? (
+                        <Check className="h-4 w-4 text-emerald-600" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </button>
+                  ) : null}
+                </div>
               </div>
+              {!isEditing ? (
+                <p className="text-xs text-muted-foreground">
+                  Default temporary password is{" "}
+                  <span className="font-mono font-medium text-foreground">
+                    {DEFAULT_STAFF_LOGIN_PASSWORD}
+                  </span>{" "}
+                  — shown so you can share it with the user.
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Leave blank to keep the current password.
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <Label>Role</Label>
@@ -592,7 +705,7 @@ export default function UserFormPage() {
                   if (v === "ADMIN") {
                     set("location", "")
                   } else if (!form.location) {
-                    set("location", actor?.location || "PESHAWAR")
+                    set("location", actor?.location || THIS_SITE_LOCATION)
                   }
                 }}
               >
@@ -691,6 +804,8 @@ export default function UserFormPage() {
           </Button>
           </div>
         </div>
+        </>
+        ) : null}
       </form>
 
       {isEditing && user && (

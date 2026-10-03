@@ -74,6 +74,7 @@ const visitPurposeOptions = [
 
 const departmentOptions = [
   { value: "enforcement", label: "Enforcement", color: "bg-blue-100 text-blue-800" },
+  { value: "appraisement", label: "Appraisement", color: "bg-indigo-100 text-indigo-800" },
   { value: "hr", label: "Human Resource", color: "bg-green-100 text-green-800" },
   { value: "it", label: "IT Department", color: "bg-purple-100 text-purple-800" },
   { value: "operations", label: "Operations", color: "bg-orange-100 text-orange-800" },

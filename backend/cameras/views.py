@@ -17,10 +17,9 @@ from rest_framework.views import APIView
 
 from ml.client import (
     MLServiceError,
+    ml_assigned_mjpeg_public_url,
     ml_detect_image,
-    ml_live_detections,
-    ml_live_mjpeg_public_url,
-    ml_live_mjpeg_raw_public_url,
+    ml_live_detections_for_camera,
     ml_service_enabled,
 )
 
@@ -41,6 +40,7 @@ from .serializers import (
     purpose_options,
 )
 from .stream_utils import capture_jpeg_frame, ffmpeg_available, generate_mjpeg_frames
+from users.permissions import IsGlobalAdmin, is_global_admin
 
 
 def _token_key_from_request(request) -> str | None:
@@ -133,9 +133,16 @@ class CameraViewSet(viewsets.ModelViewSet):
     serializer_class = CameraSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ["nvr", "nvr__site", "location", "purpose", "status", "is_active"]
+    filterset_fields = ["nvr", "nvr__site", "location", "purpose", "status", "is_active", "ml_server"]
     search_fields = ["name", "code", "zone", "nvr__name", "nvr__site__code"]
     ordering_fields = ["name", "channel", "location", "created_at"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        allocated = str(self.request.query_params.get("allocated", "")).strip().lower()
+        if allocated in ("1", "true", "yes"):
+            qs = qs.filter(ml_server_id__isnull=False)
+        return qs
 
     def get_serializer_class(self):
         if self.action in ("create", "update", "partial_update"):
@@ -331,6 +338,323 @@ class CameraViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="detection-events/bulk-delete",
+        permission_classes=[IsAuthenticated, IsGlobalAdmin],
+    )
+    def detection_events_bulk_delete(self, request):
+        """Super Admin only — delete selected detection event IDs."""
+        raw_ids = request.data.get("ids") if isinstance(request.data, dict) else None
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return Response(
+                {"detail": "ids must be a non-empty list of detection event IDs."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ids: list[int] = []
+        for item in raw_ids:
+            try:
+                ids.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        if not ids:
+            return Response(
+                {"detail": "No valid detection event IDs provided."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        deleted, _ = DetectionEvent.objects.filter(id__in=ids).delete()
+        return Response({"ok": True, "deleted": deleted})
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="detection-events/clear",
+        permission_classes=[IsAuthenticated, IsGlobalAdmin],
+    )
+    def detection_events_clear(self, request):
+        """Super Admin only — clear all detection events (optional filters)."""
+        if not is_global_admin(request.user):
+            return Response(
+                {"detail": "Only Super Admin can clear detection events."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        qs = DetectionEvent.objects.all()
+        data = request.data if isinstance(request.data, dict) else {}
+        camera_id = data.get("camera") or request.query_params.get("camera")
+        if camera_id:
+            try:
+                qs = qs.filter(camera_id=int(camera_id))
+            except (TypeError, ValueError):
+                pass
+        class_name = (data.get("class_name") or request.query_params.get("class_name") or "").strip()
+        if class_name:
+            qs = qs.filter(class_name__iexact=class_name)
+        alerts_only = data.get("is_alert")
+        if alerts_only is True or str(alerts_only).lower() in ("1", "true", "yes"):
+            qs = qs.filter(is_alert=True)
+        deleted, _ = qs.delete()
+        return Response({"ok": True, "deleted": deleted})
+
+    @action(
+        detail=False,
+        methods=["patch", "put", "post", "delete"],
+        url_path=r"detection-events/(?P<event_id>[0-9]+)",
+        permission_classes=[IsAuthenticated, IsGlobalAdmin],
+    )
+    def detection_event_detail(self, request, event_id=None):
+        """Super Admin only — update or delete a single detection event (incl. snapshot)."""
+        try:
+            event = DetectionEvent.objects.select_related(
+                "camera", "camera__nvr", "camera__nvr__site"
+            ).get(pk=int(event_id))
+        except (DetectionEvent.DoesNotExist, TypeError, ValueError):
+            return Response({"detail": "Detection event not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.method == "DELETE":
+            event.delete()
+            return Response({"ok": True, "deleted": 1})
+
+        data = request.data
+        files = request.FILES
+        changed = False
+
+        def _has(key: str) -> bool:
+            return key in data
+
+        def _get(key: str):
+            return data.get(key)
+
+        if _has("camera"):
+            raw_cam = _get("camera")
+            try:
+                cam_id = int(raw_cam)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "camera must be a valid camera id."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                event.camera = Camera.objects.select_related("nvr", "nvr__site").get(pk=cam_id)
+            except Camera.DoesNotExist:
+                return Response({"detail": "Camera not found."}, status=status.HTTP_400_BAD_REQUEST)
+            changed = True
+
+        if _has("created_at"):
+            raw_ts = _get("created_at")
+            if isinstance(raw_ts, str):
+                raw_ts = raw_ts.strip()
+            if not raw_ts:
+                return Response(
+                    {"detail": "created_at cannot be empty."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            parsed = parse_datetime(str(raw_ts).replace("Z", "+00:00"))
+            if parsed is None:
+                from datetime import datetime as _dt
+
+                for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                    try:
+                        parsed = _dt.strptime(str(raw_ts), fmt)
+                        break
+                    except ValueError:
+                        continue
+            if parsed is None:
+                return Response(
+                    {"detail": "created_at must be a valid datetime."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if timezone.is_naive(parsed):
+                parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
+            event.created_at = parsed
+            changed = True
+
+        for key in (
+            "class_name",
+            "label",
+            "employee_name",
+            "personal_number",
+            "person_qr",
+            "track_event",
+        ):
+            if not _has(key):
+                continue
+            value = _get(key)
+            setattr(event, key, "" if value is None else str(value).strip())
+            changed = True
+
+        if _has("confidence"):
+            try:
+                value = float(_get("confidence"))
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "confidence must be a number."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if value > 1:
+                value = value / 100.0
+            event.confidence = max(0.0, min(1.0, value))
+            changed = True
+
+        if _has("is_alert"):
+            value = _get("is_alert")
+            if isinstance(value, str):
+                value = value.strip().lower() in ("1", "true", "yes", "on")
+            else:
+                value = bool(value)
+            event.is_alert = value
+            changed = True
+
+        if _has("clip_status"):
+            value = str(_get("clip_status") or "").strip().lower()
+            valid = {c.value for c in ClipStatus}
+            if value and value not in valid:
+                return Response(
+                    {"detail": f"clip_status must be one of: {', '.join(sorted(valid))}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if value:
+                event.clip_status = value
+                changed = True
+
+        if _has("local_track_id"):
+            raw = _get("local_track_id")
+            if raw in (None, "", "null"):
+                event.local_track_id = None
+            else:
+                try:
+                    event.local_track_id = int(raw)
+                except (TypeError, ValueError):
+                    return Response(
+                        {"detail": "local_track_id must be an integer."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            changed = True
+
+        if _has("person_identity_id"):
+            raw = _get("person_identity_id")
+            if raw in (None, "", "null"):
+                event.person_identity_id = None
+            else:
+                try:
+                    event.person_identity_id = int(raw)
+                except (TypeError, ValueError):
+                    return Response(
+                        {"detail": "person_identity_id must be an integer."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            changed = True
+
+        if _has("bbox"):
+            import json
+
+            raw = _get("bbox")
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except json.JSONDecodeError:
+                    return Response(
+                        {"detail": "bbox must be a JSON array of 4 numbers."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            if raw is None:
+                event.bbox = []
+            elif not isinstance(raw, (list, tuple)) or len(raw) != 4:
+                return Response(
+                    {"detail": "bbox must be a list of 4 numbers [x1,y1,x2,y2]."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            else:
+                try:
+                    event.bbox = [float(v) for v in raw]
+                except (TypeError, ValueError):
+                    return Response(
+                        {"detail": "bbox values must be numbers."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            changed = True
+
+        for dim in ("infer_frame_width", "infer_frame_height"):
+            if not _has(dim):
+                continue
+            raw = _get(dim)
+            if raw in (None, "", "null"):
+                setattr(event, dim, None)
+            else:
+                try:
+                    setattr(event, dim, int(raw))
+                except (TypeError, ValueError):
+                    return Response(
+                        {"detail": f"{dim} must be an integer."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            changed = True
+
+        clear_clip = _get("clear_clip")
+        if isinstance(clear_clip, str):
+            clear_clip = clear_clip.strip().lower() in ("1", "true", "yes", "on")
+        elif clear_clip is not None:
+            clear_clip = bool(clear_clip)
+        else:
+            clear_clip = False
+
+        clip_file = files.get("clip") or files.get("image") or files.get("snapshot")
+        if clip_file is not None:
+            if event.clip:
+                event.clip.delete(save=False)
+            event.clip = clip_file
+            event.clip_status = ClipStatus.READY
+            changed = True
+        elif clear_clip:
+            if event.clip:
+                event.clip.delete(save=False)
+            event.clip = None
+            event.clip_status = ClipStatus.SKIPPED
+            changed = True
+
+        clear_video = _get("clear_video")
+        if isinstance(clear_video, str):
+            clear_video = clear_video.strip().lower() in ("1", "true", "yes", "on")
+        elif clear_video is not None:
+            clear_video = bool(clear_video)
+        else:
+            clear_video = False
+
+        video_file = files.get("video") or files.get("alert_video")
+        if video_file is not None:
+            name = (getattr(video_file, "name", "") or "").lower()
+            content_type = (getattr(video_file, "content_type", "") or "").lower()
+            allowed_ext = (".mp4", ".webm", ".mov", ".mkv", ".avi")
+            if not any(name.endswith(ext) for ext in allowed_ext) and not content_type.startswith(
+                "video/"
+            ):
+                return Response(
+                    {"detail": "video must be a video file (mp4, webm, mov, mkv, avi)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if event.video:
+                event.video.delete(save=False)
+            event.video = video_file
+            changed = True
+        elif clear_video:
+            if event.video:
+                event.video.delete(save=False)
+            event.video = None
+            changed = True
+
+        if not changed:
+            return Response(
+                {"detail": "No editable fields provided."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        event.save()
+        event = DetectionEvent.objects.select_related(
+            "camera", "camera__nvr", "camera__nvr__site"
+        ).get(pk=event.pk)
+        return Response(
+            DetectionEventSerializer(event, context={"request": request}).data
+        )
+
     @action(detail=False, methods=["get"], url_path="detection-summary")
     def detection_summary(self, request):
         today = timezone.localdate()
@@ -442,16 +766,38 @@ class CameraViewSet(viewsets.ModelViewSet):
                 {"detail": "ML service is not running. Restart the backend to auto-start models."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+        if not camera.ml_server_id:
+            return Response(
+                {"detail": "Camera is not assigned to an ML server. Assign it in Camera Distribution first."},
+                status=status.HTTP_409_CONFLICT,
+            )
         try:
-            stream_url = camera.effective_stream_url()
-            result = ml_live_detections(
-                camera.stream_key,
-                rtsp_url=stream_url,
+            result = ml_live_detections_for_camera(
+                camera,
                 purpose=camera.purpose,
                 purposes=camera.purpose_list(),
             )
         except MLServiceError as exc:
-            return Response({"detail": str(exc)}, status=exc.status_code or status.HTTP_503_SERVICE_UNAVAILABLE)
+            if exc.status_code == status.HTTP_409_CONFLICT:
+                # Camera is allocated in Django but the ML node's in-memory
+                # registry lost it (e.g. ML process restarted). Re-push this
+                # camera and retry once instead of surfacing a stale 409.
+                try:
+                    from ml.camera_sync import route_camera_to_ml_server
+
+                    route_camera_to_ml_server(camera)
+                    result = ml_live_detections_for_camera(
+                        camera,
+                        purpose=camera.purpose,
+                        purposes=camera.purpose_list(),
+                    )
+                except MLServiceError as retry_exc:
+                    return Response(
+                        {"detail": str(retry_exc)},
+                        status=retry_exc.status_code or status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
+            else:
+                return Response({"detail": str(exc)}, status=exc.status_code or status.HTTP_503_SERVICE_UNAVAILABLE)
 
         detections = result.get("detections") or []
         detections = filter_detections_for_camera(camera, detections)
@@ -557,38 +903,41 @@ class CameraStreamListView(APIView):
             return Response({"detail": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
 
         cameras = []
-        for cam in Camera.objects.filter(is_active=True).select_related("nvr", "nvr__site").order_by(
-            "nvr__site__name", "nvr__name", "channel"
-        ):
+        # Dashboard / live walls: allocated cameras only (idle until assigned in Distribution)
+        allocated_only = str(request.query_params.get("allocated", "1")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        qs = Camera.objects.filter(is_active=True).select_related("nvr", "nvr__site", "ml_server")
+        if allocated_only:
+            qs = qs.filter(ml_server_id__isnull=False)
+        for cam in qs.order_by("nvr__site__name", "nvr__name", "channel"):
             cameras.append(
                 {
                     "id": cam.pk,
                     "code": cam.code,
+                    "name": cam.name,
                     "label": cam.name,
+                    "display_label": cam.display_label,
                     "location": cam.location or cam.nvr.site.code,
                     "site_label": cam.nvr.site.name,
                     "site_code": cam.nvr.site.code,
                     "nvr_name": cam.nvr.name,
                     "channel": cam.channel,
+                    "channel_label": f"Ch {cam.channel}",
                     "purpose": cam.purpose,
                     "purposes": cam.purpose_list(),
                     "purpose_label": cam.purpose_label,
                     "ml_enabled": cam.ml_enabled,
                     "is_rtsp": cam.is_rtsp,
                     "ml_stream_key": cam.stream_key,
-                    "ml_live_stream_url": ml_live_mjpeg_public_url(
-                        cam.stream_key,
-                        rtsp_url=cam.effective_stream_url(),
-                        purpose=cam.purpose,
-                        purposes=cam.purpose_list(),
-                    ),
-                    "raw_stream_url": ml_live_mjpeg_raw_public_url(
-                        cam.stream_key,
-                        rtsp_url=cam.effective_stream_url(),
-                        purpose=cam.purpose,
-                        purposes=cam.purpose_list(),
-                    ),
+                    "ml_server_id": cam.ml_server_id,
+                    "ml_live_stream_url": ml_assigned_mjpeg_public_url(cam, kind="live"),
+                    "raw_stream_url": ml_assigned_mjpeg_public_url(cam, kind="raw"),
                     "rtsp_url": cam.effective_stream_url(),
+                    "status": cam.status,
+                    "is_active": cam.is_active,
                 }
             )
 

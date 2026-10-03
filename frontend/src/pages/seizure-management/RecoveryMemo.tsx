@@ -136,15 +136,16 @@ export default function RecoveryMemoPage() {
             </div>
           </div>
 
-          <Table className="table-fixed w-full" containerClassName="overflow-x-hidden">
+          <div className="w-full max-w-full overflow-x-auto rounded-lg border">
+          <Table className="min-w-[900px]">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[18%]">Case No</TableHead>
-                <TableHead className="w-[18%]">Category</TableHead>
-                <TableHead className="w-[16%]">Recovery Date</TableHead>
-                <TableHead className="w-[22%]">Officer</TableHead>
-                <TableHead className="w-[16%]">Approval</TableHead>
-                <TableHead className="w-[7.5rem] text-right">Actions</TableHead>
+                <TableHead className="min-w-[8rem]">Case No</TableHead>
+                <TableHead className="min-w-[8rem]">Category</TableHead>
+                <TableHead className="min-w-[8rem]">Recovery Date</TableHead>
+                <TableHead className="min-w-[10rem]">Officer</TableHead>
+                <TableHead className="min-w-[7rem]">Approval</TableHead>
+                <TableHead className="min-w-[7.5rem] text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -184,6 +185,7 @@ export default function RecoveryMemoPage() {
               )}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
       <PdfExportHost hostRef={pdf.hostRef}>

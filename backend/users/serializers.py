@@ -46,6 +46,10 @@ class LoginSerializer(serializers.Serializer):
 class LoginResponseSerializer(serializers.Serializer):
     token = serializers.CharField(read_only=True)
     user = serializers.SerializerMethodField()
+    mobile_session = serializers.SerializerMethodField()
+
+    def get_mobile_session(self, obj):
+        return obj.get("mobile_session")
 
     def get_user(self, obj):
         user = obj["user"]
@@ -71,7 +75,22 @@ class LoginResponseSerializer(serializers.Serializer):
             "we_boc_role": user.we_boc_role or "",
             "is_active": user.is_active,
             "allowed_modules": list(user.allowed_modules or []) if user.role != "ADMIN" else [],
+            "profile_image": user_profile_image_url(user),
         }
+
+
+def user_profile_image_url(user) -> str | None:
+    """Public /media path for the linked staff photo, if any."""
+    try:
+        staff = getattr(user, "staff_profile", None)
+        if staff is None or not getattr(staff, "profile_image", None):
+            return None
+        name = str(getattr(staff.profile_image, "name", "") or "").strip()
+        if not name:
+            return None
+        return f"/media/{name.lstrip('/')}"
+    except Exception:
+        return None
 
 
 # -----------------------------
@@ -98,6 +117,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
     date_joined = serializers.DateTimeField(read_only=True)
     last_login = serializers.DateTimeField(read_only=True)
     can_delete = serializers.SerializerMethodField()
+    profile_image = serializers.SerializerMethodField()
     allowed_modules = serializers.ListField(
         child=serializers.CharField(max_length=120),
         required=False,
@@ -119,6 +139,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
             "last_login",
             "can_delete",
             "allowed_modules",
+            "profile_image",
             *USER_PROFILE_FIELDS,
         ]
         extra_kwargs = {
@@ -135,6 +156,9 @@ class UserCreateSerializer(serializers.ModelSerializer):
         if obj.role == LOCATION_ADMIN_ROLE:
             return bool(actor and is_global_admin(actor))
         return True
+
+    def get_profile_image(self, obj):
+        return user_profile_image_url(obj)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -298,6 +322,14 @@ class StaffSerializer(serializers.ModelSerializer):
     user_details = serializers.SerializerMethodField(read_only=True)
     national_id = serializers.SerializerMethodField(read_only=True)
     staff_photo_urls = serializers.SerializerMethodField(read_only=True)
+    mobile_app_installed = serializers.SerializerMethodField(read_only=True)
+    mobile_logged_in = serializers.SerializerMethodField(read_only=True)
+
+    def get_mobile_app_installed(self, obj):
+        return _staff_mobile_flag(obj, "mobile_app_installed")
+
+    def get_mobile_logged_in(self, obj):
+        return _staff_mobile_flag(obj, "mobile_logged_in", logged_in=True)
 
     class Meta:
         model = Staff
@@ -335,13 +367,15 @@ class StaffSerializer(serializers.ModelSerializer):
 # Accepts full HR template payload; maps first_name+last_name -> full_name, national_id -> cnic, etc.
 # -----------------------------
 class StaffCreateSerializer(serializers.ModelSerializer):
-    first_name = serializers.CharField(required=False, write_only=True)
-    last_name = serializers.CharField(required=False, write_only=True)
-    national_id = serializers.CharField(required=False, write_only=True)
-    street_address = serializers.CharField(required=False, write_only=True)
-    emergency_contact_phone = serializers.CharField(required=False, write_only=True)
-    emergency_contact_name = serializers.CharField(required=False, write_only=True)
-    date_of_joining = serializers.DateField(required=False, write_only=True)
+    """Create staff. Only full_name is required; address and all other fields are optional."""
+
+    first_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    last_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    national_id = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    street_address = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    emergency_contact_phone = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    emergency_contact_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    date_of_joining = serializers.DateField(required=False, allow_null=True, write_only=True)
 
     class Meta:
         model = Staff
@@ -377,13 +411,20 @@ class StaffCreateSerializer(serializers.ModelSerializer):
         read_only_fields = ["created_at"]
         extra_kwargs = {
             "user": {"read_only": True},
-            "full_name": {"required": False},
-            "cnic": {"required": False},
-            "address": {"required": False},
-            "emergency_contact": {"required": False},
-            "joining_date": {"required": False},
-            "department": {"required": False},
-            "designation": {"required": False},
+            "full_name": {"required": False, "allow_blank": True},
+            "cnic": {"required": False, "allow_null": True, "allow_blank": True},
+            "address": {"required": False, "allow_null": True, "allow_blank": True},
+            "city": {"required": False, "allow_null": True, "allow_blank": True},
+            "state": {"required": False, "allow_null": True, "allow_blank": True},
+            "country": {"required": False, "allow_null": True, "allow_blank": True},
+            "postal_code": {"required": False, "allow_null": True, "allow_blank": True},
+            "emergency_contact": {"required": False, "allow_null": True, "allow_blank": True},
+            "joining_date": {"required": False, "allow_null": True},
+            "date_of_birth": {"required": False, "allow_null": True},
+            "department": {"required": False, "allow_null": True, "allow_blank": True},
+            "designation": {"required": False, "allow_null": True, "allow_blank": True},
+            "email": {"required": False, "allow_null": True, "allow_blank": True},
+            "phone_primary": {"required": False, "allow_null": True, "allow_blank": True},
         }
 
     def to_representation(self, instance):
@@ -399,28 +440,26 @@ class StaffCreateSerializer(serializers.ModelSerializer):
     def validate(self, data):
         initial = self.initial_data
 
+        # Only employee name is compulsory.
         full_name = data.get("full_name")
         if not full_name:
             first = (initial.get("first_name") or data.get("first_name") or "").strip()
             last = (initial.get("last_name") or data.get("last_name") or "").strip()
             full_name = f"{first} {last}".strip() or initial.get("full_name")
-        if not full_name:
+        if not full_name or not str(full_name).strip():
             raise serializers.ValidationError(
-                {"first_name": "Either full_name or first_name and last_name are required."}
+                {"full_name": "Employee name is required."}
             )
-        data["full_name"] = full_name[:150]
+        data["full_name"] = str(full_name).strip()[:150]
         data["first_name"] = (initial.get("first_name") or data.get("first_name") or "").strip()[:80] or None
         data["last_name"] = (initial.get("last_name") or data.get("last_name") or "").strip()[:80] or None
 
-        address = data.get("address") or initial.get("street_address")
+        # Address is optional — never require street_address / city / state / country.
+        address = data.get("address") or initial.get("street_address") or initial.get("address")
         if not address:
             parts = [initial.get("city"), initial.get("state"), initial.get("country"), initial.get("postal_code")]
-            address = ", ".join(str(p).strip() for p in parts if p) or initial.get("address")
-        if not address:
-            raise serializers.ValidationError(
-                {"street_address": "Either address or street_address (or city/state/country) is required."}
-            )
-        data["address"] = address
+            address = ", ".join(str(p).strip() for p in parts if p)
+        data["address"] = (str(address).strip()[:5000] if address else None) or None
 
         ec = (
             data.get("emergency_contact")
@@ -428,31 +467,30 @@ class StaffCreateSerializer(serializers.ModelSerializer):
             or initial.get("emergency_contact_name") or data.get("emergency_contact_name")
             or initial.get("emergency_contact")
         )
-        if not ec:
-            raise serializers.ValidationError(
-                {"emergency_contact_phone": "Either emergency_contact or emergency_contact_phone/emergency_contact_name is required."}
-            )
-        data["emergency_contact"] = str(ec)[:100]
+        data["emergency_contact"] = str(ec).strip()[:100] if ec else None
 
         national_id_val = initial.get("national_id") or data.get("national_id") or data.get("cnic")
-        if not national_id_val:
-            raise serializers.ValidationError({"national_id": "National ID / CNIC is required."})
-        cnic_clean = "".join(c for c in str(national_id_val) if c.isdigit())[:15]
-        data["cnic"] = cnic_clean or str(national_id_val)[:15]
-        if Staff.objects.filter(cnic=data["cnic"]).exists():
-            raise serializers.ValidationError({"national_id": "Staff with this National ID already exists."})
-        data["national_id"] = str(national_id_val)[:30]
+        if national_id_val and str(national_id_val).strip():
+            cnic_clean = "".join(c for c in str(national_id_val) if c.isdigit())[:15]
+            data["cnic"] = cnic_clean or str(national_id_val).strip()[:15]
+            qs = Staff.objects.filter(cnic=data["cnic"])
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError({"national_id": "Staff with this National ID already exists."})
+            data["national_id"] = str(national_id_val).strip()[:30]
+        else:
+            data["cnic"] = None
+            data["national_id"] = None
 
         doj = initial.get("date_of_joining") or data.get("date_of_joining")
         if doj:
             data["joining_date"] = doj
-        if not data.get("joining_date"):
-            data["joining_date"] = timezone.now().date()
+        elif not data.get("joining_date"):
+            data["joining_date"] = None
 
-        if not data.get("department"):
-            raise serializers.ValidationError({"department": "Department is required."})
-        if not data.get("designation"):
-            raise serializers.ValidationError({"designation": "Designation is required."})
+        data["department"] = (str(data.get("department") or initial.get("department") or "").strip()[:100] or None)
+        data["designation"] = (str(data.get("designation") or initial.get("designation") or "").strip()[:100] or None)
 
         data.setdefault("record_source", Staff.RECORD_SOURCE_DATABASE)
 
@@ -491,10 +529,27 @@ class StaffUpdateSerializer(serializers.ModelSerializer):
 # -----------------------------
 # Staff List Serializer (Lightweight – only fields that exist in original schema so list works before/after migration)
 # -----------------------------
+def _staff_mobile_flag(obj, attr: str, *, logged_in: bool = False) -> bool:
+    if hasattr(obj, attr):
+        return bool(getattr(obj, attr))
+    user_id = getattr(obj, "user_id", None)
+    if not user_id:
+        return False
+    from logs.models import MobileAccessSession, MobileDevice
+
+    if logged_in:
+        return MobileAccessSession.objects.filter(
+            user_id=user_id, status=MobileAccessSession.STATUS_ACTIVE
+        ).exists()
+    return MobileDevice.objects.filter(user_id=user_id, is_revoked=False, is_active=True).exists()
+
+
 class StaffListSerializer(serializers.ModelSerializer):
     national_id = serializers.SerializerMethodField(read_only=True)
     face_enrolled = serializers.SerializerMethodField(read_only=True)
     staff_photo_urls = serializers.SerializerMethodField(read_only=True)
+    mobile_app_installed = serializers.SerializerMethodField(read_only=True)
+    mobile_logged_in = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Staff
@@ -526,7 +581,15 @@ class StaffListSerializer(serializers.ModelSerializer):
             "employment_type",
             "job_status",
             "record_source",
+            "mobile_app_installed",
+            "mobile_logged_in",
         ]
+
+    def get_mobile_app_installed(self, obj):
+        return _staff_mobile_flag(obj, "mobile_app_installed")
+
+    def get_mobile_logged_in(self, obj):
+        return _staff_mobile_flag(obj, "mobile_logged_in", logged_in=True)
 
     def get_national_id(self, obj):
         # Prefer model field if present (after migration), else cnic

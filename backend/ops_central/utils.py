@@ -47,8 +47,25 @@ def ensure_http_url(value: str | None, *, default_port: int | None = 8000) -> st
 
 
 def ensure_ml_url(value: str | None) -> str:
-    """Normalize ML service URL; default port 8100 when omitted."""
-    return ensure_http_url(value, default_port=8100)
+    """Normalize ML service URL; default port 8100 when omitted.
+
+    If the user pasted a Django URL (:8000), remap to ML (:8100).
+    """
+    normalized = ensure_http_url(value, default_port=8100)
+    if not normalized:
+        return ""
+    parsed = urlparse(normalized)
+    if parsed.port == 8000 and parsed.hostname:
+        netloc = parsed.hostname
+        if parsed.username:
+            userinfo = parsed.username
+            if parsed.password:
+                userinfo += f":{parsed.password}"
+            netloc = f"{userinfo}@{netloc}"
+        netloc = f"{netloc}:8100"
+        return urlunparse((parsed.scheme or "http", netloc, "", "", "", "")).rstrip("/")
+    return normalized
+
 
 
 def token_for_user(user) -> str:

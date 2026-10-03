@@ -25,7 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { DetectionSnapshotThumb } from "@/components/cameras/detection-snapshot-thumb"
+import { DetectionSnapshotThumb, detectionDisplayLabel } from "@/components/cameras/detection-snapshot-thumb"
 import {
   fetchDetectionEventsPage,
   fetchCameras,
@@ -37,8 +37,8 @@ import {
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
 const DEFAULT_PAGE_SIZE = 25
 
-/** Prefer Peshawar site when present; otherwise use first configured site. */
-const SITE_CODE = "PESHAWAR"
+/** This install serves the DI Khan site. */
+const SITE_CODE = "DI_KHAN"
 
 /** Allowed vehicle classes for this panel (must match backend vehicle_only). */
 const VEHICLE_CLASSES = new Set([
@@ -80,8 +80,10 @@ function resolveSiteCode(sites: SiteRecord[]): string {
   const match = sites.find(
     (s) =>
       s.code?.toUpperCase() === SITE_CODE ||
-      s.name?.toLowerCase().includes("peshawar") ||
-      s.code?.toLowerCase().includes("peshawar")
+      s.name?.toLowerCase().includes("di khan") ||
+      s.name?.toLowerCase().includes("dera ismail") ||
+      s.code?.toLowerCase().includes("di_khan") ||
+      s.code?.toLowerCase().includes("dikhan")
   )
   return match?.code || sites[0]?.code || SITE_CODE
 }
@@ -200,7 +202,6 @@ export default function NumberPlateDetectionPage() {
     queryKey: ["vehicle-detection-events", queryParams],
     queryFn: () => fetchDetectionEventsPage(queryParams),
     // Only auto-poll live page 1 so deeper pages stay frozen.
-    refetchInterval: page === 1 ? 12_000 : false,
     refetchOnWindowFocus: false,
   })
 
@@ -498,18 +499,22 @@ export default function NumberPlateDetectionPage() {
                           {formatDateTime(row.created_at)}
                         </TableCell>
                         <TableCell>
-                          <div className="font-medium">{row.camera_code}</div>
-                          <div className="text-xs text-muted-foreground truncate max-w-[160px]">
-                            {row.name ?? row.camera_name ?? row.camera_code}
+                          <div className="font-medium">
+                            {row.name ?? row.camera_name ?? row.camera_code ?? "—"}
                           </div>
+                          {row.camera_code ? (
+                            <div className="text-xs text-muted-foreground truncate max-w-[160px]">
+                              {row.camera_code}
+                            </div>
+                          ) : null}
                         </TableCell>
                         <TableCell>
                           <Badge variant="outline" className="font-normal capitalize">
                             {row.class_name}
                           </Badge>
                         </TableCell>
-                        <TableCell className="max-w-[180px] truncate" title={row.label}>
-                          {row.label}
+                        <TableCell className="max-w-[180px] truncate" title={detectionDisplayLabel(row)}>
+                          {detectionDisplayLabel(row)}
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">

@@ -92,6 +92,8 @@ export default function TimeSlotBookingPage() {
                         <SelectValue placeholder="Select a department" />
                       </SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="appraisement">Appraisement</SelectItem>
+                        <SelectItem value="enforcement">Enforcement</SelectItem>
                         <SelectItem value="hr">Human Resources</SelectItem>
                         <SelectItem value="it">IT Department</SelectItem>
                         <SelectItem value="ops">Operations</SelectItem>

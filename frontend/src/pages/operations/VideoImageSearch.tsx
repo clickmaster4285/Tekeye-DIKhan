@@ -97,9 +97,14 @@ export default function VideoImageSearchPage() {
         })
       }
     } catch (err) {
+      const raw = err instanceof Error ? err.message : "Could not search the video."
+      const description =
+        /reuseMap|BlobManager|OpenCV/i.test(raw)
+          ? "Face search hit a GPU/OpenCV conflict. Restart the ML service and try again — face models now use a safer CPU path."
+          : raw
       toast({
         title: "Search failed",
-        description: err instanceof Error ? err.message : "Could not search the video.",
+        description,
         variant: "destructive",
       })
     } finally {

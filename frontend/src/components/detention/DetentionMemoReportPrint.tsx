@@ -1,4 +1,4 @@
-import { getDetentionMemoDetailPath } from "@/routes/config"
+import { getDetentionMemoDetailPath, getDetentionMemoScanUrl } from "@/routes/config"
 import type { DetentionMemoApiRecord, DetentionMemoGoodsLineApi } from "@/lib/detention-memo-api"
 import { pdfFilenameFromCaseNo } from "@/lib/save-report-pdf"
 import {
@@ -65,10 +65,7 @@ export default function DetentionMemoReportPrint({
   const goodsImages = goodsItems.flatMap((item) =>
     (item.images || []).map((url) => ({ url, label: item.qrCodeNumber || item.description || item.id }))
   )
-  const payload =
-    qrPayload ||
-    row.memoQrCodePayload ||
-    `${window.location.origin}${getDetentionMemoDetailPath(row.id)}?print=full`
+  const payload = qrPayload || getDetentionMemoScanUrl(row.id)
   const number = qrNumber || row.memoQrCodeNumber || row.referenceNumber || row.caseNo || row.id
   const sheetNo = row.referenceNumber || row.caseNo || "—"
   const generatedAt = new Date().toLocaleString()

@@ -1,10 +1,10 @@
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { usePolling } from "@/hooks/usePolling"
 import { recognitionApi, type DashboardSummary } from "@/lib/recognition-api"
+import { REALTIME_INVALIDATE_EVENT } from "@/lib/realtime-socket"
 import { ROUTES } from "@/routes/config"
 
 export default function AttendanceDashboardPage() {
@@ -18,7 +18,17 @@ export default function AttendanceDashboardPage() {
     }
   }, [])
 
-  usePolling(refresh, 15000, true)
+  useEffect(() => {
+    void refresh()
+    const onRealtime = (e: Event) => {
+      const domains = (e as CustomEvent<{ domains?: string[] }>).detail?.domains || []
+      if (domains.some((d) => ["attendance", "hr", "recognition"].includes(d))) {
+        void refresh()
+      }
+    }
+    window.addEventListener(REALTIME_INVALIDATE_EVENT, onRealtime)
+    return () => window.removeEventListener(REALTIME_INVALIDATE_EVENT, onRealtime)
+  }, [refresh])
 
   const s = summary?.summary
 
@@ -33,6 +43,9 @@ export default function AttendanceDashboardPage() {
           </Button>
           <Button variant="outline" asChild>
             <Link to={ROUTES.ATTENDANCE_REPORTS}>Daily report</Link>
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => void refresh()}>
+            Refresh
           </Button>
         </div>
       }

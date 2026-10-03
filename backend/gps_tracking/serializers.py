@@ -3,6 +3,8 @@ from __future__ import annotations
 from django.utils import timezone
 from rest_framework import serializers
 
+from users.serializers import user_profile_image_url
+
 from .models import OfficerGpsHistory, OfficerGpsLatest
 
 LIVE_SECONDS = 120
@@ -46,10 +48,17 @@ class GpsPingSerializer(serializers.Serializer):
     longitude = serializers.FloatField(min_value=-180, max_value=180)
     accuracy = serializers.FloatField(required=False, allow_null=True, min_value=0)
     recordedAt = serializers.DateTimeField(required=False, allow_null=True)
+    client_timestamp = serializers.DateTimeField(required=False, allow_null=True)
     batteryPct = serializers.IntegerField(required=False, allow_null=True, min_value=0, max_value=100)
+    battery_level = serializers.IntegerField(required=False, allow_null=True, min_value=0, max_value=100)
     speedKmh = serializers.FloatField(required=False, allow_null=True, min_value=0)
+    speed = serializers.FloatField(required=False, allow_null=True, min_value=0)
     headingDeg = serializers.FloatField(required=False, allow_null=True, min_value=0, max_value=360)
+    heading = serializers.FloatField(required=False, allow_null=True, min_value=0, max_value=360)
     altitudeM = serializers.FloatField(required=False, allow_null=True)
+    event_id = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=64)
+    device_uuid = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=64)
+    session_id = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=64)
 
 
 class GpsDutySerializer(serializers.Serializer):
@@ -84,6 +93,7 @@ def latest_to_dict(row: OfficerGpsLatest) -> dict:
         "name": officer_display_name(user),
         "role": getattr(user, "role", "") or "",
         "employeeId": _employee_id(user),
+        "profileImage": user_profile_image_url(user),
         "location": row.location or getattr(user, "location", "") or "",
         "latitude": lat,
         "longitude": lng,
@@ -108,6 +118,7 @@ def me_payload(user, row: OfficerGpsLatest | None) -> dict:
         "name": officer_display_name(user),
         "role": getattr(user, "role", "") or "",
         "employeeId": _employee_id(user),
+        "profileImage": user_profile_image_url(user),
         "location": getattr(user, "location", "") or "",
         "onDuty": bool(row and row.on_duty),
         "status": gps_status(row),

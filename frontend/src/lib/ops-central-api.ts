@@ -17,6 +17,7 @@ export type RemoteServerRecord = {
   site_code?: string
   site_name?: string
   gpu?: string
+  gpu_device?: number | null
   max_cameras?: number
   assigned_count?: number
   available_slots?: number | null
@@ -26,6 +27,13 @@ export type RemoteServerRecord = {
   created_by_username?: string
   created_at?: string
   updated_at?: string
+}
+
+export type MlGpuInfo = {
+  index: number
+  name: string
+  total_memory_mb?: number | null
+  free_memory_mb?: number | null
 }
 
 export type RemoteServerWrite = {
@@ -39,6 +47,7 @@ export type RemoteServerWrite = {
   notes?: string
   site?: number | null
   gpu?: string
+  gpu_device?: number | null
   max_cameras?: number
 }
 
@@ -67,6 +76,7 @@ export type DistributionServerColumn = {
   site_code: string
   site_name: string
   gpu: string
+  gpu_device?: number | null
   max_cameras: number
   assigned_count: number
   available_slots: number | null
@@ -109,6 +119,7 @@ export type OpsCamera = {
   id: number
   code: string
   name: string
+  display_label?: string
   label?: string
   location?: string
   site_code?: string
@@ -123,6 +134,10 @@ export type OpsCamera = {
   ml_stream_key?: string
   ml_live_stream_url?: string
   raw_stream_url?: string
+  /** High-quality NVR viewing (ffmpeg), not ML 720p */
+  view_stream_url?: string
+  /** Hub WebRTC signaling (go2rtc viewing path). Prefer over MJPEG on All Cities wall. */
+  webrtc_stream_url?: string
   status?: string
   is_active?: boolean
   connected?: boolean
@@ -199,6 +214,40 @@ export function withOpsStreamToken(url: string): string {
   const sep = url.includes("?") ? "&" : "?"
   if (url.includes("token=")) return url
   return `${url}${sep}token=${encodeURIComponent(token)}`
+}
+
+/**
+ * Convert an ops MJPEG proxy URL to a single-frame JPEG snapshot URL.
+ * Grid views should poll JPEG — browsers only allow ~6 concurrent MJPEG connections per host.
+ */
+export function opsMjpegUrlToJpeg(url: string): string {
+  if (!url) return url
+  try {
+    const u = new URL(url, typeof window !== "undefined" ? window.location.origin : "http://local")
+    // High-quality view endpoint
+    if (u.pathname.includes("/view/")) {
+      u.searchParams.set("kind", "jpeg")
+      return `${u.pathname}${u.search}`
+    }
+    const kind = (u.searchParams.get("kind") || "live").toLowerCase()
+    if (kind === "raw" || kind === "jpeg_raw" || kind === "raw_jpeg") {
+      u.searchParams.set("kind", "jpeg_raw")
+    } else {
+      u.searchParams.set("kind", "jpeg")
+    }
+    return `${u.pathname}${u.search}`
+  } catch {
+    if (url.includes("/view/")) {
+      return `${url}${url.includes("?") ? "&" : "?"}kind=jpeg`
+    }
+    if (/([?&])kind=raw\b/i.test(url)) {
+      return url.replace(/([?&])kind=raw\b/i, "$1kind=jpeg_raw")
+    }
+    if (/[?&]kind=/i.test(url)) {
+      return url.replace(/([?&])kind=[^&]*/i, "$1kind=jpeg")
+    }
+    return `${url}${url.includes("?") ? "&" : "?"}kind=jpeg`
+  }
 }
 
 export async function listRemoteServers(): Promise<RemoteServerRecord[]> {
@@ -286,6 +335,7 @@ export async function createRemoteServer(payload: RemoteServerWrite): Promise<Re
     is_active: payload.is_active !== false,
     notes: payload.notes || "",
     gpu: payload.gpu || "",
+    gpu_device: payload.gpu_device ?? null,
     max_cameras: payload.max_cameras ?? 25,
     site: payload.site ?? null,
   }
@@ -348,14 +398,73 @@ export async function removeServerCamera(
   }
 }
 
-export async function testRemoteServer(id: number): Promise<{ ok: boolean; error?: string }> {
+export async function testRemoteServer(
+  id: number,
+  opts?: { gpu_device?: number | null }
+): Promise<{
+  ok: boolean
+  error?: string
+  gpus?: MlGpuInfo[]
+  server?: RemoteServerRecord
+}> {
+  const body: Record<string, unknown> = {}
+  if (opts && "gpu_device" in opts) body.gpu_device = opts.gpu_device ?? null
   const res = await fetch(`${API}/ops/servers/${id}/test/`, {
     method: "POST",
     headers: getAuthHeaders(),
+    body: JSON.stringify(body),
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(formatApiError(data, "Connection test failed"))
   return data
+}
+
+export async function probeMlGpus(mlBaseUrl?: string): Promise<{
+  ok: boolean
+  ml_base_url: string
+  gpus: MlGpuInfo[]
+  ml_device?: string | number | null
+  cuda_available?: boolean
+  cuda_device_name?: string | null
+  cuda_device_count?: number
+  error?: string
+  source?: string
+}> {
+  const trimmed = (mlBaseUrl || "").trim()
+  const body: Record<string, unknown> = {}
+  if (trimmed) body.ml_base_url = normalizeMlUrl(trimmed)
+
+  const tryFetch = async (path: string) => {
+    const res = await fetch(`${API}${path}`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => ({}))
+    return { res, data }
+  }
+
+  // Prefer probe-gpus; fall back to host-gpus alias if an old server returns 404.
+  let { res, data } = await tryFetch("/ops/probe-gpus/")
+  if (res.status === 404) {
+    ;({ res, data } = await tryFetch("/ops/host-gpus/"))
+  }
+
+  const gpus = Array.isArray(data.gpus) ? data.gpus : []
+  if (!res.ok && gpus.length === 0) {
+    throw new Error(formatApiError(data, "Failed to detect GPUs"))
+  }
+  return {
+    ok: Boolean(data.ok) || gpus.length > 0,
+    ml_base_url: data.ml_base_url || (trimmed ? normalizeMlUrl(trimmed) : ""),
+    gpus,
+    ml_device: data.ml_device ?? null,
+    cuda_available: data.cuda_available,
+    cuda_device_name: data.cuda_device_name ?? null,
+    cuda_device_count: data.cuda_device_count,
+    error: data.error,
+    source: data.source,
+  }
 }
 
 export async function fetchServerCameras(id: number): Promise<{
@@ -499,6 +608,29 @@ export async function autoDistributeCameras(payload: {
     recommended: data.recommended || [],
     applied: Boolean(data.applied),
     moved: data.moved ?? 0,
+    warnings: Array.isArray(data.warnings) ? data.warnings : [],
+  }
+}
+
+export async function unassignAllCamerasFromServer(ml_server_id: number): Promise<{
+  ml_server_id: number
+  ml_server_name: string
+  total: number
+  unassigned: number
+  warnings: string[]
+}> {
+  const res = await fetch(`${API}/ops/distribution/unassign-all/`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ ml_server_id }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(formatApiError(data, "Failed to unassign cameras"))
+  return {
+    ml_server_id: data.ml_server_id,
+    ml_server_name: data.ml_server_name || "",
+    total: data.total ?? 0,
+    unassigned: data.unassigned ?? 0,
     warnings: Array.isArray(data.warnings) ? data.warnings : [],
   }
 }

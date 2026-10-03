@@ -445,7 +445,7 @@ export default function ZoneRestrictionsPage() {
             </div>
 
             <div className="space-y-1.5">
-              <Label>Camera IDs</Label>
+              <Label>Cameras</Label>
               <Input
                 value={formData.camera_ids.join(", ")}
                 onChange={(e) =>
@@ -457,7 +457,7 @@ export default function ZoneRestrictionsPage() {
                       .filter(Boolean),
                   }))
                 }
-                placeholder="Comma-separated camera IDs"
+                placeholder="Comma-separated camera names or codes"
               />
             </div>
 

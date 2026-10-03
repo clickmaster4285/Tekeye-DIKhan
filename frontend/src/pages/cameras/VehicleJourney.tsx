@@ -82,7 +82,6 @@ export default function VehicleJourneyPage() {
         q: debouncedQ || undefined,
         min_passes: minPasses,
       }),
-    refetchInterval: 12_000,
     placeholderData: (prev) => prev,
   })
 

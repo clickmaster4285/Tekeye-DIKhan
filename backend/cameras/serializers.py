@@ -99,6 +99,7 @@ class CameraSerializer(serializers.ModelSerializer):
     nvr_name = serializers.CharField(source="nvr.name", read_only=True)
     nvr_ip = serializers.CharField(source="nvr.ip_address", read_only=True)
     channel_label = serializers.SerializerMethodField()
+    display_label = serializers.SerializerMethodField()
     ml_server_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -107,6 +108,7 @@ class CameraSerializer(serializers.ModelSerializer):
             "id",
             "code",
             "name",
+            "display_label",
             "nvr",
             "channel",
             "channel_label",
@@ -123,6 +125,7 @@ class CameraSerializer(serializers.ModelSerializer):
             "status",
             "passage_role",
             "is_active",
+            "health_roi",
             "ml_enabled",
             "is_rtsp",
             "ml_stream_key",
@@ -136,6 +139,7 @@ class CameraSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "code",
+            "display_label",
             "location",
             "created_at",
             "updated_at",
@@ -151,6 +155,9 @@ class CameraSerializer(serializers.ModelSerializer):
     def get_channel_label(self, obj: Camera) -> str:
         return f"Ch {obj.channel}"
 
+    def get_display_label(self, obj: Camera) -> str:
+        return obj.display_label
+
     def get_purpose_label(self, obj: Camera) -> str:
         return obj.purpose_label
 
@@ -163,28 +170,14 @@ class CameraSerializer(serializers.ModelSerializer):
         return ""
 
     def get_ml_live_stream_url(self, obj: Camera) -> str:
-        if not obj.is_active or not obj.nvr_id:
-            return ""
-        from ml.client import ml_live_mjpeg_public_url
+        from ml.client import ml_assigned_mjpeg_public_url
 
-        return ml_live_mjpeg_public_url(
-            obj.stream_key,
-            rtsp_url=obj.effective_stream_url(),
-            purpose=obj.purpose,
-            purposes=obj.purpose_list(),
-        )
+        return ml_assigned_mjpeg_public_url(obj, kind="live")
 
     def get_raw_stream_url(self, obj: Camera) -> str:
-        if not obj.is_active or not obj.nvr_id:
-            return ""
-        from ml.client import ml_live_mjpeg_raw_public_url
+        from ml.client import ml_assigned_mjpeg_public_url
 
-        return ml_live_mjpeg_raw_public_url(
-            obj.stream_key,
-            rtsp_url=obj.effective_stream_url(),
-            purpose=obj.purpose,
-            purposes=obj.purpose_list(),
-        )
+        return ml_assigned_mjpeg_public_url(obj, kind="raw")
 
 
 class CameraWriteSerializer(serializers.ModelSerializer):
@@ -197,7 +190,7 @@ class CameraWriteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Camera
-        fields = ["name", "nvr", "channel", "zone", "purpose", "purposes", "status", "passage_role", "is_active"]
+        fields = ["name", "nvr", "channel", "zone", "purpose", "purposes", "status", "passage_role", "is_active", "health_roi"]
 
     def validate_channel(self, value: int) -> int:
         if value < 1:
@@ -274,6 +267,7 @@ class DetectionEventSerializer(serializers.ModelSerializer):
     purpose = serializers.CharField(source="camera.purpose", read_only=True)
     purpose_label = serializers.SerializerMethodField()
     clip_url = serializers.SerializerMethodField()
+    video_url = serializers.SerializerMethodField()
 
     class Meta:
         model = DetectionEvent
@@ -294,11 +288,15 @@ class DetectionEventSerializer(serializers.ModelSerializer):
             "label",
             "employee_name",
             "personal_number",
+            "person_qr",
             "confidence",
             "bbox",
+            "infer_frame_width",
+            "infer_frame_height",
             "is_alert",
             "clip_status",
             "clip_url",
+            "video_url",
             "created_at",
         ]
 
@@ -309,3 +307,8 @@ class DetectionEventSerializer(serializers.ModelSerializer):
         if not obj.clip:
             return ""
         return obj.clip.url
+
+    def get_video_url(self, obj: DetectionEvent) -> str:
+        if not obj.video:
+            return ""
+        return obj.video.url

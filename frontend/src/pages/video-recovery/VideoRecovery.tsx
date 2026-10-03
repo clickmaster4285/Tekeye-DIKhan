@@ -561,11 +561,6 @@ export default function VideoRecovery() {
   const jobsQuery = useQuery({
     queryKey: ["video-recovery-jobs"],
     queryFn: fetchVideoRecoveryJobs,
-    refetchInterval: (q) => {
-      const jobs = q.state.data as VideoRecoveryJob[] | undefined
-      if (jobs?.some((j) => j.status === "processing" || j.status === "uploaded")) return POLL_MS
-      return false
-    },
   })
 
   const activeId = selectedId ?? jobsQuery.data?.[0]?.id ?? null
@@ -574,11 +569,6 @@ export default function VideoRecovery() {
     queryKey: ["video-recovery-job", activeId],
     queryFn: () => fetchVideoRecoveryJob(activeId!),
     enabled: Boolean(activeId),
-    refetchInterval: (q) => {
-      const job = q.state.data as VideoRecoveryJob | undefined
-      if (job && (job.status === "processing" || job.status === "uploaded")) return POLL_MS
-      return false
-    },
   })
 
   const uploadMutation = useMutation({

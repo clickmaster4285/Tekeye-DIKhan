@@ -1,5 +1,6 @@
 from typing import Optional
 
+from django.utils.dateparse import parse_datetime
 from rest_framework import serializers
 
 from .models import DepositAccountEntry, DetentionMemo, DetentionMemoGoodsImage, DetentionMemoGoodsLine
@@ -15,6 +16,56 @@ def _absolute_media_url(request, file_field) -> str:
         except Exception:
             pass
     return relative
+
+
+def _parse_optional_datetime(raw) -> object | None:
+    if raw is None or raw == "":
+        return None
+    if hasattr(raw, "isoformat"):
+        return raw
+    text = str(raw).strip()
+    if not text:
+        return None
+    # Allow "YYYY-MM-DD HH:MM" from form fields
+    if " " in text and "T" not in text:
+        text = text.replace(" ", "T", 1)
+    dt = parse_datetime(text)
+    return dt
+
+
+def _optional_int(raw) -> int | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _located_camera_payload(camera, request=None) -> dict | None:
+    if camera is None:
+        return None
+    nvr = getattr(camera, "nvr", None)
+    site = getattr(nvr, "site", None) if nvr is not None else None
+    ml = getattr(camera, "ml_server", None)
+    return {
+        "id": camera.pk,
+        "code": camera.code or "",
+        "name": camera.name or "",
+        "zone": camera.zone or "",
+        "location": camera.location or (getattr(site, "code", "") if site else ""),
+        "siteName": getattr(site, "name", "") if site else "",
+        "nvrName": getattr(nvr, "name", "") if nvr else "",
+        "nvrIp": getattr(nvr, "ip_address", "") if nvr else "",
+        "channel": camera.channel,
+        "mlServerId": getattr(ml, "pk", None) if ml else None,
+        "mlServerName": getattr(ml, "name", "") if ml else "",
+        "displayLabel": (
+            (camera.name or "").strip()
+            or (camera.code or "").strip()
+            or "Camera"
+        ),
+    }
 
 
 class _PersonPayloadSerializer(serializers.Serializer):
@@ -41,6 +92,9 @@ class _GoodsItemPayloadSerializer(serializers.Serializer):
         required=False,
         default=list,
     )
+    locatedCameraId = serializers.IntegerField(required=False, allow_null=True)
+    detectedAt = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    detectionEventId = serializers.IntegerField(required=False, allow_null=True)
 
 
 class DetentionMemoWriteSerializer(serializers.Serializer):
@@ -93,6 +147,8 @@ class DetentionMemoWriteSerializer(serializers.Serializer):
 
 def _goods_item_raw(item: dict) -> dict:
     """Normalize goods line dict from request JSON."""
+    cam_id = item.get("locatedCameraId", item.get("located_camera_id"))
+    det_event = item.get("detectionEventId", item.get("detection_event_id"))
     return {
         "id": item.get("id") or "",
         "qrCodeNumber": item.get("qrCodeNumber") or "",
@@ -106,6 +162,9 @@ def _goods_item_raw(item: dict) -> dict:
         "itemNotes": item.get("itemNotes") or "",
         "perishable": bool(item.get("perishable")),
         "images": item.get("images") or [],
+        "locatedCameraId": _optional_int(cam_id),
+        "detectedAt": _parse_optional_datetime(item.get("detectedAt") or item.get("detected_at")),
+        "detectionEventId": _optional_int(det_event),
     }
 
 
@@ -165,9 +224,41 @@ def replace_goods_lines(memo: DetentionMemo, goods_items: Optional[list]) -> Non
     memo.goods_lines.all().delete()
     if not goods_items:
         return
+
+    # Validate camera / detection FKs exist before bulk create
+    from cameras.models import Camera, DetectionEvent
+
+    camera_ids = {
+        _optional_int((raw if isinstance(raw, dict) else {}).get("locatedCameraId")
+                      or (raw if isinstance(raw, dict) else {}).get("located_camera_id"))
+        for raw in goods_items
+    }
+    camera_ids.discard(None)
+    valid_cameras = set(
+        Camera.objects.filter(pk__in=camera_ids).values_list("pk", flat=True)
+    ) if camera_ids else set()
+
+    event_ids = {
+        _optional_int((raw if isinstance(raw, dict) else {}).get("detectionEventId")
+                      or (raw if isinstance(raw, dict) else {}).get("detection_event_id"))
+        for raw in goods_items
+    }
+    event_ids.discard(None)
+    valid_events = set(
+        DetectionEvent.objects.filter(pk__in=event_ids).values_list("pk", flat=True)
+    ) if event_ids else set()
+
     bulk = []
     for raw in goods_items:
         item = _goods_item_raw(raw if isinstance(raw, dict) else {})
+        cam_id = item["locatedCameraId"] if item["locatedCameraId"] in valid_cameras else None
+        event_id = item["detectionEventId"] if item["detectionEventId"] in valid_events else None
+        # If AI event is linked but camera missing, inherit camera from the event.
+        if event_id and not cam_id:
+            try:
+                cam_id = DetectionEvent.objects.filter(pk=event_id).values_list("camera_id", flat=True).first()
+            except Exception:
+                cam_id = None
         bulk.append(
             DetentionMemoGoodsLine(
                 memo=memo,
@@ -182,6 +273,9 @@ def replace_goods_lines(memo: DetentionMemo, goods_items: Optional[list]) -> Non
                 identification_ref=item["identificationRef"],
                 item_notes=item["itemNotes"],
                 perishable=item["perishable"],
+                located_camera_id=cam_id,
+                detected_at=item["detectedAt"],
+                detection_event_id=event_id,
             )
         )
     DetentionMemoGoodsLine.objects.bulk_create(bulk)
@@ -199,12 +293,25 @@ def memo_to_frontend_dict(memo: DetentionMemo, request=None) -> dict:
         return (getattr(memo, text_field_name) or "") or ""
 
     goods_items = []
-    for gl in memo.goods_lines.all():
+    goods_qs = memo.goods_lines.all()
+    # Prefer prefetched located_camera / detection_event when available
+    for gl in goods_qs:
         goods_images = []
         for img in gl.images.all():
             url = _absolute_media_url(request, img.image)
             if url:
                 goods_images.append(url)
+
+        evidence_url = ""
+        det = getattr(gl, "detection_event", None)
+        if det is not None and getattr(det, "clip", None) and getattr(det.clip, "name", None):
+            evidence_url = _absolute_media_url(request, det.clip)
+        if not evidence_url and goods_images:
+            evidence_url = goods_images[0]
+
+        cam = getattr(gl, "located_camera", None)
+        cam_payload = _located_camera_payload(cam, request)
+        detected = gl.detected_at
         goods_items.append(
             {
                 "id": gl.client_line_id or str(gl.pk),
@@ -219,6 +326,11 @@ def memo_to_frontend_dict(memo: DetentionMemo, request=None) -> dict:
                 "itemNotes": gl.item_notes,
                 "perishable": gl.perishable,
                 "images": goods_images,
+                "locatedCameraId": gl.located_camera_id,
+                "locatedCamera": cam_payload,
+                "detectedAt": detected.isoformat() if detected else "",
+                "detectionEventId": gl.detection_event_id,
+                "evidenceUrl": evidence_url,
             }
         )
 

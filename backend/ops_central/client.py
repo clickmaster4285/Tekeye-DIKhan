@@ -182,6 +182,7 @@ def _normalize_stream_cam(c: dict) -> dict[str, Any]:
         "site_name": c.get("site_label") or c.get("site_name") or "",
         "nvr_name": c.get("nvr_name") or "",
         "channel": c.get("channel"),
+        "channel_label": c.get("channel_label") or "",
         "purpose": c.get("purpose") or "",
         "purpose_label": c.get("purpose_label") or "",
         "ml_enabled": bool(c.get("ml_enabled")),
@@ -208,6 +209,7 @@ def _normalize_camera_record(c: dict) -> dict[str, Any]:
         "site_name": c.get("site_name") or "",
         "nvr_name": c.get("nvr_name") or "",
         "channel": c.get("channel"),
+        "channel_label": c.get("channel_label") or "",
         "purpose": c.get("purpose") or "",
         "purpose_label": c.get("purpose_label") or "",
         "ml_enabled": bool(c.get("ml_enabled")),
@@ -229,6 +231,65 @@ def mark_server_health(server, *, ok: bool, error: str = "") -> None:
     server.save(update_fields=["last_seen_at", "last_health", "last_error", "updated_at"])
 
 
+def list_host_gpus_nvidia_smi() -> list[dict[str, Any]]:
+    """Host GPU inventory via nvidia-smi (works even when ML omits gpus[])."""
+    import shutil
+    import subprocess
+
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return []
+    try:
+        proc = subprocess.run(
+            [
+                smi,
+                "--query-gpu=index,name,memory.total,memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        return []
+    out: list[dict[str, Any]] = []
+    for line in (proc.stdout or "").splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            idx = int(parts[0])
+        except ValueError:
+            continue
+        name = parts[1] or f"GPU {idx}"
+        row: dict[str, Any] = {"index": idx, "name": name}
+        if len(parts) >= 3:
+            try:
+                row["total_memory_mb"] = int(float(parts[2]))
+            except ValueError:
+                pass
+        if len(parts) >= 4:
+            try:
+                row["free_memory_mb"] = int(float(parts[3]))
+            except ValueError:
+                pass
+        out.append(row)
+    return out
+
+
+def _is_local_ml_url(ml_base_url: str) -> bool:
+    from urllib.parse import urlparse
+
+    try:
+        host = (urlparse(ml_base_url).hostname or "").lower()
+    except Exception:
+        return False
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
 def probe_ml_health(ml_base_url: str) -> dict[str, Any]:
     """Ping remote ML /health or /live/status."""
     base = (ml_base_url or "").rstrip("/")
@@ -245,9 +306,152 @@ def probe_ml_health(ml_base_url: str) -> dict[str, Any]:
                 data = resp.json()
             except Exception:
                 data = {}
-            return {"ok": True, "path": path, "status": 200, "data": data}
+            gpus = extract_gpus_from_health(data if isinstance(data, dict) else {})
+            # Local ML may still be an older build without gpus[] — fill from host nvidia-smi.
+            if len(gpus) <= 1 and _is_local_ml_url(base):
+                host_gpus = list_host_gpus_nvidia_smi()
+                if len(host_gpus) > len(gpus):
+                    gpus = host_gpus
+            return {
+                "ok": True,
+                "path": path,
+                "status": 200,
+                "data": data,
+                "gpus": gpus,
+            }
         errors.append(f"{path}: HTTP {resp.status_code}")
     return {"ok": False, "error": errors[0] if errors else "ML unreachable", "details": errors}
+
+
+def extract_gpus_from_health(data: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Normalize GPU inventory from ML /health (or nested payloads)."""
+    if not isinstance(data, dict):
+        return []
+    raw = data.get("gpus")
+    if not isinstance(raw, list):
+        # Some wrappers nest under live_streams / status
+        nested = data.get("data") if isinstance(data.get("data"), dict) else None
+        if nested:
+            raw = nested.get("gpus")
+    out: list[dict[str, Any]] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                idx = int(item.get("index"))
+            except (TypeError, ValueError):
+                continue
+            name = str(item.get("name") or f"GPU {idx}").strip() or f"GPU {idx}"
+            row: dict[str, Any] = {"index": idx, "name": name}
+            for key in ("total_memory_mb", "free_memory_mb"):
+                val = item.get(key)
+                if val is None:
+                    continue
+                try:
+                    row[key] = int(val)
+                except (TypeError, ValueError):
+                    pass
+            out.append(row)
+    if out:
+        return sorted(out, key=lambda g: g["index"])
+
+    # Fallback: build list from legacy health fields (older ML builds omit gpus[])
+    try:
+        count = int(data.get("cuda_device_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    name = data.get("cuda_device_name")
+    ml_device = data.get("ml_device")
+    if name or count > 0 or (ml_device is not None and str(ml_device).strip().lower() not in ("", "cpu")):
+        try:
+            active = int(ml_device) if str(ml_device).strip().lstrip("-").isdigit() else 0
+        except (TypeError, ValueError):
+            active = 0
+        n = max(count, active + 1, 1 if name else 0)
+        rows: list[dict[str, Any]] = []
+        for i in range(n):
+            rows.append(
+                {
+                    "index": i,
+                    "name": str(name) if (name and i == active) else (str(name) if name and n == 1 else f"GPU {i}"),
+                }
+            )
+        return rows
+    return []
+
+
+def format_gpu_label(gpu: dict[str, Any] | None) -> str:
+    if not gpu:
+        return ""
+    idx = gpu.get("index")
+    name = str(gpu.get("name") or "").strip() or f"GPU {idx}"
+    total = gpu.get("total_memory_mb")
+    base = f"GPU {idx} · {name}" if idx is not None else name
+    if total:
+        return f"{base} ({int(total)} MB)"
+    return base
+
+
+def pick_gpu(
+    gpus: list[dict[str, Any]],
+    *,
+    preferred_index: int | None = None,
+    ml_device: Any = None,
+) -> dict[str, Any] | None:
+    if not gpus:
+        return None
+    if preferred_index is not None:
+        for g in gpus:
+            if g.get("index") == preferred_index:
+                return g
+    if ml_device is not None and str(ml_device).strip().lower() not in ("", "cpu"):
+        try:
+            idx = int(ml_device)
+            for g in gpus:
+                if g.get("index") == idx:
+                    return g
+        except (TypeError, ValueError):
+            pass
+    return gpus[0]
+
+
+def apply_detected_gpu(
+    server: Any,
+    health: dict[str, Any],
+    *,
+    preferred_index: int | None = None,
+    force: bool = False,
+) -> list[dict[str, Any]]:
+    """
+    Update RemoteServer.gpu / gpu_device from an ML health probe.
+    Returns the GPU list (possibly empty).
+    """
+    data = health.get("data") if isinstance(health.get("data"), dict) else {}
+    gpus = health.get("gpus") if isinstance(health.get("gpus"), list) else extract_gpus_from_health(data)
+    if not gpus:
+        return []
+
+    idx = preferred_index if preferred_index is not None else getattr(server, "gpu_device", None)
+    chosen = pick_gpu(gpus, preferred_index=idx, ml_device=data.get("ml_device"))
+    if not chosen:
+        return gpus
+
+    label = format_gpu_label(chosen)
+    fields: list[str] = []
+    new_idx = int(chosen["index"])
+    if force or getattr(server, "gpu_device", None) is None or preferred_index is not None:
+        if server.gpu_device != new_idx:
+            server.gpu_device = new_idx
+            fields.append("gpu_device")
+    if force or not (server.gpu or "").strip() or preferred_index is not None or "gpu_device" in fields:
+        if server.gpu != label:
+            server.gpu = label
+            fields.append("gpu")
+    if fields:
+        fields.append("updated_at")
+        server.save(update_fields=fields)
+    return gpus
 
 
 def remote_delete_json(
@@ -330,7 +534,7 @@ def fetch_ml_cameras(ml_base_url: str, *, server_name: str = "") -> dict[str, An
     if not base:
         return {"ok": False, "error": "ML URL is required.", "cameras": []}
     try:
-        resp = requests.get(f"{base}/live/status", timeout=15, headers={"Accept": "application/json"})
+        resp = requests.get(f"{base}/live/status", timeout=8, headers={"Accept": "application/json"})
     except requests.RequestException as exc:
         return {"ok": False, "error": _friendly_conn_error(exc, base), "cameras": []}
 
@@ -356,6 +560,8 @@ def fetch_ml_cameras(ml_base_url: str, *, server_name: str = "") -> dict[str, An
         key = (c.get("key") or c.get("ip") or "").strip()
         if not key:
             continue
+        # Registered on a reachable ML node ⇒ Online. Transient RTSP reconnects
+        # (connected/has_frame false) must not mark the wall / server as offline.
         connected = bool(c.get("connected") or c.get("has_frame"))
         purpose = (c.get("purpose") or "").strip()
         cameras.append(
@@ -376,7 +582,6 @@ def fetch_ml_cameras(ml_base_url: str, *, server_name: str = "") -> dict[str, An
                 "ml_stream_key": key,
                 "ml_live_stream_url": "",
                 "raw_stream_url": "",
-                "rtsp_url": (c.get("rtsp_url") or "").strip(),
                 "status": "Online",
                 "is_active": True,
                 "connected": connected,

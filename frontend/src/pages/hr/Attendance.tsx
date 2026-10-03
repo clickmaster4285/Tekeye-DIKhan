@@ -66,6 +66,7 @@ import {
   type AttendanceRecord,
 } from "@/lib/attendance-api"
 import { fetchMLHealth, type MLHealthResponse } from "@/lib/ml-api"
+import { REALTIME_INVALIDATE_EVENT } from "@/lib/realtime-socket"
 import { ROUTES } from "@/routes/config"
 
 function formatTime(iso: string | null): string {
@@ -150,8 +151,14 @@ export default function AttendancePage() {
 
   useEffect(() => {
     loadData()
-    const timer = window.setInterval(loadData, 30_000)
-    return () => window.clearInterval(timer)
+    const onRealtime = (e: Event) => {
+      const domains = (e as CustomEvent<{ domains?: string[] }>).detail?.domains || []
+      if (domains.some((d) => ["attendance", "hr", "recognition"].includes(d))) {
+        loadData()
+      }
+    }
+    window.addEventListener(REALTIME_INVALIDATE_EVENT, onRealtime)
+    return () => window.removeEventListener(REALTIME_INVALIDATE_EVENT, onRealtime)
   }, [])
 
   useEffect(() => {
@@ -692,7 +699,7 @@ export default function AttendancePage() {
                   <TableHead>Check-in</TableHead>
                   <TableHead>Check-out</TableHead>
                   <TableHead>Working time</TableHead>
-                  <TableHead>Clip</TableHead>
+                  <TableHead>Photo</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Source</TableHead>
                   <TableHead className="text-center">Actions</TableHead>
@@ -720,15 +727,7 @@ export default function AttendancePage() {
                           {formatWorkingTime(row.check_in, row.check_out)}
                         </TableCell>
                         <TableCell>
-                          {row.video ? (
-                            <video
-                              src={resolveMediaUrl(row.video)}
-                              controls
-                              preload="metadata"
-                              poster={row.image ? resolveMediaUrl(row.image) : undefined}
-                              className="h-16 w-28 rounded border bg-black object-cover"
-                            />
-                          ) : row.image ? (
+                          {row.image ? (
                             <a
                               href={resolveMediaUrl(row.image)}
                               target="_blank"
@@ -845,24 +844,14 @@ export default function AttendancePage() {
                     <p>{formatTime(viewRecord.check_out)}</p>
                   </div>
                 </div>
-                {(viewRecord.video || viewRecord.image) && (
+                {viewRecord.image && (
                   <div className="space-y-2">
-                    <p className="text-muted-foreground">Proof clip</p>
-                    {viewRecord.video ? (
-                      <video
-                        src={resolveMediaUrl(viewRecord.video)}
-                        controls
-                        preload="metadata"
-                        poster={viewRecord.image ? resolveMediaUrl(viewRecord.image) : undefined}
-                        className="max-h-64 w-full rounded border bg-black object-contain"
-                      />
-                    ) : viewRecord.image ? (
-                      <img
-                        src={resolveMediaUrl(viewRecord.image)}
-                        alt="Attendance proof"
-                        className="max-h-64 w-full rounded border object-contain"
-                      />
-                    ) : null}
+                    <p className="text-muted-foreground">Proof photo</p>
+                    <img
+                      src={resolveMediaUrl(viewRecord.image)}
+                      alt="Attendance proof"
+                      className="max-h-64 w-full rounded border object-contain"
+                    />
                   </div>
                 )}
               </div>

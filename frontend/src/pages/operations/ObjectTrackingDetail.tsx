@@ -35,8 +35,7 @@ export default function ObjectTrackingDetailPage() {
   const detailQuery = useQuery({
     queryKey: ["object-tracking-detail", uuid],
     queryFn: () => fetchTrackedObjectDetail(uuid),
-    enabled: Boolean(uuid),
-    refetchInterval: 8000,
+    enabled: Boolean(uuid)
   })
 
   const obj = detailQuery.data
@@ -237,12 +236,21 @@ export default function ObjectTrackingDetailPage() {
               {(obj.camera_history || []).length === 0 ? (
                 <p className="text-sm text-muted-foreground">No camera history yet.</p>
               ) : (
-                (obj.camera_history || []).slice().reverse().map((row, idx) => (
+                (obj.camera_history || []).slice().reverse().map((row, idx) => {
+                  const camName =
+                    (row.camera_name || "").trim() ||
+                    (row.camera_code || "").trim() ||
+                    visits.find((v) => v.camera === row.camera_id)?.camera_name ||
+                    tracks.find((t) => t.camera === row.camera_id)?.camera_name ||
+                    obj.latest_camera_name ||
+                    "Camera"
+                  return (
                   <div key={`${row.camera_id}-${row.at}-${idx}`} className="text-sm flex items-center gap-2">
                     <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
-                    Camera #{row.camera_id} · {formatDateTime(row.at)}
+                    {camName} · {formatDateTime(row.at)}
                   </div>
-                ))
+                  )
+                })
               )}
             </CardContent>
           </Card>

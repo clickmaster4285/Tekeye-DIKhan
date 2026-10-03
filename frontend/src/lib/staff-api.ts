@@ -85,6 +85,8 @@ export type StaffRecord = {
     phone: string;
     is_active: boolean;
   } | null;
+  mobile_app_installed?: boolean;
+  mobile_logged_in?: boolean;
 };
 
 const STAFF_ENDPOINT = `${API_BASE_URL}/api/staff/`;
@@ -215,6 +217,8 @@ export function normalizeApiStaff(row: Record<string, unknown>): StaffRecord {
     current_posting: base.current_posting ?? base.branch_location ?? null,
     father_name: (row.father_name as string) ?? base.father_name ?? null,
     personal_number: (row.personal_number as string) ?? base.personal_number ?? null,
+    mobile_app_installed: Boolean(row.mobile_app_installed),
+    mobile_logged_in: Boolean(row.mobile_logged_in),
   };
 }
 
@@ -547,6 +551,85 @@ export async function fetchStaffById(id: number): Promise<StaffRecord> {
   return localToStaffRecord(found);
 }
 
+export type StaffLoginPreview = {
+  staff_id: number;
+  staff_name: string;
+  username: string;
+  employee_id: string;
+  email: string;
+  phone: string;
+  designation: string;
+  role: string | null;
+  location: string | null;
+  role_required: boolean;
+  location_required: boolean;
+  already_linked: boolean;
+  default_password?: string;
+};
+
+/** Muhammad Sheharyar Khan → muhammad.sheharyar.khan */
+export function usernameFromFullName(raw: string | null | undefined): string {
+  return (raw || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ".")
+    .replace(/\.+/g, ".")
+    .replace(/^\.+|\.+$/g, "")
+    .slice(0, 60);
+}
+
+export const DEFAULT_STAFF_LOGIN_PASSWORD = "123456";
+
+export async function fetchUnlinkedEmployees(search = ""): Promise<StaffRecord[]> {
+  const q = search.trim()
+  if (useStaffRestApi()) {
+    const params = new URLSearchParams({ unlinked: "1" })
+    if (q) params.set("search", q)
+    const res = await fetch(`${STAFF_ENDPOINT}?${params.toString()}`, { headers: getAuthHeaders() })
+    if (!res.ok) throw new Error(await parseApiError(res));
+    const data: unknown = await res.json();
+    const rows = Array.isArray(data) ? data : (data as { results?: unknown[] }).results;
+    if (!Array.isArray(rows)) return [];
+    return rows.map((row) => normalizeApiStaff(row as Record<string, unknown>));
+  }
+  const needle = q.toLowerCase()
+  return (await fetchEmployeesDirectory()).filter((s) => {
+    if (s.user || s.user_details) return false
+    if (!needle) return true
+    const blob = [s.full_name, s.cnic, s.employee_id, s.personal_number, s.phone_primary, s.designation]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+    return blob.includes(needle)
+  })
+}
+
+export async function fetchStaffLoginPreview(staffId: number): Promise<StaffLoginPreview> {
+  const res = await fetch(`${STAFF_ENDPOINT}${staffId}/login-preview/`, { headers: getAuthHeaders() });
+  if (!res.ok) throw new Error(await parseApiError(res));
+  return res.json() as Promise<StaffLoginPreview>;
+}
+
+export async function createStaffUser(
+  staffId: number,
+  payload: { password: string; role?: string; location?: string; username?: string },
+): Promise<{ login_id: string; message: string }> {
+  const res = await fetch(`${STAFF_ENDPOINT}${staffId}/create_user/`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({
+      password: payload.password,
+      ...(payload.username ? { username: payload.username } : {}),
+      ...(payload.role ? { role: payload.role } : {}),
+      ...(payload.location ? { location: payload.location } : {}),
+    }),
+  });
+  if (!res.ok) throw new Error(await parseApiError(res));
+  const data = (await res.json()) as { login_id?: string; message?: string };
+  return { login_id: data.login_id || "", message: data.message || "User created" };
+}
+
 /** URL for downloading a staff document (requires auth when used via fetch). */
 export function getStaffDocumentDownloadUrl(staffId: number, field: string): string {
   return `${STAFF_ENDPOINT}${staffId}/document/${field}/`;
@@ -577,7 +660,7 @@ export async function downloadStaffDocument(
   throw new Error("Document download is not available in local-only mode.");
 }
 
-/** Full HR template payload accepted by backend. */
+/** Full HR template payload accepted by backend. Only full_name is required. */
 export type CreateStaffPayload = {
   // Common fields
   full_name: string;
@@ -588,15 +671,15 @@ export type CreateStaffPayload = {
   phone?: string;
   phone_primary?: string;
   phone_alternate?: string;
-  cnic: string;
+  cnic?: string;
   national_id?: string;
-  address: string;
+  address?: string;
   street_address?: string;
   city?: string;
   state?: string;
   country?: string;
   postal_code?: string;
-  date_of_birth: string;
+  date_of_birth?: string;
   gender?: string;
   marital_status?: string;
   blood_group?: string;
@@ -604,9 +687,9 @@ export type CreateStaffPayload = {
   // Employment
   employee_id?: string;
   personal_number?: string;
-  designation: string;
-  department: string;
-  joining_date: string;
+  designation?: string;
+  department?: string;
+  joining_date?: string;
   date_of_joining?: string;
   employment_type?: string;
   job_status?: string;
@@ -623,7 +706,8 @@ export type CreateStaffPayload = {
   username?: string;
   login_username?: string;
   password?: string;
-  role: string;
+  role?: string;
+  location?: string;
   role_access_level?: string;
   system_permissions?: string;
   has_login?: boolean;
@@ -637,7 +721,7 @@ export type CreateStaffPayload = {
   allowances?: string;
 
   // Emergency & Misc
-  emergency_contact: string;
+  emergency_contact?: string;
   emergency_contact_name?: string;
   emergency_contact_relationship?: string;
   emergency_contact_phone?: string;
@@ -655,6 +739,8 @@ export type CreateStaffPayload = {
 
   // Files
   profile_image?: File | null;
+  /** When true, backend puts keep paths before new uploads so profile is an existing photo. */
+  profile_from_keep?: boolean;
   staff_photos?: File[] | null;
   staff_photos_keep?: string[] | null;
   resume_file?: File | null;
@@ -696,6 +782,7 @@ function buildStaffMultipartFormData(
     "staff_photos",
     "staff_photo_files",
     "staff_photos_keep",
+    "profile_from_keep",
     "cnic_front",
     "cnic_back",
     "appointment_letter",
@@ -712,6 +799,9 @@ function buildStaffMultipartFormData(
 
   const personalNumber = String(r.personal_number ?? "").trim();
   if (personalNumber) fd.append("personal_number", personalNumber);
+
+  const roleAccess = String(r.role_access_level ?? r.role ?? "").trim();
+  if (roleAccess) fd.append("role_access_level", roleAccess);
 
   const fatherName = String(r.father_name ?? "").trim();
   if (fatherName) fd.append("father_name", fatherName);
@@ -735,7 +825,7 @@ function buildStaffMultipartFormData(
     }
     if (Array.isArray(v)) continue;
     if (typeof v === "object") continue;
-    if (key === "phone_primary" || key === "phone" || key === "cnic" || key === "national_id" || key === "full_name" || key === "personal_number" || key === "father_name") continue;
+    if (key === "phone_primary" || key === "phone" || key === "cnic" || key === "national_id" || key === "full_name" || key === "personal_number" || key === "father_name" || key === "role_access_level") continue;
     const s = String(v).trim();
     if (s === "") continue;
     fd.append(key, s);
@@ -762,6 +852,10 @@ function buildStaffMultipartFormData(
     fd.append("staff_photos_keep", JSON.stringify(keep.filter(Boolean)));
   }
 
+  if (r.profile_from_keep === true) {
+    fd.append("profile_from_keep", "1");
+  }
+
   for (const [sourceKey, targetKey] of Object.entries(STAFF_FILE_FIELD_MAP)) {
     const file = r[sourceKey];
     if (file instanceof File) {
@@ -783,20 +877,14 @@ export async function createStaff(payload: CreateStaffPayload): Promise<StaffRec
     if (!res.ok) throw new Error(await parseApiError(res));
     const created = normalizeApiStaff((await res.json()) as Record<string, unknown>);
 
-    if (payload.has_login && payload.password && payload.email) {
-      const username =
-        String(payload.login_username || payload.username || payload.email.split("@")[0] || `staff_${created.id}`).trim();
-      const phone =
-        String(payload.phone || payload.phone_primary || payload.emergency_contact_phone || "0000000000").trim();
+    if (payload.has_login && payload.password) {
       const cu = await fetch(`${STAFF_ENDPOINT}${created.id}/create_user/`, {
         method: "POST",
         headers: getAuthHeaders(),
         body: JSON.stringify({
-          username,
-          email: payload.email.trim(),
           password: payload.password,
-          role: payload.role || "RECEPTIONIST",
-          phone: phone || "0000000000",
+          role: payload.role || undefined,
+          location: payload.location || undefined,
         }),
       });
       if (!cu.ok) {

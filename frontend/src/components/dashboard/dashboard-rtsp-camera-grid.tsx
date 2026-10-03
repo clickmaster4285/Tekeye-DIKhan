@@ -16,7 +16,11 @@ import { MlCameraFeed } from "@/components/cameras/ml-camera-feed"
 import { MlSystemStatus } from "@/components/cameras/ml-system-status"
 import { LOCATION_OPTIONS } from "@/lib/locations"
 import { zoneLabel } from "@/lib/warehouse-zones"
-import { fetchCameras, type CameraRecord } from "@/lib/cameras-api"
+import { fetchCameras, isCameraAllocated, type CameraRecord } from "@/lib/cameras-api"
+import {
+  ALL_CITIES_CAMERAS_EVENT,
+  getAllCitiesCameras,
+} from "@/lib/all-cities-cameras"
 
 const ALL_LOCATIONS = "all"
 const ALL_ZONES = "all"
@@ -28,15 +32,29 @@ export function DashboardRtspCameraGrid() {
   const [location, setLocation] = useState(ALL_LOCATIONS)
   const [zone, setZone] = useState(ALL_ZONES)
   const [cameraId, setCameraId] = useState(ALL_CAMERAS)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+
+  useEffect(() => {
+    const onAllCities = (e: Event) => {
+      const enabled = (e as CustomEvent<{ enabled: boolean }>).detail?.enabled
+      if (enabled) {
+        setLocation(ALL_LOCATIONS)
+        setZone(ALL_ZONES)
+        setCameraId(ALL_CAMERAS)
+      }
+    }
+    if (getAllCitiesCameras()) setLocation(ALL_LOCATIONS)
+    window.addEventListener(ALL_CITIES_CAMERAS_EVENT, onAllCities)
+    return () => window.removeEventListener(ALL_CITIES_CAMERAS_EVENT, onAllCities)
+  }, [])
 
   const reloadCameras = useCallback((options?: { blocking?: boolean }) => {
     const blocking = options?.blocking ?? false
     if (blocking) setLoading(true)
     else setRefreshing(true)
-    fetchCameras()
-      .then(setCameras)
+    fetchCameras({ allocatedOnly: true })
+      .then((rows) => setCameras(rows.filter(isCameraAllocated)))
       .catch(() => setCameras([]))
       .finally(() => {
         setLoading(false)
@@ -45,7 +63,7 @@ export function DashboardRtspCameraGrid() {
   }, [])
 
   useEffect(() => {
-    reloadCameras({ blocking: true })
+    reloadCameras({ blocking: false })
     const onCustom = () => reloadCameras()
     window.addEventListener("camera-integration-updated", onCustom)
     return () => {
@@ -53,15 +71,17 @@ export function DashboardRtspCameraGrid() {
     }
   }, [reloadCameras])
 
+  const allocatedCameras = useMemo(() => cameras.filter(isCameraAllocated), [cameras])
+
   const locationCodes = useMemo(() => {
-    const set = new Set(cameras.map((c) => c.location).filter(Boolean))
+    const set = new Set(allocatedCameras.map((c) => c.location).filter(Boolean))
     return Array.from(set)
-  }, [cameras])
+  }, [allocatedCameras])
 
   const camerasForLocation = useMemo(() => {
-    if (location === ALL_LOCATIONS) return cameras
-    return cameras.filter((c) => c.location === location)
-  }, [cameras, location])
+    if (location === ALL_LOCATIONS) return allocatedCameras
+    return allocatedCameras.filter((c) => c.location === location)
+  }, [allocatedCameras, location])
 
   const zoneCodes = useMemo(() => {
     const set = new Set(camerasForLocation.map((c) => c.zone).filter(Boolean))
@@ -84,7 +104,7 @@ export function DashboardRtspCameraGrid() {
   }, [cameraId, camerasForZone])
 
   const feeds = useMemo(() => {
-    let list = cameras.filter((c) => c.is_active && c.status === "Online")
+    let list = allocatedCameras.filter((c) => c.is_active && c.status === "Online")
     if (location !== ALL_LOCATIONS) {
       list = list.filter((c) => c.location === location)
     }
@@ -95,7 +115,7 @@ export function DashboardRtspCameraGrid() {
       list = list.filter((c) => String(c.id) === cameraId)
     }
     return list.slice(0, MAX_FEEDS)
-  }, [cameras, location, zone, cameraId])
+  }, [allocatedCameras, location, zone, cameraId])
 
   const locationLabel =
     location === ALL_LOCATIONS
@@ -196,13 +216,20 @@ export function DashboardRtspCameraGrid() {
         </div>
       </CardHeader>
       <CardContent>
-        {loading ? (
+        {loading || (refreshing && cameras.length === 0) ? (
           <p className="text-sm text-muted-foreground py-8 text-center">Loading cameras…</p>
+        ) : allocatedCameras.length === 0 ? (
+          <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
+            No cameras allocated to an ML server yet.{" "}
+            <Link to={ROUTES.OPS_CAMERA_DISTRIBUTION} className="text-[#3b82f6] underline">
+              Assign cameras in Camera Distribution
+            </Link>
+          </div>
         ) : feeds.length === 0 ? (
           <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
-            No active cameras for {emptyFilterLabel}.{" "}
-            <Link to={ROUTES.CAMERA_MANAGEMENT} className="text-[#3b82f6] underline">
-              Add cameras in Camera Management
+            No online allocated cameras for {emptyFilterLabel}.{" "}
+            <Link to={ROUTES.OPS_CAMERA_DISTRIBUTION} className="text-[#3b82f6] underline">
+              Camera Distribution
             </Link>
           </div>
         ) : (
@@ -211,6 +238,7 @@ export function DashboardRtspCameraGrid() {
               <MlCameraFeed
                 key={cam.id}
                 camera={cam}
+                preferRaw
                 pollMl={false}
                 showBrandLogo
                 showFullscreenButton

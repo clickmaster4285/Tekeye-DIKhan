@@ -15,7 +15,7 @@ from django.conf import settings
 from django.core.files.base import ContentFile
 from django.db import close_old_connections, connection
 
-from .stream_utils import ffmpeg_path
+from .stream_utils import ffmpeg_path, gpu_aware_vf, hwaccel_input_flags
 
 if TYPE_CHECKING:
     from .models import Camera, DetectionEvent
@@ -131,27 +131,33 @@ def _camera_lock(camera_id: int) -> threading.Lock:
 
 def _ml_raw_mjpeg_url(camera) -> str | None:
     try:
-        from ml.client import ml_live_mjpeg_raw_url, ml_service_enabled
+        from ml.client import MLServiceError, ml_live_mjpeg_raw_url_for_camera, ml_service_enabled
     except ImportError:
         return None
-    if not ml_service_enabled():
+    if not ml_service_enabled() or not getattr(camera, "ml_server_id", None):
         return None
-    return ml_live_mjpeg_raw_url(camera.stream_key, rtsp_url=camera.effective_stream_url())
+    try:
+        return ml_live_mjpeg_raw_url_for_camera(camera)
+    except MLServiceError:
+        return None
 
 
 def _ml_attendance_mjpeg_url(camera, *, target_width: int) -> str | None:
     """HD frames from ML main-stream session (avoids NVR substream on 2nd RTSP connection)."""
     try:
-        from ml.client import ml_live_mjpeg_attendance_url, ml_service_enabled
+        from ml.client import (
+            MLServiceError,
+            ml_live_mjpeg_attendance_url_for_camera,
+            ml_service_enabled,
+        )
     except ImportError:
         return None
-    if not ml_service_enabled():
+    if not ml_service_enabled() or not getattr(camera, "ml_server_id", None):
         return None
-    return ml_live_mjpeg_attendance_url(
-        camera.stream_key,
-        rtsp_url=camera.effective_stream_url(),
-        width=target_width,
-    )
+    try:
+        return ml_live_mjpeg_attendance_url_for_camera(camera, width=target_width)
+    except MLServiceError:
+        return None
 
 
 def _max_clip_workers() -> int:
@@ -164,6 +170,74 @@ def _max_clip_queue() -> int:
 
 _ffmpeg_spawn_lock = threading.Lock()
 _last_ffmpeg_spawn = 0.0
+
+# Same-frame evidence JPEG from ML (camera_id -> (monotonic_ts, jpeg_bytes))
+_evidence_guard = threading.Lock()
+_pending_evidence: dict[int, tuple[float, bytes]] = {}
+_EVIDENCE_TTL_SEC = 20.0
+
+
+def stash_evidence_jpeg(camera_id: int, jpeg_bytes: bytes) -> None:
+    """Cache ML same-frame evidence for pending detection snapshot jobs."""
+    if not jpeg_bytes or camera_id is None:
+        return
+    with _evidence_guard:
+        _pending_evidence[int(camera_id)] = (time.monotonic(), jpeg_bytes)
+
+
+def _take_stashed_evidence(camera_id: int) -> bytes | None:
+    with _evidence_guard:
+        item = _pending_evidence.get(int(camera_id))
+        if not item:
+            return None
+        ts, data = item
+        if time.monotonic() - ts > _EVIDENCE_TTL_SEC:
+            _pending_evidence.pop(int(camera_id), None)
+            return None
+        return data
+
+
+def _ml_evidence_jpeg_url(camera) -> str | None:
+    try:
+        from ml.client import MLServiceError, ml_live_jpeg_evidence_url_for_camera, ml_service_enabled
+    except ImportError:
+        return None
+    if not ml_service_enabled() or not getattr(camera, "ml_server_id", None):
+        return None
+    try:
+        return ml_live_jpeg_evidence_url_for_camera(camera)
+    except MLServiceError:
+        return None
+
+
+def _decode_jpeg_bytes(data: bytes):
+    import cv2
+    import numpy as np
+
+    if not data:
+        return None
+    arr = np.frombuffer(data, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    return frame
+
+
+def _read_ml_evidence_frame(camera) -> object | None:
+    """Fetch the YOLO infer-frame JPEG (same frame as current detections)."""
+    stashed = _take_stashed_evidence(getattr(camera, "pk", 0) or 0)
+    if stashed:
+        frame = _decode_jpeg_bytes(stashed)
+        if frame is not None:
+            return frame
+    url = _ml_evidence_jpeg_url(camera)
+    if not url:
+        return None
+    try:
+        resp = requests.get(url, timeout=(2.0, 4.0))
+    except requests.RequestException:
+        return None
+    if resp.status_code != 200 or not resp.content:
+        return None
+    return _decode_jpeg_bytes(resp.content)
 
 
 def _ffmpeg_spawn_interval_sec() -> float:
@@ -211,18 +285,36 @@ def _display_class(event: DetectionEvent) -> str:
 
 
 def _snapshot_label(event: DetectionEvent) -> str:
-    """Prefer recognized employee name on annotated snapshots."""
+    """Prefer '{global_id} {name}' on annotated snapshots."""
+    gid = (getattr(event, "person_qr", None) or "").strip()
     employee = (getattr(event, "employee_name", None) or "").strip()
-    if employee:
-        return employee[:80]
-
     label = (event.label or "").strip()
-    cls = (event.class_name or "").strip().lower()
+    cls = (event.class_name or "").strip()
     generic = {"", "unknown", "person", "face"}
-    if cls in ("person", "face") and label.lower() not in generic:
-        return label[:80]
 
-    return _display_class(event)
+    if employee:
+        name = employee
+    elif cls.lower() in ("person", "face") and label.lower() not in generic and not _is_global_id_label(label):
+        name = label
+    elif label and not _is_global_id_label(label) and label.lower() not in generic:
+        name = label
+    else:
+        name = cls or _display_class(event)
+
+    # Avoid "GP12 GP12" when label was previously overwritten with the ID
+    if gid and name and gid.lower() == name.lower():
+        name = cls or "person"
+    if gid and name and gid.lower() not in name.lower():
+        return f"{gid} {name}"[:80]
+    if gid:
+        return gid[:80]
+    return (name or _display_class(event))[:80]
+
+
+def _is_global_id_label(value: str) -> bool:
+    import re
+
+    return bool(re.match(r"^(?:gp|go|gv|t)\d+$", (value or "").strip(), re.IGNORECASE))
 
 
 def _fit_bbox_to_frame(bbox: list, frame_w: int, frame_h: int) -> list[int] | None:
@@ -289,17 +381,17 @@ def _staff_bbox_from_ml(
 ) -> tuple[list[int] | None, float]:
     """Resolve staff bbox from live ML detections, mapped to the captured frame size."""
     try:
-        from ml.client import ml_live_detections, ml_service_enabled
+        from ml.client import ml_live_detections_for_camera, ml_service_enabled
     except ImportError:
         fitted = _fit_bbox_to_frame(fallback_bbox, frame_w, frame_h)
         return fitted, fallback_confidence
 
-    if not ml_service_enabled():
+    if not ml_service_enabled() or not getattr(camera, "ml_server_id", None):
         fitted = _fit_bbox_to_frame(fallback_bbox, frame_w, frame_h)
         return fitted, fallback_confidence
 
     try:
-        payload = ml_live_detections(camera.stream_key, rtsp_url=camera.effective_stream_url())
+        payload = ml_live_detections_for_camera(camera)
     except Exception:
         fitted = _fit_bbox_to_frame(fallback_bbox, frame_w, frame_h)
         return fitted, fallback_confidence
@@ -376,7 +468,60 @@ def _draw_attendance_staff_on_frame(
     return output
 
 
-def _draw_detection_on_frame(frame, event: DetectionEvent):
+def _infer_size_for_event(event: DetectionEvent, frame_w: int, frame_h: int, camera=None) -> tuple[int, int]:
+    """Resolve the resolution the event bbox was measured in."""
+    try:
+        infer_w = int(getattr(event, "infer_frame_width", 0) or 0)
+        infer_h = int(getattr(event, "infer_frame_height", 0) or 0)
+    except (TypeError, ValueError):
+        infer_w = infer_h = 0
+
+    if infer_w <= 0 or infer_h <= 0:
+        try:
+            from ml.client import ml_live_detections_for_camera, ml_service_enabled
+
+            if camera is not None and getattr(camera, "ml_server_id", None) and ml_service_enabled():
+                payload = ml_live_detections_for_camera(camera)
+                infer_w = int(payload.get("frame_width") or 0)
+                infer_h = int(payload.get("frame_height") or 0)
+        except Exception:
+            pass
+
+    bbox = event.bbox or []
+    try:
+        x2 = float(bbox[2]) if len(bbox) >= 3 else 0.0
+        y2 = float(bbox[3]) if len(bbox) >= 4 else 0.0
+    except (TypeError, ValueError, IndexError):
+        x2 = y2 = 0.0
+
+    if infer_w <= 0 or infer_h <= 0:
+        # Common ML scaled sizes when bbox clearly isn't in native capture coords.
+        for cand_w, cand_h in ((1280, 720), (1920, 1080), (960, 540)):
+            if x2 > 0 and y2 > 0 and x2 <= cand_w * 1.02 and y2 <= cand_h * 1.02:
+                if frame_w > cand_w * 1.25 or frame_h > cand_h * 1.25:
+                    infer_w, infer_h = cand_w, cand_h
+                    break
+
+    if infer_w <= 0 or infer_h <= 0:
+        if x2 > frame_w or y2 > frame_h:
+            infer_w = max(int(x2 * 1.05), frame_w)
+            infer_h = max(int(y2 * 1.05), frame_h)
+        else:
+            infer_w, infer_h = frame_w, frame_h
+
+    return infer_w, infer_h
+
+
+def _event_bbox_on_frame(event: DetectionEvent, frame_w: int, frame_h: int, camera=None) -> list[int] | None:
+    """Map detection bbox from ML infer resolution onto the captured frame."""
+    bbox = event.bbox or []
+    infer_w, infer_h = _infer_size_for_event(event, frame_w, frame_h, camera=camera)
+    if abs(infer_w - frame_w) > 8 or abs(infer_h - frame_h) > 8:
+        return _map_bbox_to_capture_frame(bbox, infer_w, infer_h, frame_w, frame_h)
+    return _fit_bbox_to_frame(bbox, frame_w, frame_h)
+
+
+def _draw_detection_on_frame(frame, event: DetectionEvent, camera=None):
     import cv2
 
     output = frame.copy()
@@ -409,7 +554,8 @@ def _draw_detection_on_frame(frame, event: DetectionEvent):
         cv2.LINE_AA,
     )
 
-    fitted = _fit_bbox_to_frame(event.bbox or [], w, h)
+    cam = camera if camera is not None else getattr(event, "camera", None)
+    fitted = _event_bbox_on_frame(event, w, h, camera=cam)
     if fitted:
         x1, y1, x2, y2 = fitted
         cv2.rectangle(output, (x1, y1), (x2, y2), color, box_thickness)
@@ -527,14 +673,21 @@ def _read_rtsp_snapshot(stream_url: str) -> object | None:
         "-hide_banner",
         "-loglevel",
         "error",
+        *hwaccel_input_flags(),
         *_rtsp_input_extra(),
         "-i",
         stream_url,
         "-frames:v",
         "1",
+    ]
+    vf = gpu_aware_vf(None)
+    if vf:
+        cmd += ["-vf", vf]
+    cmd += [
         "-q:v",
         "2",
         "-y",
+        
         temp_path,
     ]
     try:
@@ -573,13 +726,13 @@ def _warm_ml_stream(camera) -> None:
             pass
         return
     try:
-        from ml.client import ml_live_detections, ml_service_enabled
+        from ml.client import ml_live_detections_for_camera, ml_service_enabled
     except ImportError:
         return
-    if not ml_service_enabled():
+    if not ml_service_enabled() or not getattr(camera, "ml_server_id", None):
         return
     try:
-        ml_live_detections(camera.stream_key, rtsp_url=camera.effective_stream_url())
+        ml_live_detections_for_camera(camera)
     except Exception:
         pass
 
@@ -623,8 +776,10 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
     stream_url = camera.effective_stream_url()
     _release_db()
 
-    frame = None
-    if stream_url:
+    # Prefer ML same-frame evidence (YOLO frame) — avoids stale bbox on a later RTSP grab.
+    frame = _read_ml_evidence_frame(camera)
+
+    if frame is None and stream_url and _allow_direct_rtsp():
         frame = _read_rtsp_snapshot(stream_url)
 
     if frame is None and not _ml_on_cooldown(camera_id):
@@ -641,7 +796,7 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
             _update_clip_status(event_id, ClipStatus.FAILED)
         return
 
-    annotated = _draw_detection_on_frame(frame, event)
+    annotated = _draw_detection_on_frame(frame, event, camera=camera)
     ok, encoded = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
     if not ok or encoded is None:
         logger.warning("JPEG encode failed for detection event %s", event_id)
@@ -760,12 +915,15 @@ def schedule_detection_clip(camera_id: int, event_id: int) -> None:
 
 def _ml_annotated_mjpeg_url(camera) -> str | None:
     try:
-        from ml.client import ml_live_mjpeg_url, ml_service_enabled
+        from ml.client import MLServiceError, ml_live_mjpeg_url_for_camera, ml_service_enabled
     except ImportError:
         return None
-    if not ml_service_enabled():
+    if not ml_service_enabled() or not getattr(camera, "ml_server_id", None):
         return None
-    return ml_live_mjpeg_url(camera.stream_key, rtsp_url=camera.effective_stream_url())
+    try:
+        return ml_live_mjpeg_url_for_camera(camera)
+    except MLServiceError:
+        return None
 
 
 def _attendance_video_seconds() -> float:
@@ -800,11 +958,16 @@ def _journey_snapshot_width() -> int:
 
 
 def _journey_snapshot_native() -> bool:
-    return bool(getattr(settings, "JOURNEY_SNAPSHOT_NATIVE", True))
+    return bool(getattr(settings, "JOURNEY_SNAPSHOT_NATIVE", False))
+
+
+def _allow_direct_rtsp() -> bool:
+    """When False, snapshots must use the shared ML Camera Session (no second FFmpeg)."""
+    return bool(getattr(settings, "CLIP_ALLOW_DIRECT_RTSP", False))
 
 
 def _journey_jpeg_quality() -> int:
-    return max(90, min(100, int(getattr(settings, "JOURNEY_SNAPSHOT_JPEG_QUALITY", 98))))
+    return max(95, min(100, int(getattr(settings, "JOURNEY_SNAPSHOT_JPEG_QUALITY", 98))))
 
 
 def _journey_snapshot_full_frame() -> bool:
@@ -833,11 +996,17 @@ def _read_rtsp_native_snapshot(stream_url: str) -> object | None:
         "-hide_banner",
         "-loglevel",
         "error",
+        *hwaccel_input_flags(),
         *_rtsp_input_extra(),
         "-i",
         stream_url,
         "-frames:v",
         "1",
+    ]
+    vf = gpu_aware_vf(None)
+    if vf:
+        cmd += ["-vf", vf]
+    cmd += [
         "-q:v",
         "1",
         "-y",
@@ -884,13 +1053,14 @@ def _read_rtsp_hd_snapshot(stream_url: str, *, target_width: int) -> object | No
         "-hide_banner",
         "-loglevel",
         "error",
+        *hwaccel_input_flags(),
         *_rtsp_input_extra(),
         "-i",
         stream_url,
         "-frames:v",
         "1",
         "-vf",
-        f"scale='min(iw,{target_width})':-2:flags=lanczos",
+        gpu_aware_vf(f"scale='min(iw,{target_width})':-2:flags=lanczos"),
         "-q:v",
         "1",
         "-y",
@@ -919,26 +1089,14 @@ def _read_rtsp_hd_snapshot(stream_url: str, *, target_width: int) -> object | No
 
 
 def read_journey_hd_frame(camera: Camera) -> object | None:
-    """Full-resolution frame for journey snapshots (native RTSP main stream preferred)."""
+    """Full-resolution frame for journey snapshots — shared ML session first."""
     target_width = _journey_snapshot_width()
     prefer_native = _journey_snapshot_native() or target_width <= 0
     stream_url = camera.effective_stream_url() if camera else ""
-
-    if stream_url and prefer_native:
-        frame = _read_rtsp_native_snapshot(stream_url)
-        if frame is not None:
-            h, w = frame.shape[:2]
-            logger.debug("Journey snapshot native RTSP %sx%s from camera %s", w, h, camera.pk)
-            if target_width <= 0 or w >= target_width:
-                return frame
-            return _upscale_frame_to_hd(frame, target_width)
-
-    if stream_url and target_width > 0:
-        frame = _read_rtsp_hd_snapshot(stream_url, target_width=target_width)
-        if frame is not None:
-            return frame
-
     camera_id = getattr(camera, "pk", None)
+    allow_rtsp = _allow_direct_rtsp()
+
+    # 1) Shared Camera Session (same decode as live / YOLO) — preferred.
     if not _ml_on_cooldown(int(camera_id or 0)):
         ml_width = target_width if target_width > 0 else 3840
         attendance_url = _ml_attendance_mjpeg_url(camera, target_width=ml_width)
@@ -950,22 +1108,60 @@ def read_journey_hd_frame(camera: Camera) -> object | None:
                 return frame
             _mark_ml_fail(camera_id)
 
-    if stream_url:
+        raw_url = _ml_raw_mjpeg_url(camera)
+        if raw_url and not _ml_on_cooldown(int(camera_id or 0)):
+            frame = _read_mjpeg_snapshot(raw_url, timeout_sec=4.0)
+            if frame is None:
+                _mark_ml_fail(camera_id)
+            elif target_width > 0:
+                return _upscale_frame_to_hd(frame, target_width)
+            else:
+                return frame
+
+    # 2) Optional direct RTSP (disabled under shared-session architecture).
+    if allow_rtsp and stream_url and prefer_native:
+        frame = _read_rtsp_native_snapshot(stream_url)
+        if frame is not None:
+            h, w = frame.shape[:2]
+            logger.debug("Journey snapshot native RTSP %sx%s from camera %s", w, h, camera.pk)
+            if target_width <= 0 or w >= target_width:
+                return frame
+            return _upscale_frame_to_hd(frame, target_width)
+
+    if allow_rtsp and stream_url and target_width > 0:
+        frame = _read_rtsp_hd_snapshot(stream_url, target_width=target_width)
+        if frame is not None:
+            return frame
+
+    if allow_rtsp and stream_url:
         frame = _read_rtsp_snapshot(stream_url)
         if frame is not None:
             if target_width > 0:
                 return _upscale_frame_to_hd(frame, target_width)
             return frame
 
+    return None
+
+
+def read_journey_detect_frame(camera: Camera) -> object | None:
+    """
+    Frame in the SAME resolution as live ML detections (no HD upscale).
+
+    Upscaling after grab misplaces bboxes onto empty wall/floor. Person crops
+    must use this path so track boxes line up with the pixels we crop.
+    """
+    camera_id = getattr(camera, "pk", None)
+    if _ml_on_cooldown(int(camera_id or 0)):
+        return None
+
+    # Raw YOLO / session frame — matches detection coordinates 1:1.
     raw_url = _ml_raw_mjpeg_url(camera)
-    if raw_url and not _ml_on_cooldown(int(camera_id or 0)):
+    if raw_url:
         frame = _read_mjpeg_snapshot(raw_url, timeout_sec=4.0)
-        if frame is None:
-            _mark_ml_fail(camera_id)
-        elif target_width > 0:
-            return _upscale_frame_to_hd(frame, target_width)
-        else:
+        if frame is not None:
             return frame
+        _mark_ml_fail(camera_id)
+
     return None
 
 
@@ -973,77 +1169,24 @@ def draw_journey_snapshot_on_frame(
     frame,
     *,
     bbox: list[int] | None,
-    person_label: str,
+    person_label: str = "",
     camera_name: str = "",
     confidence: float | None = None,
 ):
-    """Annotate a full camera frame — box around the person + readable labels."""
+    """Annotate a full camera frame with only the person bounding box (no text labels)."""
     import cv2
 
     output = frame.copy()
-    h, w = output.shape[:2]
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = max(0.55, h / 1080 * 0.55)
-    thickness = max(1, int(font_scale * 1.6))
-    box_thickness = max(2, int(font_scale * 1.4))
-
-    banner_lines = [line for line in [camera_name.strip(), person_label.strip()] if line]
-    if confidence is not None and confidence > 0:
-        pct = confidence * 100.0 if confidence <= 1.0 else confidence
-        banner_lines.append(f"{pct:.0f}%")
-
-    y_cursor = 10
-    for line in banner_lines:
-        (text_w, text_h), baseline = cv2.getTextSize(line, font, font_scale, thickness)
-        cv2.rectangle(
-            output,
-            (8, y_cursor),
-            (16 + text_w, y_cursor + text_h + baseline + 8),
-            (0, 0, 0),
-            -1,
-        )
-        cv2.putText(
-            output,
-            line,
-            (12, y_cursor + text_h + 4),
-            font,
-            font_scale,
-            (255, 255, 255),
-            thickness,
-            cv2.LINE_AA,
-        )
-        y_cursor += text_h + baseline + 12
-
     if not bbox:
         return output
 
-    x1, y1, x2, y2 = bbox
+    h, w = output.shape[:2]
+    font_scale = max(0.7, h / 1080 * 0.75)
+    box_thickness = max(3, int(font_scale * 2.0))
+
+    x1, y1, x2, y2 = [int(v) for v in bbox]
     color = (0, 220, 0)
     cv2.rectangle(output, (x1, y1), (x2, y2), color, box_thickness)
-
-    box_label = person_label.strip()
-    if confidence is not None and confidence > 0:
-        box_label = f"{box_label} {confidence:.2f}".strip()
-    (text_w, text_h), baseline = cv2.getTextSize(box_label, font, font_scale, thickness)
-    text_x = int(x1)
-    text_y = max(text_h + 6, int(y1) - 6)
-    cv2.rectangle(
-        output,
-        (text_x, text_y - text_h - 4),
-        (text_x + text_w + 6, text_y + baseline + 3),
-        (0, 0, 0),
-        -1,
-    )
-    cv2.putText(
-        output,
-        box_label,
-        (text_x + 3, text_y),
-        font,
-        font_scale,
-        color,
-        thickness,
-        cv2.LINE_AA,
-    )
     return output
 
 
@@ -1096,14 +1239,16 @@ def _read_rtsp_clip(
         "-hide_banner",
         "-loglevel",
         "error",
+        *hwaccel_input_flags(),
         *_rtsp_input_extra(),
         "-i",
         stream_url,
         "-t",
         f"{duration_sec:.2f}",
     ]
-    if target_width > 0:
-        cmd += ["-vf", f"scale='min(iw,{target_width})':-2:flags=lanczos"]
+    vf = gpu_aware_vf(f"scale='min(iw,{target_width})':-2:flags=lanczos" if target_width > 0 else None)
+    if vf:
+        cmd += ["-vf", vf]
     cmd += [
         "-r",
         str(max(4, max_fps)),
@@ -1282,7 +1427,7 @@ def capture_attendance_snapshot_sync(
     infer_frame_w: int = 0,
     infer_frame_h: int = 0,
 ) -> None:
-    """Record attendance clip with a label on the marked staff member only."""
+    """Capture one annotated JPEG snapshot for the attendance record (no video)."""
     from users.models import Attendance
 
     if not _attendance_snapshot_enabled():
@@ -1302,141 +1447,100 @@ def capture_attendance_snapshot_sync(
     try:
         import cv2
     except ImportError:
-        logger.warning("OpenCV not available for attendance clip capture")
+        logger.warning("OpenCV not available for attendance snapshot capture")
         _release_db()
         return
 
-    duration = _attendance_video_seconds()
-    fps = _attendance_video_fps()
     hd_width = _attendance_video_width()
     jpeg_q = _attendance_jpeg_quality()
     display_name = (employee_name or label or "staff").strip()[:80]
     stream_url = camera.effective_stream_url()
     skip_ml = _ml_on_cooldown(camera_id)
     _release_db()
-    frames: list = []
-    bbox_state: dict[str, object] = {
-        "bbox": None,
-        "conf": confidence,
-        "at": 0.0,
-        "infer_w": int(infer_frame_w or 0),
-        "infer_h": int(infer_frame_h or 0),
-    }
 
-    def _current_staff_box(frame_w: int, frame_h: int) -> tuple[list[int] | None, float]:
-        now = time.monotonic()
-        if bbox_state["bbox"] is None or now - float(bbox_state["at"]) >= 0.1:
-            fitted, conf = _staff_bbox_from_ml(
-                camera,
-                label,
-                employee_name,
-                frame_w,
-                frame_h,
-                bbox or [],
-                fallback_confidence=confidence,
-                infer_frame_w=int(bbox_state["infer_w"] or 0),
-                infer_frame_h=int(bbox_state["infer_h"] or 0),
-            )
-            bbox_state["bbox"] = fitted
-            bbox_state["conf"] = conf
-            bbox_state["at"] = now
-        return bbox_state["bbox"], float(bbox_state["conf"])  # type: ignore[return-value]
-
-    def _annotate_frame(frame):
-        h, w = frame.shape[:2]
-        fitted, conf = _current_staff_box(w, h)
-        return _draw_attendance_staff_on_frame(
-            frame,
-            bbox=fitted,
-            display_name=display_name,
-            confidence=conf,
-        )
+    frame = None
 
     if not skip_ml:
         _warm_ml_stream(camera)
 
-    # 1) HD main-stream via ML + label only the marked staff member.
+    # 1) Single HD frame from ML attendance JPEG/MJPEG endpoint
     attendance_url = None if skip_ml else _ml_attendance_mjpeg_url(camera, target_width=hd_width)
     if attendance_url:
-        frames = _read_mjpeg_clip(
-            attendance_url,
-            duration_sec=duration,
-            max_fps=fps,
-            on_frame=_annotate_frame,
-        )
+        frame = _read_mjpeg_snapshot(attendance_url, timeout_sec=6.0)
 
-    # 2) Raw MJPEG + single staff overlay.
-    if not frames and not skip_ml:
+    # 2) Raw MJPEG / JPEG
+    if frame is None and not skip_ml:
         raw_url = _ml_raw_mjpeg_url(camera)
         if raw_url:
-            frames = _read_mjpeg_clip(
-                raw_url,
-                duration_sec=duration,
-                max_fps=fps,
-                on_frame=_annotate_frame,
-            )
-            frames = _upscale_frames_to_hd(frames, hd_width)
+            frame = _read_mjpeg_snapshot(raw_url, timeout_sec=6.0)
+            if frame is not None and hd_width > 0:
+                upscaled = _upscale_frames_to_hd([frame], hd_width)
+                frame = upscaled[0] if upscaled else frame
 
-    # 3) Last resort: direct NVR main-stream RTSP (same URL as ML registration).
-    if not frames and stream_url:
-        frames = _read_rtsp_clip(
-            stream_url,
-            duration_sec=duration,
-            max_fps=fps,
-            target_width=hd_width,
-            on_frame=_annotate_frame,
-        )
+    # 3) Direct RTSP one-shot (only when shared-session RTSP fallback is enabled)
+    if frame is None and stream_url and _allow_direct_rtsp():
+        if hd_width > 0:
+            frame = _read_rtsp_hd_snapshot(stream_url, target_width=hd_width)
+        if frame is None:
+            frame = _read_rtsp_snapshot(stream_url)
+            if frame is not None and hd_width > 0:
+                upscaled = _upscale_frames_to_hd([frame], hd_width)
+                frame = upscaled[0] if upscaled else frame
 
-    if not frames and stream_url:
-        single = _read_rtsp_snapshot(stream_url)
-        if single is not None:
-            frames = _upscale_frames_to_hd([_annotate_frame(single)], hd_width)
-
-    if not frames:
-        logger.warning("Could not capture attendance clip for record %s", attendance_id)
+    if frame is None:
+        logger.warning("Could not capture attendance snapshot for record %s", attendance_id)
         return
 
-    temp_dir = os.path.join(settings.MEDIA_ROOT, "attendance", "videos", "_tmp")
-    os.makedirs(temp_dir, exist_ok=True)
-    temp_mp4 = os.path.join(temp_dir, f"attendance_{attendance_id}_{int(time.time())}.mp4")
+    h, w = frame.shape[:2]
+    fitted, conf = _staff_bbox_from_ml(
+        camera,
+        label,
+        employee_name,
+        w,
+        h,
+        bbox or [],
+        fallback_confidence=confidence,
+        infer_frame_w=int(infer_frame_w or 0),
+        infer_frame_h=int(infer_frame_h or 0),
+    )
+    annotated = _draw_attendance_staff_on_frame(
+        frame,
+        bbox=fitted,
+        display_name=display_name,
+        confidence=conf,
+    )
 
     try:
         attendance.refresh_from_db(fields=["image", "video"])
+        ok, encoded = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_q])
+        if not ok or encoded is None:
+            logger.warning("Failed to encode attendance JPEG for record %s", attendance_id)
+            return
 
-        if len(frames) > 1 and _encode_frames_to_mp4(
-            frames, temp_mp4, duration_sec=duration, nominal_fps=fps
-        ):
-            filename = f"attendance_{attendance_id}_{action}.mp4"
-            with open(temp_mp4, "rb") as fh:
-                attendance.video.save(filename, ContentFile(fh.read()), save=False)
-
-        poster = frames[0]
-        ok, encoded = cv2.imencode(".jpg", poster, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_q])
-        if ok and encoded is not None:
-            attendance.image.save(
-                f"attendance_{attendance_id}_{action}.jpg",
-                ContentFile(encoded.tobytes()),
-                save=False,
-            )
-
+        attendance.image.save(
+            f"attendance_{attendance_id}_{action}.jpg",
+            ContentFile(encoded.tobytes()),
+            save=False,
+        )
+        # Snapshots only — do not create or keep new video clips.
+        if attendance.video:
+            try:
+                attendance.video.delete(save=False)
+            except Exception:
+                attendance.video = None
         attendance.save(update_fields=["image", "video"])
         logger.info(
-            "Saved attendance clip for record %s video=%s action=%s frames=%s duration=%.1fs",
+            "Saved attendance snapshot for record %s image=%s action=%s size=%sx%s",
             attendance_id,
-            attendance.video.name if attendance.video else "none",
+            attendance.image.name if attendance.image else "none",
             action,
-            len(frames),
-            duration,
+            w,
+            h,
         )
     except Exception:
-        logger.exception("Failed to save attendance clip for record %s", attendance_id)
+        logger.exception("Failed to save attendance snapshot for record %s", attendance_id)
     finally:
         _release_db()
-        try:
-            if os.path.isfile(temp_mp4):
-                os.remove(temp_mp4)
-        except OSError:
-            pass
 
 
 def _process_attendance_jobs() -> None:
@@ -1474,7 +1578,7 @@ def schedule_attendance_snapshot(
     infer_frame_w: int = 0,
     infer_frame_h: int = 0,
 ) -> None:
-    """Capture attendance proof clip — only the marked staff member is labeled."""
+    """Queue a single attendance proof snapshot (JPEG only)."""
     global _attendance_workers
     if not _attendance_snapshot_enabled():
         return

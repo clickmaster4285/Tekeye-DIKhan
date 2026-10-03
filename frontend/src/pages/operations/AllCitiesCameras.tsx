@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Navigate, useNavigate } from "react-router-dom"
 import {
   Camera,
@@ -22,6 +22,10 @@ import {
   WifiOff,
 } from "lucide-react"
 import { ModulePageLayout } from "@/components/dashboard/module-page-layout"
+import { WallAlertsPanel, WallAlertPopupHost } from "@/components/operations/wall-alerts-panel"
+import { WallAnalyticsPanel } from "@/components/operations/wall-analytics-panel"
+import { WallGpsPanel } from "@/components/operations/wall-gps-panel"
+import { WallWidgetPicker } from "@/components/operations/wall-widget-picker"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -34,6 +38,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { Switch } from "@/components/ui/switch"
 import {
   Select,
@@ -43,15 +48,31 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { getStoredUser } from "@/lib/auth"
-import { canViewAllCitiesCameras, getCamerasWallLabel } from "@/lib/all-cities-cameras"
+import {
+  canViewAllCitiesCameras,
+  getCamerasWallLabel,
+  readAllCitiesStreamsCache,
+  setAllCitiesCamerasPreference,
+  writeAllCitiesStreamsCache,
+} from "@/lib/all-cities-cameras"
+import {
+  WALL_WIDGET_CATALOG,
+  hasAnySidePanel,
+  loadCustomWallDesign,
+  placeWallWidget,
+  reorderInDock,
+  saveCustomWallDesign,
+  type CustomWallDesign,
+  type WallDock,
+  type WallWidgetId,
+} from "@/lib/custom-wall-layout"
 import { normalizeRole } from "@/lib/role-access"
 import { ROUTES } from "@/routes/config"
-import {
-  setAllCitiesCamerasPreference,
-} from "@/lib/all-cities-cameras"
+import { WebRtcPlayer, type WebRtcPlayerHandle } from "@/components/cameras/webrtc-player"
 import {
   fetchAllCitiesSelection,
   fetchAllCitiesStreams,
+  opsMjpegUrlToJpeg,
   saveAllCitiesSelection,
   withOpsStreamToken,
   type OpsCamera,
@@ -112,12 +133,19 @@ function gridPageSize(layout: GridLayout): number {
 }
 
 function camerasFingerprint(
-  list: Array<{ server_id?: number; id: number; code: string; ml_live_stream_url?: string }>
+  list: Array<{
+    server_id?: number
+    id: number
+    code: string
+    ml_live_stream_url?: string
+    view_stream_url?: string
+    webrtc_stream_url?: string
+  }>
 ): string {
   return list
     .map(
       (c) =>
-        `${c.server_id ?? 0}:${c.id}:${c.code}:${(c.ml_live_stream_url || "").trim()}`
+        `${c.server_id ?? 0}:${c.id}:${c.code}:${(c.view_stream_url || "").trim()}:${(c.ml_live_stream_url || "").trim()}`
     )
     .join("|")
 }
@@ -134,7 +162,11 @@ function isCameraOnline(camera: CityCamera): boolean {
   if (["online", "active", "live", "running", "ok"].includes(status)) return true
   if (typeof camera.connected === "boolean" && camera.connected) return true
   if (typeof camera.is_active === "boolean") return camera.is_active
-  return Boolean((camera.ml_live_stream_url || "").trim())
+  return Boolean(
+    (camera.view_stream_url || "").trim() ||
+    (camera.webrtc_stream_url || "").trim() ||
+    (camera.ml_live_stream_url || "").trim()
+  )
 }
 
 /** Balanced column count for Auto wall — avoids one skinny row of N cameras. */
@@ -209,7 +241,7 @@ function GridLayoutSelect({
         className={cn(
           "h-8 w-[9.5rem] gap-2 text-xs font-medium",
           dark &&
-            "border-white/25 bg-white/5 text-white shadow-none hover:bg-white/10 focus:ring-white/20 [&>svg]:text-white/70"
+          "border-white/25 bg-white/5 text-white shadow-none hover:bg-white/10 focus:ring-white/20 [&>svg]:text-white/70"
         )}
         aria-label="Grid layout"
       >
@@ -222,8 +254,8 @@ function GridLayoutSelect({
         align="end"
         className={cn(
           "min-w-[12rem]",
-          // Wall overlay is z-[190] — dropdown must render above it
-          dark && "!z-[220]",
+          // Wall overlay is z-[250] — portal dropdown must sit above it
+          dark && "!z-[270]",
         )}
       >
         {GRID_LAYOUT_OPTIONS.map((option) => (
@@ -236,6 +268,308 @@ function GridLayoutSelect({
         ))}
       </SelectContent>
     </Select>
+  )
+}
+
+function renderWallWidget(
+  id: WallWidgetId,
+  opts: { cameraCount: number; onlineCount: number },
+) {
+  switch (id) {
+    case "gps":
+      return <WallGpsPanel className="h-full min-h-0" />
+    case "alerts":
+      return <WallAlertsPanel className="h-full min-h-0" />
+    case "analytics":
+      return (
+        <WallAnalyticsPanel
+          className="h-full min-h-0"
+          cameraCount={opts.cameraCount}
+          onlineCount={opts.onlineCount}
+        />
+      )
+    default:
+      return null
+  }
+}
+
+const WALL_DND = "application/x-tekeye-wall-widget"
+
+function DockStack({
+  dock,
+  ids,
+  design,
+  onDesignChange,
+  cameraCount,
+  onlineCount,
+  edgeClass,
+}: {
+  dock: WallDock
+  ids: WallWidgetId[]
+  design: CustomWallDesign
+  onDesignChange: (next: CustomWallDesign) => void
+  cameraCount: number
+  onlineCount: number
+  edgeClass?: string
+}) {
+  if (ids.length === 0) return null
+  const horizontal = dock === "top" || dock === "bottom"
+  const equal = Math.floor(100 / ids.length)
+
+  const panelBody = (id: WallWidgetId, index: number) => {
+    const label = WALL_WIDGET_CATALOG.find((w) => w.id === id)?.label || id
+    return (
+      <div
+        className={cn("flex h-full min-h-0 flex-col", edgeClass)}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault()
+          try {
+            const raw = e.dataTransfer.getData(WALL_DND) || e.dataTransfer.getData("text/plain")
+            const payload = JSON.parse(raw) as {
+              kind?: string
+              id?: WallWidgetId
+              dock?: WallDock
+              fromIndex?: number
+            }
+            if (payload?.kind === "catalog" && payload.id) {
+              onDesignChange(placeWallWidget(design, payload.id, dock, index))
+              return
+            }
+            if (payload?.kind === "reorder" && payload.id) {
+              if (payload.dock === dock && typeof payload.fromIndex === "number") {
+                onDesignChange(reorderInDock(design, dock, payload.fromIndex, index))
+              } else {
+                onDesignChange(placeWallWidget(design, payload.id, dock, index))
+              }
+            }
+          } catch {
+            /* ignore */
+          }
+        }}
+      >
+        <div
+          draggable
+          onDragStart={(e) => {
+            const payload = JSON.stringify({
+              kind: "reorder",
+              id,
+              dock,
+              fromIndex: index,
+            })
+            e.dataTransfer.setData(WALL_DND, payload)
+            e.dataTransfer.setData("text/plain", payload)
+            e.dataTransfer.effectAllowed = "move"
+          }}
+          className="flex h-5 shrink-0 cursor-grab items-center justify-center gap-1.5 border-b border-white/[0.06] bg-zinc-950/80 active:cursor-grabbing"
+          title={`Drag ${label} (${dock})`}
+          aria-label={`Move ${label} panel`}
+        >
+          <span className="h-0.5 w-8 rounded-full bg-white/20" />
+        </div>
+        <div className="min-h-0 flex-1">
+          {renderWallWidget(id, { cameraCount, onlineCount })}
+        </div>
+      </div>
+    )
+  }
+
+  if (ids.length === 1) {
+    return <div className="h-full min-h-0 w-full">{panelBody(ids[0], 0)}</div>
+  }
+
+  return (
+    <ResizablePanelGroup
+      direction={horizontal ? "horizontal" : "vertical"}
+      className="h-full min-h-0 w-full"
+    >
+      {ids.flatMap((id, index) => {
+        const panel = (
+          <ResizablePanel
+            key={id}
+            defaultSize={index === ids.length - 1 ? 100 - equal * (ids.length - 1) : equal}
+            minSize={16}
+            className="min-h-0"
+          >
+            {panelBody(id, index)}
+          </ResizablePanel>
+        )
+        if (index === 0) return [panel]
+        return [
+          <ResizableHandle
+            key={`h-${dock}-${id}`}
+            withHandle
+            className={cn(
+              "bg-white/10 data-[resize-handle-active]:bg-emerald-500/50",
+              horizontal ? "w-1.5" : "h-1.5",
+            )}
+          />,
+          panel,
+        ]
+      })}
+    </ResizablePanelGroup>
+  )
+}
+
+function CustomWallWorkspace({
+  design,
+  camerasPane,
+  cameraCount,
+  onlineCount,
+  onDesignChange,
+}: {
+  design: CustomWallDesign
+  camerasPane: ReactNode
+  cameraCount: number
+  onlineCount: number
+  onDesignChange: (next: CustomWallDesign) => void
+}) {
+  if (!hasAnySidePanel(design)) {
+    return <div className="relative h-full min-h-0 overflow-hidden">{camerasPane}</div>
+  }
+
+  const { left, right, top, bottom } = design.docks
+  const hasLeft = left.length > 0
+  const hasRight = right.length > 0
+  const hasTop = top.length > 0
+  const hasBottom = bottom.length > 0
+
+  // Keep cameras dominant — side docks never steal the center.
+  const leftPct = hasLeft ? Math.min(design.leftSize, 28) : 0
+  const rightPct = hasRight ? Math.min(design.rightSize, 28) : 0
+  const topPct = hasTop ? Math.min(design.topSize, 26) : 0
+  const bottomPct = hasBottom ? Math.min(design.bottomSize, 26) : 0
+  const camerasW = Math.max(44, 100 - leftPct - rightPct)
+  const camerasH = Math.max(48, 100 - topPct - bottomPct)
+
+  const camerasCenter = (
+    <div className="relative z-[1] h-full min-h-0 min-w-0 overflow-hidden bg-black">
+      {camerasPane}
+    </div>
+  )
+
+  const midRow = (
+    <ResizablePanelGroup direction="horizontal" className="h-full min-h-0 w-full">
+      {hasLeft ? (
+        <>
+          <ResizablePanel
+            id="wall-left"
+            order={1}
+            defaultSize={leftPct}
+            minSize={14}
+            maxSize={28}
+            className="min-h-0 overflow-hidden"
+          >
+            <DockStack
+              dock="left"
+              ids={left}
+              design={design}
+              onDesignChange={onDesignChange}
+              cameraCount={cameraCount}
+              onlineCount={onlineCount}
+              edgeClass="border-r border-white/10"
+            />
+          </ResizablePanel>
+          <ResizableHandle withHandle className="w-1.5 bg-white/10 data-[resize-handle-active]:bg-emerald-500/50" />
+        </>
+      ) : null}
+      <ResizablePanel
+        id="wall-cameras"
+        order={2}
+        defaultSize={camerasW}
+        minSize={44}
+        className="min-h-0 min-w-0 overflow-hidden"
+      >
+        {camerasCenter}
+      </ResizablePanel>
+      {hasRight ? (
+        <>
+          <ResizableHandle withHandle className="w-1.5 bg-white/10 data-[resize-handle-active]:bg-emerald-500/50" />
+          <ResizablePanel
+            id="wall-right"
+            order={3}
+            defaultSize={rightPct}
+            minSize={14}
+            maxSize={28}
+            className="min-h-0 overflow-hidden"
+          >
+            <DockStack
+              dock="right"
+              ids={right}
+              design={design}
+              onDesignChange={onDesignChange}
+              cameraCount={cameraCount}
+              onlineCount={onlineCount}
+              edgeClass="border-l border-white/10"
+            />
+          </ResizablePanel>
+        </>
+      ) : null}
+    </ResizablePanelGroup>
+  )
+
+  if (!hasTop && !hasBottom) {
+    return midRow
+  }
+
+  return (
+    <ResizablePanelGroup direction="vertical" className="h-full min-h-0 w-full">
+      {hasTop ? (
+        <>
+          <ResizablePanel
+            id="wall-top"
+            order={1}
+            defaultSize={topPct}
+            minSize={12}
+            maxSize={26}
+            className="min-h-0 overflow-hidden"
+          >
+            <DockStack
+              dock="top"
+              ids={top}
+              design={design}
+              onDesignChange={onDesignChange}
+              cameraCount={cameraCount}
+              onlineCount={onlineCount}
+              edgeClass="border-b border-white/10"
+            />
+          </ResizablePanel>
+          <ResizableHandle withHandle className="h-1.5 bg-white/10 data-[resize-handle-active]:bg-emerald-500/50" />
+        </>
+      ) : null}
+      <ResizablePanel
+        id="wall-mid"
+        order={2}
+        defaultSize={camerasH}
+        minSize={48}
+        className="min-h-0 overflow-hidden"
+      >
+        {midRow}
+      </ResizablePanel>
+      {hasBottom ? (
+        <>
+          <ResizableHandle withHandle className="h-1.5 bg-white/10 data-[resize-handle-active]:bg-emerald-500/50" />
+          <ResizablePanel
+            id="wall-bottom"
+            order={3}
+            defaultSize={bottomPct}
+            minSize={12}
+            maxSize={26}
+            className="min-h-0 overflow-hidden"
+          >
+            <DockStack
+              dock="bottom"
+              ids={bottom}
+              design={design}
+              onDesignChange={onDesignChange}
+              cameraCount={cameraCount}
+              onlineCount={onlineCount}
+              edgeClass="border-t border-white/10"
+            />
+          </ResizablePanel>
+        </>
+      ) : null}
+    </ResizablePanelGroup>
   )
 }
 
@@ -256,36 +590,111 @@ const StreamTile = memo(function StreamTile({
   canManage?: boolean
   onRemove?: () => void
   removing?: boolean
-  /** When false, show a placeholder instead of opening an MJPEG connection. */
+  /** When false, show a placeholder instead of opening a stream connection. */
   liveEnabled?: boolean
 }) {
   const [retry, setRetry] = useState(0)
   const [error, setError] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [now, setNow] = useState(() => new Date())
+  const [jpegSrc, setJpegSrc] = useState<string | null>(null)
+  const [hasFrame, setHasFrame] = useState(false)
+  const [webrtcFailed, setWebrtcFailed] = useState(false)
   const imgRef = useRef<HTMLImageElement | null>(null)
+  const webrtcRef = useRef<WebRtcPlayerHandle | null>(null)
   const retryTimerRef = useRef<number | null>(null)
-  const raw = (camera.ml_live_stream_url || "").trim()
-  const tokenized = raw ? withOpsStreamToken(raw) : null
-  const src =
-    (liveEnabled || isFullscreen) && tokenized
-      ? `${tokenized}${tokenized.includes("?") ? "&" : "?"}r=${retry}`
+  const pollTimerRef = useRef<number | null>(null)
+  const hasFrameRef = useRef(false)
+
+  // Viewing path: WebRTC (go2rtc H.265→H.264) first; fallback = native 4K NVR MJPEG (/view/).
+  // Never use ML 720p AI buffer for the All Cities wall.
+  const viewRaw = (camera.view_stream_url || "").trim()
+  const webrtcRaw = (camera.webrtc_stream_url || "").trim()
+  const useWebrtc = Boolean(webrtcRaw) && !webrtcFailed && (liveEnabled || isFullscreen)
+
+  const raw =
+    viewRaw ||
+    (camera.raw_stream_url || "").trim() ||
+    (camera.ml_live_stream_url || "").trim()
+  const tokenizedMjpeg = raw ? withOpsStreamToken(raw) : null
+  const tokenizedJpeg = raw ? withOpsStreamToken(opsMjpegUrlToJpeg(raw)) : null
+  // 4K MJPEG whenever WebRTC is off/failed (grid + fullscreen).
+  const useMjpeg = !useWebrtc && Boolean(tokenizedMjpeg) && (liveEnabled || isFullscreen)
+  const mjpegSrc =
+    useMjpeg && tokenizedMjpeg
+      ? `${tokenizedMjpeg}${tokenizedMjpeg.includes("?") ? "&" : "?"}r=${retry}&max_width=0`
       : null
+  const src = useMjpeg ? mjpegSrc : jpegSrc
 
   useEffect(() => {
     return () => {
       if (retryTimerRef.current != null) window.clearTimeout(retryTimerRef.current)
+      if (pollTimerRef.current != null) window.clearTimeout(pollTimerRef.current)
     }
   }, [])
 
   useEffect(() => {
+    setWebrtcFailed(false)
+  }, [camera.webrtc_stream_url, camera.view_stream_url, camera.id, camera.server_id])
+
+  useEffect(() => {
     if (liveEnabled) return
     setError(false)
+    setHasFrame(false)
+    hasFrameRef.current = false
+    setJpegSrc(null)
     if (retryTimerRef.current != null) {
       window.clearTimeout(retryTimerRef.current)
       retryTimerRef.current = null
     }
+    if (pollTimerRef.current != null) {
+      window.clearTimeout(pollTimerRef.current)
+      pollTimerRef.current = null
+    }
   }, [liveEnabled])
+
+  useEffect(() => {
+    if (useWebrtc || useMjpeg || !liveEnabled || !tokenizedJpeg) {
+      if (!useMjpeg && !useWebrtc) setJpegSrc(null)
+      return
+    }
+    let cancelled = false
+    const key = `${camera.server_id ?? 0}:${camera.id}:${camera.code}`
+    let stagger = 0
+    for (let i = 0; i < key.length; i++) stagger = (stagger + key.charCodeAt(i) * (i + 1)) % 900
+    const intervalMs = 900
+
+    const tick = () => {
+      if (cancelled) return
+      const next = `${tokenizedJpeg}${tokenizedJpeg.includes("?") ? "&" : "?"}t=${Date.now()}&r=${retry}`
+      const probe = new Image()
+      probe.onload = () => {
+        if (cancelled) return
+        setJpegSrc(next)
+        hasFrameRef.current = true
+        setHasFrame(true)
+        setError(false)
+        pollTimerRef.current = window.setTimeout(tick, intervalMs)
+      }
+      probe.onerror = () => {
+        if (cancelled) return
+        if (!hasFrameRef.current) setError(true)
+        pollTimerRef.current = window.setTimeout(tick, intervalMs + 500)
+      }
+      probe.src = next
+    }
+
+    pollTimerRef.current = window.setTimeout(tick, stagger)
+    return () => {
+      cancelled = true
+      if (pollTimerRef.current != null) {
+        window.clearTimeout(pollTimerRef.current)
+        pollTimerRef.current = null
+      }
+    }
+    // hasFrame intentionally omitted — avoid resetting the poll loop every frame
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useWebrtc, useMjpeg, liveEnabled, tokenizedJpeg, retry, camera.server_id, camera.id, camera.code])
 
   const exitFullscreen = useCallback(() => setIsFullscreen(false), [])
 
@@ -310,22 +719,36 @@ const StreamTile = memo(function StreamTile({
 
   const refreshStream = () => {
     setError(false)
+    setHasFrame(false)
+    hasFrameRef.current = false
+    setWebrtcFailed(false)
     setRetry((n) => n + 1)
   }
 
   const takeSnapshot = () => {
-    const img = imgRef.current
-    if (!img || !img.naturalWidth) return
     try {
       const canvas = document.createElement("canvas")
-      canvas.width = img.naturalWidth
-      canvas.height = img.naturalHeight
-      const ctx = canvas.getContext("2d")
-      if (!ctx) return
-      ctx.drawImage(img, 0, 0)
       const link = document.createElement("a")
       const stamp = new Date().toISOString().replace(/[:.]/g, "-")
       link.download = `${(camera.code || camera.name || "camera").replace(/\s+/g, "_")}_${stamp}.png`
+
+      if (useWebrtc) {
+        const video = webrtcRef.current?.videoElement()
+        if (!video || !video.videoWidth) return
+        canvas.width = video.videoWidth
+        canvas.height = video.videoHeight
+        const ctx = canvas.getContext("2d")
+        if (!ctx) return
+        ctx.drawImage(video, 0, 0)
+      } else {
+        const img = imgRef.current
+        if (!img || !img.naturalWidth) return
+        canvas.width = img.naturalWidth
+        canvas.height = img.naturalHeight
+        const ctx = canvas.getContext("2d")
+        if (!ctx) return
+        ctx.drawImage(img, 0, 0)
+      }
       link.href = canvas.toDataURL("image/png")
       link.click()
     } catch {
@@ -333,40 +756,71 @@ const StreamTile = memo(function StreamTile({
     }
   }
 
+  const showImg = !useWebrtc && Boolean(src && !error)
+
   return (
     <div
       className={cn(
         "overflow-hidden rounded-lg border border-border bg-black",
         wallMode && "flex h-full min-h-0 min-w-0 flex-col rounded-md",
         wallMode && wallLayout === "1x1" && "rounded-none border-0",
-        isFullscreen && "fixed inset-0 z-[200] flex flex-col rounded-none border-0",
+        isFullscreen &&
+        "fixed inset-0 z-[250] flex h-[100dvh] max-h-[100dvh] w-full flex-col rounded-none border-0 bg-black",
       )}
     >
       <div
         className={cn(
           "relative aspect-video w-full",
           wallMode && wallTileMediaClass(wallLayout),
-          isFullscreen && "flex-1 aspect-auto min-h-0 max-h-none max-w-none",
+          isFullscreen && "min-h-0 max-h-none max-w-none flex-1 aspect-auto",
         )}
       >
-        {src && !error ? (
+        {useWebrtc && webrtcRaw ? (
+          <WebRtcPlayer
+            ref={webrtcRef}
+            key={`${camera.server_id}-${camera.id}-${retry}`}
+            signalingUrl={webrtcRaw}
+            className={cn(
+              "h-full w-full",
+              wallMode || isFullscreen ? "object-cover" : "object-contain",
+            )}
+            restartKey={retry}
+            onPlaying={() => {
+              setError(false)
+              hasFrameRef.current = true
+              setHasFrame(true)
+            }}
+            onError={() => {
+              setWebrtcFailed(true)
+              setError(false)
+              hasFrameRef.current = false
+              setHasFrame(false)
+            }}
+          />
+        ) : showImg ? (
           <img
             ref={imgRef}
-            src={src}
+            src={src!}
             alt={camera.name}
             className={cn(
               "h-full w-full object-center",
               wallMode || isFullscreen ? "object-cover" : "object-contain",
             )}
+            onLoad={() => {
+              setError(false)
+              hasFrameRef.current = true
+              setHasFrame(true)
+            }}
             onError={() => {
               setError(true)
-              // Cap reconnect storms — too many cameras retrying freezes the tab
-              if (retry >= 4) return
+              hasFrameRef.current = false
+              setHasFrame(false)
+              if (retry >= 8) return
               if (retryTimerRef.current != null) window.clearTimeout(retryTimerRef.current)
               retryTimerRef.current = window.setTimeout(() => {
                 setError(false)
                 setRetry((n) => n + 1)
-              }, 3000 + retry * 1500)
+              }, 2000 + retry * 1000)
             }}
           />
         ) : (
@@ -374,10 +828,10 @@ const StreamTile = memo(function StreamTile({
             {!liveEnabled && !isFullscreen
               ? "Paused (stream limit) — open fullscreen or next page"
               : error
-                ? retry >= 4
+                ? retry >= 8
                   ? "Stream unavailable"
                   : "Reconnecting…"
-                : "No stream URL"}
+                : "Connecting…"}
           </div>
         )}
 
@@ -385,8 +839,15 @@ const StreamTile = memo(function StreamTile({
           <Badge className="max-w-full truncate bg-sky-700/90 text-white">
             {camera.server_name || "Server"}
           </Badge>
-          {src && !error ? (
+          {useWebrtc && hasFrame ? (
+            <Badge className="bg-violet-600/90 text-white">WebRTC 4K</Badge>
+          ) : viewRaw && hasFrame ? (
+            <Badge className="bg-violet-600/90 text-white">4K</Badge>
+          ) : null}
+          {hasFrame || (useWebrtc && !error) || (useMjpeg && src && !error) ? (
             <Badge className="bg-emerald-600/90 text-white">Live</Badge>
+          ) : (useWebrtc || src) && !error ? (
+            <Badge className="bg-amber-600/90 text-white">Loading</Badge>
           ) : null}
         </div>
 
@@ -428,7 +889,7 @@ const StreamTile = memo(function StreamTile({
             onClick={takeSnapshot}
             title="Take snapshot"
             aria-label="Take snapshot"
-            disabled={!src || error}
+            disabled={!hasFrame && !src}
           >
             <Camera className="h-4 w-4" />
           </Button>
@@ -450,15 +911,27 @@ const StreamTile = memo(function StreamTile({
         </div>
 
         {(showTimestamp || isFullscreen) && (
-          <span className="absolute bottom-12 right-2 z-10 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white/90 sm:bottom-14">
+          <span
+            className={cn(
+              "absolute z-20 rounded bg-black/80 px-2 py-1 text-xs font-semibold tabular-nums text-white shadow-md",
+              isFullscreen ? "left-2 top-12" : "bottom-12 right-2 sm:bottom-14",
+            )}
+          >
             {now.toLocaleTimeString()}
           </span>
         )}
 
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-3 py-2">
+        <div className="absolute bottom-0 left-0 right-0 z-[5] bg-gradient-to-t from-black/80 to-transparent px-3 py-2">
           <p className="truncate text-sm font-medium text-white">{camera.name}</p>
-          <p className="truncate text-xs text-white/70">
-            {[camera.code, camera.channel_label || `Channel ${camera.channel ?? "-"}`, camera.status, camera.location_code || camera.location]
+          <p className="truncate pr-16 text-xs text-white/70">
+            {[
+              camera.display_label ||
+              [camera.site_name || camera.site_code, camera.nvr_name, camera.channel_label || (camera.channel != null ? `Ch ${camera.channel}` : "")]
+                .filter(Boolean)
+                .join(" · "),
+              camera.status,
+              camera.code,
+            ]
               .filter(Boolean)
               .join(" · ")}
           </p>
@@ -466,10 +939,15 @@ const StreamTile = memo(function StreamTile({
       </div>
 
       {isFullscreen && (
-        <div className="flex shrink-0 items-center justify-center gap-3 border-t border-white/10 bg-black/90 px-4 py-2 text-xs text-white/80">
+        <div className="flex shrink-0 items-center justify-center gap-3 border-t border-white/10 bg-black px-4 py-2.5 text-xs text-white/80">
+          <span className="rounded bg-white/10 px-2 py-0.5 text-sm font-semibold tabular-nums text-white">
+            {now.toLocaleTimeString()}
+          </span>
+          <span className="text-white/40">·</span>
           <span>
             {camera.name}
             {camera.server_name ? ` · ${camera.server_name}` : ""}
+            {useWebrtc ? " · WebRTC" : ""}
             {" · Press Esc or tap minimize to exit"}
           </span>
           <Button
@@ -507,6 +985,7 @@ export default function AllCitiesCamerasPage() {
   const [gridPage, setGridPage] = useState(0)
   const [showTimestamp, setShowTimestamp] = useState(true)
   const [wallFullscreen, setWallFullscreen] = useState(false)
+  const [wallDesign, setWallDesign] = useState<CustomWallDesign>(() => loadCustomWallDesign())
   const [cameraPickerOpen, setCameraPickerOpen] = useState(false)
   const [pickerLocation, setPickerLocation] = useState<string | null>(null)
   const [pickerCameraQuery, setPickerCameraQuery] = useState("")
@@ -534,8 +1013,8 @@ export default function AllCitiesCamerasPage() {
     else setLoading(true)
     setError(null)
 
-    // Soft refresh stays under overall backend ~14s; hard refresh gets a bit more headroom
-    const timeoutId = window.setTimeout(() => controller.abort(), refresh ? 18_000 : 16_000)
+    // Soft load is cache-first on the API (~6s). Hard refresh may contact remotes (~10s).
+    const timeoutId = window.setTimeout(() => controller.abort(), refresh ? 22_000 : 14_000)
 
     try {
       const data = await fetchAllCitiesStreams({
@@ -543,15 +1022,17 @@ export default function AllCitiesCamerasPage() {
         signal: controller.signal,
       })
       if (gen !== loadGenRef.current) return
-      setServers(Array.isArray(data.servers) ? data.servers : [])
+      const nextServers = Array.isArray(data.servers) ? data.servers : []
       const nextCameras = Array.isArray(data.cameras) ? data.cameras : []
+      setServers(nextServers as ServerSummary[])
       setCameras((prev) =>
         camerasFingerprint(prev) === camerasFingerprint(nextCameras) ? prev : nextCameras
       )
+      writeAllCitiesStreamsCache(nextServers, nextCameras)
     } catch (e) {
       if (gen !== loadGenRef.current) return
       if (controller.signal.aborted) {
-        setError("Request timed out. Existing cameras kept — try again.")
+        setError("Request timed out. Existing cameras kept — try Refresh.")
       } else {
         setError(e instanceof Error ? e.message : "Failed to load streams")
       }
@@ -572,6 +1053,13 @@ export default function AllCitiesCamerasPage() {
       preferenceSetRef.current = true
       setAllCitiesCamerasPreference(true)
     }
+    // Instant paint from last session (helps mobile when API is slow)
+    const cached = readAllCitiesStreamsCache()
+    if (cached && cached.cameras.length > 0) {
+      setServers(Array.isArray(cached.servers) ? (cached.servers as ServerSummary[]) : [])
+      setCameras(Array.isArray(cached.cameras) ? (cached.cameras as CityCamera[]) : [])
+      setLoading(false)
+    }
     void load(false)
     return () => {
       loadGenRef.current += 1
@@ -583,33 +1071,33 @@ export default function AllCitiesCamerasPage() {
     if (!allowed) return
     let cancelled = false
     selectionHydratedRef.current = false
-    ;(async () => {
-      try {
-        let keys = await fetchAllCitiesSelection()
-        if (keys.length === 0) {
-          const legacy = readLegacyLocalSelection()
-          if (legacy.length > 0) {
-            keys = await saveAllCitiesSelection(legacy)
+      ; (async () => {
+        try {
+          let keys = await fetchAllCitiesSelection()
+          if (keys.length === 0) {
+            const legacy = readLegacyLocalSelection()
+            if (legacy.length > 0) {
+              keys = await saveAllCitiesSelection(legacy)
+              clearLegacyLocalSelection()
+            }
+          } else {
             clearLegacyLocalSelection()
           }
-        } else {
-          clearLegacyLocalSelection()
+          if (cancelled) return
+          lastSavedKeysRef.current = JSON.stringify(keys)
+          setSelectedCameraKeys(keys)
+        } catch {
+          if (cancelled) return
+          const legacy = readLegacyLocalSelection()
+          lastSavedKeysRef.current = JSON.stringify(legacy)
+          setSelectedCameraKeys(legacy)
+        } finally {
+          if (!cancelled) {
+            selectionHydratedRef.current = true
+            setSelectionReady(true)
+          }
         }
-        if (cancelled) return
-        lastSavedKeysRef.current = JSON.stringify(keys)
-        setSelectedCameraKeys(keys)
-      } catch {
-        if (cancelled) return
-        const legacy = readLegacyLocalSelection()
-        lastSavedKeysRef.current = JSON.stringify(legacy)
-        setSelectedCameraKeys(legacy)
-      } finally {
-        if (!cancelled) {
-          selectionHydratedRef.current = true
-          setSelectionReady(true)
-        }
-      }
-    })()
+      })()
     return () => {
       cancelled = true
     }
@@ -661,12 +1149,19 @@ export default function AllCitiesCamerasPage() {
     }
   }
 
+  const applyWallDesign = useCallback((next: CustomWallDesign) => {
+    setWallDesign(next)
+    saveCustomWallDesign(next)
+  }, [])
+
   useEffect(() => {
     if (!wallFullscreen) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return
       // Don't exit wall while a layout/menu popup is open
-      const menuOpen = document.querySelector('[data-slot="select-content"][data-state="open"]')
+      const menuOpen =
+        document.querySelector('[data-slot="select-content"][data-state="open"]') ||
+        document.querySelector('[data-slot="popover-content"][data-state="open"]')
       if (menuOpen) return
       setWallFullscreen(false)
     }
@@ -855,7 +1350,7 @@ export default function AllCitiesCamerasPage() {
     <div className={cn("space-y-8", wallFullscreen && "h-full min-h-0 space-y-2")}>
       {grouped.map(({ server, cameras: cams }) => (
         <section key={server?.id ?? "unknown"} className={wallFullscreen ? "flex min-h-0 flex-1 flex-col" : undefined}>
-          <div className={cn("mb-3 flex flex-wrap items-center gap-2", wallFullscreen && "mb-1 shrink-0")}> 
+          <div className={cn("mb-3 flex flex-wrap items-center gap-2", wallFullscreen && "mb-1 shrink-0")}>
             <Video className="h-4 w-4 text-foreground" />
             <h2 className="text-lg font-semibold text-foreground">{server?.name || "Server"}</h2>
             {server?.location_code ? (
@@ -899,21 +1394,21 @@ export default function AllCitiesCamerasPage() {
   const autoRows = Math.max(1, Math.ceil(Math.max(pagedCameras.length, 1) / autoCols))
   const fixedRows =
     layout === "1x1" ? 1
-    : layout === "2x2" ? 2
-    : layout === "3x3" ? 3
-    : layout === "4x4" ? 4
-    : layout === "6x6" ? 6
-    : layout === "8x8" ? 8
-    : layout === "10x10" ? 10
-    : 1
+      : layout === "2x2" ? 2
+        : layout === "3x3" ? 3
+          : layout === "4x4" ? 4
+            : layout === "6x6" ? 6
+              : layout === "8x8" ? 8
+                : layout === "10x10" ? 10
+                  : 1
   const fixedRowMin =
     layout === "2x2" ? "44vh"
-    : layout === "3x3" ? "30vh"
-    : layout === "4x4" ? "23vh"
-    : layout === "6x6" ? "15vh"
-    : layout === "8x8" ? "11vh"
-    : layout === "10x10" ? "9vh"
-    : "0"
+      : layout === "3x3" ? "30vh"
+        : layout === "4x4" ? "23vh"
+          : layout === "6x6" ? "15vh"
+            : layout === "8x8" ? "11vh"
+              : layout === "10x10" ? "9vh"
+                : "0"
 
   const wallCameraGrid = (
     <div
@@ -926,17 +1421,17 @@ export default function AllCitiesCamerasPage() {
       style={
         layout === "auto"
           ? {
-              gridTemplateColumns: `repeat(${autoCols}, minmax(0, 1fr))`,
-              gridTemplateRows: `repeat(${autoRows}, minmax(0, 1fr))`,
-            }
+            gridTemplateColumns: `repeat(${autoCols}, minmax(0, 1fr))`,
+            gridTemplateRows: `repeat(${autoRows}, minmax(0, 1fr))`,
+          }
           : layout === "1x1"
             ? {
-                gridTemplateColumns: "minmax(0, 1fr)",
-                gridTemplateRows: "minmax(0, 1fr)",
-              }
+              gridTemplateColumns: "minmax(0, 1fr)",
+              gridTemplateRows: "minmax(0, 1fr)",
+            }
             : {
-                gridTemplateRows: `repeat(${fixedRows}, minmax(${fixedRowMin}, 1fr))`,
-              }
+              gridTemplateRows: `repeat(${fixedRows}, minmax(${fixedRowMin}, 1fr))`,
+            }
       }
     >
       {pagedCameras.map((camera) => {
@@ -1346,13 +1841,21 @@ export default function AllCitiesCamerasPage() {
       )}
 
       {wallFullscreen && visibleCameras.length > 0 && (
-        <div className="fixed inset-0 z-[190] flex flex-col bg-black">
-          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-4 py-2">
-            <p className="truncate text-sm font-medium text-white">
-              All Cities Wall · {visibleCameras.length} camera
-              {visibleCameras.length === 1 ? "" : "s"}
-            </p>
-            <div className="flex shrink-0 items-center gap-2">
+        <div className="fixed inset-0 z-[250] flex h-[100dvh] max-h-[100dvh] w-full flex-col bg-black">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-black px-3 py-2 sm:px-4">
+            <div className="min-w-0">
+              <p className="truncate text-[10px] font-semibold uppercase tracking-[0.12em] text-white/40">
+                CIIS · Custom wall
+              </p>
+              <p className="truncate text-sm font-medium text-white">
+                {getCamerasWallLabel(user?.role, user?.location)}
+                <span className="ml-2 font-normal text-white/55">
+                  {visibleCameras.length} camera{visibleCameras.length === 1 ? "" : "s"}
+                </span>
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 sm:gap-2">
+              <WallWidgetPicker design={wallDesign} onChange={applyWallDesign} />
               <GridLayoutSelect
                 layout={layout}
                 tone="dark"
@@ -1370,8 +1873,8 @@ export default function AllCitiesCamerasPage() {
               >
                 <ChevronLeft className="h-4 w-4" />
               </Button>
-              <span className="min-w-14 text-center text-xs text-white/80">
-                {currentGridPage + 1} / {pageCount}
+              <span className="min-w-12 text-center text-xs text-white/80">
+                {currentGridPage + 1}/{pageCount}
               </span>
               <Button
                 type="button"
@@ -1394,28 +1897,39 @@ export default function AllCitiesCamerasPage() {
                 onClick={(e) => void load(e.shiftKey)}
                 disabled={loading || refreshing}
               >
-                <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", refreshing && "animate-spin")} />
-                Refresh
+                <RefreshCw className={cn("h-3.5 w-3.5 sm:mr-1.5", refreshing && "animate-spin")} />
+                <span className="hidden sm:inline">Refresh</span>
               </Button>
               <Button
                 type="button"
                 size="sm"
-                className="h-8"
+                className="h-8 bg-white text-zinc-950 hover:bg-white/90"
                 onClick={() => setWallFullscreen(false)}
               >
                 <Minimize2 className="mr-1.5 h-3.5 w-3.5" />
-                Exit wall (Esc)
+                Exit
               </Button>
             </div>
           </div>
-          <div
-            className={cn(
-              "min-h-0 flex-1 p-0",
-              layout === "auto" || layout === "1x1" ? "overflow-hidden" : "overflow-y-auto",
-            )}
-          >
-            {wallCameraGrid}
+          <div className="min-h-0 flex-1 overflow-hidden p-0">
+            <CustomWallWorkspace
+              design={wallDesign}
+              onDesignChange={applyWallDesign}
+              cameraCount={visibleCameras.length}
+              onlineCount={visibleCameras.filter((c) => isCameraOnline(c)).length}
+              camerasPane={
+                <div
+                  className={cn(
+                    "h-full min-h-0",
+                    layout === "auto" || layout === "1x1" ? "overflow-hidden" : "overflow-y-auto",
+                  )}
+                >
+                  {wallCameraGrid}
+                </div>
+              }
+            />
           </div>
+          <WallAlertPopupHost />
         </div>
       )}
     </ModulePageLayout>

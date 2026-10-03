@@ -201,3 +201,123 @@ export async function searchImageInVideo(
   }
   throw new Error("Search timed out. Try a shorter export or lower camera bitrate.");
 }
+
+export type VideoAnalyzeHit = {
+  t: number;
+  kind: string;
+  class_name?: string;
+  label: string;
+  model?: string;
+  confidence?: number;
+};
+
+export type VideoAnalyzeResult = {
+  job_id: string;
+  duration_sec: number;
+  fps: number;
+  frames_written?: number;
+  sample_fps?: number;
+  hit_count: number;
+  known_staff: string[];
+  unknown_people: number;
+  vehicles: number;
+  weapons: number;
+  fires: number;
+  hits: VideoAnalyzeHit[];
+  output_url: string;
+  output_name?: string;
+};
+
+export type VideoAnalyzeJob = {
+  job_id: string;
+  status: "queued" | "running" | "done" | "error" | string;
+  progress: number;
+  message?: string;
+  error?: string | null;
+  result?: VideoAnalyzeResult;
+};
+
+export async function startVideoAnalyze(
+  videoFile: File,
+  options: {
+    person: boolean;
+    vehicle: boolean;
+    weapon: boolean;
+    fire: boolean;
+    matchStaff: boolean;
+    sampleFps?: number;
+  }
+): Promise<VideoAnalyzeJob> {
+  if (!isMlEnabled()) {
+    throw new Error("ML is disabled on this server.");
+  }
+  const form = new FormData();
+  form.append("video", videoFile);
+  form.append("person", String(options.person));
+  form.append("vehicle", String(options.vehicle));
+  form.append("weapon", String(options.weapon));
+  form.append("fire", String(options.fire));
+  form.append("match_staff", String(options.matchStaff));
+  form.append("sample_fps", String(options.sampleFps ?? 0.5));
+  const response = await fetch(`${API_BASE_URL}/api/ml/analyze-video/`, {
+    method: "POST",
+    headers: getAuthHeadersFormData(),
+    body: form,
+  });
+  if (response.status === 401) throw new Error("Unauthorized");
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(
+      typeof err?.detail === "string" ? err.detail : `Video AI test failed (${response.status})`
+    );
+  }
+  return response.json();
+}
+
+export async function fetchVideoAnalyzeJob(jobId: string): Promise<VideoAnalyzeJob> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/ml/analyze-video/?job_id=${encodeURIComponent(jobId)}`,
+    { headers: getAuthHeaders(), cache: "no-store" }
+  );
+  if (response.status === 401) throw new Error("Unauthorized");
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(
+      typeof err?.detail === "string" ? err.detail : `Could not read AI test status (${response.status})`
+    );
+  }
+  return response.json();
+}
+
+export async function analyzeVideoFile(
+  videoFile: File,
+  options: {
+    person: boolean;
+    vehicle: boolean;
+    weapon: boolean;
+    fire: boolean;
+    matchStaff: boolean;
+    sampleFps?: number;
+    onProgress?: (job: VideoAnalyzeJob) => void;
+  }
+): Promise<VideoAnalyzeResult> {
+  const started = await startVideoAnalyze(videoFile, options);
+  options.onProgress?.(started);
+  const jobId = started.job_id;
+  if (!jobId) throw new Error("AI test did not start (missing job id).");
+
+  const deadline = Date.now() + 90 * 60 * 1000;
+  while (Date.now() < deadline) {
+    const row = await fetchVideoAnalyzeJob(jobId);
+    options.onProgress?.(row);
+    if (row.status === "done" && row.result) {
+      return row.result;
+    }
+    if (row.status === "error") {
+      throw new Error(row.error || row.message || "Video AI test failed.");
+    }
+    await sleep(2500);
+  }
+  throw new Error("AI test timed out. Try a shorter video.");
+}
+

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 
+from django.db import transaction
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
@@ -32,6 +33,47 @@ def _schedule_ml_camera_sync() -> None:
         _sync_timer = threading.Timer(2.0, _run)
         _sync_timer.daemon = True
         _sync_timer.start()
+
+
+def _camera_delete_cleanup(
+    *,
+    camera_id: int,
+    stream_key: str,
+    ml_base_url: str,
+) -> None:
+    """Stop workers / unregister ML / re-sync — runs after HTTP delete returns."""
+    try:
+        from recognition.services.attendance_cameras import stop_camera_attendance_worker
+
+        stop_camera_attendance_worker(camera_id)
+    except Exception:
+        logger.exception(
+            "[camera-sync] Could not stop attendance worker for camera %s",
+            camera_id,
+        )
+
+    try:
+        from ml.client import ml_service_enabled, ml_unregister_camera_at
+
+        if ml_service_enabled() and ml_base_url and stream_key:
+            ml_unregister_camera_at(ml_base_url, stream_key, timeout=(2.0, 8.0))
+            import requests
+
+            try:
+                requests.delete(f"{ml_base_url}/journey/cam/{stream_key}", timeout=5)
+            except Exception:
+                pass
+    except Exception:
+        logger.exception("[camera-sync] Could not unregister camera %s from ML", camera_id)
+
+    _schedule_ml_camera_sync()
+
+    try:
+        from person_journey.journey_worker import sync_cameras_to_journey_ml
+
+        sync_cameras_to_journey_ml()
+    except Exception:
+        logger.exception("[camera-sync] Journey re-sync after delete failed")
 
 
 @receiver(post_save, sender=Camera)
@@ -71,36 +113,30 @@ def camera_saved_sync_ml(sender, instance: Camera, created: bool = False, **kwar
 
 @receiver(post_delete, sender=Camera)
 def camera_deleted_sync_ml(sender, instance: Camera, **kwargs) -> None:
+    """DB row is already gone — queue ML/worker cleanup after commit so DELETE returns fast."""
+    camera_id = int(instance.pk)
+    stream_key = (instance.stream_key or f"cam-{camera_id}").strip()
+    ml_base_url = ""
     try:
-        from recognition.services.attendance_cameras import stop_camera_attendance_worker
-
-        stop_camera_attendance_worker(instance.pk)
+        server = getattr(instance, "ml_server", None)
+        if instance.ml_server_id and server is not None:
+            ml_base_url = (server.resolved_ml_base_url() or "").strip().rstrip("/")
     except Exception:
-        logger.exception(
-            "[camera-sync] Could not stop attendance worker for camera %s",
-            instance.pk,
-        )
-    try:
-        from ml.client import ml_service_enabled, ml_unregister_camera
+        ml_base_url = ""
 
-        if ml_service_enabled():
-            ml_unregister_camera(instance.stream_key)
-            # Also stop person-journey pipeline for this camera
-            import requests
-            from django.conf import settings
+    def _queue_cleanup() -> None:
+        threading.Thread(
+            target=_camera_delete_cleanup,
+            kwargs={
+                "camera_id": camera_id,
+                "stream_key": stream_key,
+                "ml_base_url": ml_base_url,
+            },
+            name=f"camera-delete-cleanup-{camera_id}",
+            daemon=True,
+        ).start()
 
-            base = getattr(settings, "ML_SERVICE_URL", "").rstrip("/")
-            if base:
-                requests.delete(f"{base}/journey/cam/{instance.stream_key}", timeout=5)
-    except Exception:
-        logger.exception("[camera-sync] Could not unregister camera %s from ML", instance.pk)
-    _schedule_ml_camera_sync()
-    try:
-        from person_journey.journey_worker import sync_cameras_to_journey_ml
-
-        sync_cameras_to_journey_ml()
-    except Exception:
-        logger.exception("[camera-sync] Journey re-sync after delete failed")
+    transaction.on_commit(_queue_cleanup)
 
 
 @receiver(post_save, sender=Nvr)

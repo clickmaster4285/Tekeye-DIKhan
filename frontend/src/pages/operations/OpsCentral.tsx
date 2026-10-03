@@ -84,7 +84,14 @@ function OpsStreamTile({
         <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-3 py-2">
           <p className="truncate text-sm font-medium text-white">{camera.name}</p>
           <p className="truncate text-xs text-white/70">
-            {[camera.site_name || camera.site_code, camera.status, camera.code]
+            {[
+              camera.display_label ||
+                [camera.site_name || camera.site_code, camera.nvr_name, camera.channel != null ? `Ch ${camera.channel}` : ""]
+                  .filter(Boolean)
+                  .join(" · "),
+              camera.status,
+              camera.code,
+            ]
               .filter(Boolean)
               .join(" · ")}
           </p>

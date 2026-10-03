@@ -70,6 +70,39 @@ def _substream_url(url: str) -> str | None:
     return None
 
 
+def _hw_accel_params() -> list[int]:
+    """
+    OpenCV VideoCapture params requesting GPU (NVDEC/CUDA) decode when the installed
+    OpenCV+FFmpeg build supports it. Empty list (plain CPU decode) when unsupported or
+    explicitly disabled — this is a best-effort hint, never a hard requirement, so an
+    unsupported build silently falls back instead of failing to open the stream.
+
+    Do not combine VIDEO_ACCELERATION_ANY with CAP_PROP_HW_DEVICE — newer OpenCV
+    rejects that as "Invalid usage of CAP_PROP_HW_DEVICE with 'ANY'" and bailouts.
+    Prefer explicit CUDA (+ device index); otherwise ANY alone with no device prop.
+    """
+    if os.getenv("ML_RTSP_NVDEC", "true").strip().lower() in ("0", "false", "no", "off"):
+        return []
+    accel_prop = getattr(cv2, "CAP_PROP_HW_ACCELERATION", None)
+    if accel_prop is None:
+        return []
+    accel_cuda = getattr(cv2, "VIDEO_ACCELERATION_CUDA", None)
+    accel_any = getattr(cv2, "VIDEO_ACCELERATION_ANY", None)
+    device_prop = getattr(cv2, "CAP_PROP_HW_DEVICE", None)
+    device = os.getenv("ML_DEVICE", "0").strip()
+    device_idx = int(device) if device.isdigit() else 0
+
+    if accel_cuda is not None:
+        params = [accel_prop, accel_cuda]
+        if device_prop is not None:
+            params += [device_prop, device_idx]
+        return params
+    if accel_any is not None:
+        # ANY must not be paired with CAP_PROP_HW_DEVICE.
+        return [accel_prop, accel_any]
+    return []
+
+
 def open_rtsp_capture(rtsp_url: str, timeout_ms: int = 8000):
     """
     Open the NVR main RTSP stream (4K). Substream fallback is disabled by default
@@ -94,7 +127,20 @@ def open_rtsp_capture(rtsp_url: str, timeout_ms: int = 8000):
                 )
                 cap = None
                 try:
-                    cap = cv2.VideoCapture(encoded, cv2.CAP_FFMPEG)
+                    hw_params = _hw_accel_params()
+                    opened = False
+                    if hw_params:
+                        cap = cv2.VideoCapture(encoded, cv2.CAP_FFMPEG, hw_params)
+                        opened = bool(cap is not None and cap.isOpened())
+                        if not opened and cap is not None:
+                            try:
+                                cap.release()
+                            except Exception:
+                                pass
+                            cap = None
+                    if not opened:
+                        # Plain CPU decode — also recovers from invalid HW_DEVICE+ANY combos.
+                        cap = cv2.VideoCapture(encoded, cv2.CAP_FFMPEG)
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     if not cap.isOpened():
                         last_error = f"RTSP open failed ({transport})"

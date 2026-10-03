@@ -5,7 +5,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("cameras", "0016_alter_camera_resolution"),
+        ("cameras", "0015_ensure_camera_purposes"),
         ("ops_central", "0004_all_cities_camera_preference"),
     ]
 

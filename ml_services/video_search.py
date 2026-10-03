@@ -17,10 +17,12 @@ import numpy as np
 from inference_engine import (
     _predict_model,
     decode_image,
-    get_face_db,
     get_yolo_coco_model,
 )
 from reid_extractor import extract_reid_embedding
+from video_search_face import extract_embedding as _search_face_embedding
+from video_search_face import face_crop as _search_face_crop
+from video_search_face import largest_face as _search_largest_face
 
 PERSON_CLASS_IDS = frozenset({0})
 VEHICLE_CLASS_IDS = frozenset({2, 3, 5, 7})
@@ -241,12 +243,9 @@ def _detect_boxes(frame: np.ndarray, *, class_ids: list[int], conf: float = 0.25
 
 def _face_embedding(image: np.ndarray) -> list[float]:
     try:
-        db = get_face_db()
-        feature = db.extract_embedding(image)
-        if feature is None:
-            return []
-        return db.embedding_to_list(feature)
-    except Exception:
+        return _search_face_embedding(image)
+    except Exception as exc:
+        print(f"[video-search] face embedding failed: {exc}")
         return []
 
 
@@ -264,16 +263,15 @@ def _expand_face_to_body(image: np.ndarray, face) -> np.ndarray | None:
 
 
 def _build_query(image: np.ndarray) -> dict[str, Any]:
-    db = get_face_db()
     face_emb: list[float] = []
     reid_emb: list[float] = []
     target_classes: set[int] = set()
     query_label = "image"
     person_crop: np.ndarray | None = None
 
-    largest_face = db._largest_face(image)
+    largest_face = _search_largest_face(image)
     if largest_face is not None:
-        face_crop = db._face_crop(image, largest_face)
+        face_crop = _search_face_crop(image, largest_face)
         if face_crop is not None and face_crop.size:
             face_emb = _face_embedding(face_crop)
             person_crop = _expand_face_to_body(image, largest_face)
@@ -562,7 +560,25 @@ def search_video_path(
     query_image = decode_image(image_bytes)
     if callable(progress_cb):
         progress_cb(4, "Analyzing query photo")
-    query = _build_query(query_image)
+    try:
+        query = _build_query(query_image)
+    except Exception as exc:
+        print(f"[video-search] query build failed: {exc}")
+        # Appearance-only fallback so Find-in-Video still works if face nets glitch.
+        reid_emb = extract_reid_embedding(query_image) or []
+        if not reid_emb:
+            raise ValueError(
+                "Could not analyze the query photo. Try a clearer face or full-body image."
+            ) from exc
+        query = {
+            "has_face": False,
+            "has_reid": True,
+            "face_embedding": [],
+            "reid_embedding": reid_emb,
+            "target_class_ids": sorted(SEARCH_CLASS_IDS),
+            "label": "image",
+            "preview_jpeg_b64": _jpeg_b64(query_image),
+        }
     if not query["has_face"] and not query["has_reid"]:
         raise ValueError("Could not extract a face or appearance signature from the image.")
 
